@@ -19,7 +19,7 @@ static const char HEX[] = "0123456789abcdef";
 //======================== IRK lifecycle (for readers) ========================
 /*
 Connect → Initiate security
-ENC_CHANGE → immediate IRK read from store; if available: publish (do not disconnect immediately)
+ENC_CHANGE → immediate IRK read from store; if available: publish & disconnect (1.0 behavior)
              else: schedule late read at +5s (store commit lag), continue
 DISCONNECT → immediate store read; schedule delayed read at +800ms; restart advertising
 While connected (post ENC) → poll every 1s starting at +2s, up to 45s, then disconnect when IRK captured
@@ -166,8 +166,8 @@ static struct ble_gatt_chr_def hr_chrs[] = {
         .uuid = &UUID_CHR_HR_MEAS.u,
         .access_cb = chr_read_hr,
         .arg = nullptr,
-        // Make HR notify-only to reduce immediate auth pressure; DevInfo/PROT still enforce READ_ENC.
-        .flags = BLE_GATT_CHR_F_NOTIFY,
+        // 1.0 behavior: read requires ENC, notify also present
+        .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_READ_ENC,
         .val_handle = &g_hr_handle,
     },
     {0}
@@ -249,7 +249,6 @@ static int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, 
     return 0;
 }
 static int chr_read_hr(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *) {
-    // HR read path not used; notify is unprotected. Keep read guarded if ever called.
     if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
     uint8_t buf[2]; size_t len;
     hr_measurement_sample(buf, &len);
@@ -362,7 +361,8 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
                     if (rc == 0 && bond.irk_present) {
                         std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
                         publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
-                        // Do NOT terminate immediately; allow Apple to complete discovery.
+                        // 1.0 behavior: terminate immediately after successful ENC + IRK capture
+                        ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
                     } else {
                         ESP_LOGD(TAG, "Immediate ENC_CHANGE read: rc=%d irk_present=%d",
                                  rc, (rc == 0 ? (int)bond.irk_present : -1));
@@ -435,7 +435,7 @@ void IRKCaptureComponent::loop() {
     handle_post_disconnect_timer(now);
     handle_late_enc_timer(now);
 
-    // Pairing robustness
+    // Pairing robustness (1.0 single retry)
     retry_security_if_needed(now);
 
     if (!connected_ || conn_handle_ == BLE_HS_CONN_HANDLE_NONE) return;
@@ -458,7 +458,7 @@ void IRKCaptureComponent::setup_ble() {
     // NimBLE host
     nimble_port_init();
 
-    // Security (enforce bonding + LESC; No I/O) - matches Arduino settings
+    // Security (1.0: set once here; no later re-asserts)
     ble_hs_cfg.reset_cb = [](int reason) { ESP_LOGW(TAG, "NimBLE reset reason=%d", reason); };
     ble_hs_cfg.sync_cb = []() { ESP_LOGI(TAG, "NimBLE host synced"); };
 
@@ -468,7 +468,6 @@ void IRKCaptureComponent::setup_ble() {
     ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-    ESP_LOGI(TAG, "IO Cap set to NO_INPUT_OUTPUT (expected 0), actual=%d", (int)ble_hs_cfg.sm_io_cap);
     log_sm_config();
 
     // Key-value store for bonding/keys
@@ -527,15 +526,6 @@ void IRKCaptureComponent::start_advertising() {
         ESP_LOGW(TAG, "Host not synced; cannot advertise");
         return;
     }
-
-    // Re-assert IO caps every time before we accept connections (defensive)
-    ble_hs_cfg.sm_bonding = 1;
-    ble_hs_cfg.sm_mitm = 0;
-    ble_hs_cfg.sm_sc = 1;
-    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
-    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-    ESP_LOGI(TAG, "SM (re-assert): io_cap=%d (expect 0)", (int)ble_hs_cfg.sm_io_cap);
 
     ble_hs_adv_fields fields{};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
@@ -626,15 +616,6 @@ void IRKCaptureComponent::refresh_mac() {
             ESP_LOGI(TAG, "New MAC (set_rnd): %02X:%02X:%02X:%02X:%02X:%02X",
                      mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
 
-            // Re-assert IO caps again after address change (defensive)
-            ble_hs_cfg.sm_bonding = 1;
-            ble_hs_cfg.sm_mitm = 0;
-            ble_hs_cfg.sm_sc = 1;
-            ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
-            ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-            ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-            ESP_LOGI(TAG, "SM (post-set_rnd): io_cap=%d (expect 0)", (int)ble_hs_cfg.sm_io_cap);
-
             // Re-infer own address type for next adv start
             uint8_t own_addr_type;
             int rc2 = ble_hs_id_infer_auto(0, &own_addr_type);
@@ -694,16 +675,12 @@ void IRKCaptureComponent::update_ble_name(const std::string &name) {
 //======================== GAP helpers ========================
 
 void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
-    // Defensive: re-assert IO caps at connection time
-    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
-    ESP_LOGI(TAG, "SM (on_connect): io_cap=%d (expect 0)", (int)ble_hs_cfg.sm_io_cap);
-
     conn_handle_ = conn_handle;
     connected_ = true;
     enc_ready_ = false;
     enc_time_ = 0;
 
-    // Reset loop-helper state
+    // Reset loop-helper state (1.0 single retry model)
     sec_retry_done_ = false;
     sec_init_time_ms_ = 0;
     irk_gave_up_ = false;
@@ -829,7 +806,7 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
             std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
             publish_and_log_irk(this, timers_.enc_peer_id, irk_hex, "ENC_LATE");
 
-            // Optionally terminate here
+            // 1.0 compatible: terminate after late capture if still connected
             if (connected_ && conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
                 ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
             }
@@ -843,29 +820,17 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
 //======================== Loop helpers ========================
 
 void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
-    // Two-stage retry to better accommodate iOS/watch timing
-    // Stage 1 at 2000 ms, Stage 2 at 6000 ms
-    static uint8_t s_retry_count = 0;
-
+    // 1.0 behavior: single retry ~2s after initial initiate
     if (connected_ && !enc_ready_) {
         if (sec_init_time_ms_ == 0) sec_init_time_ms_ = now;
-        const uint32_t elapsed = now - sec_init_time_ms_;
-
-        if (s_retry_count == 0 && elapsed > 2000) {
+        if (!sec_retry_done_ && (now - sec_init_time_ms_) > 2000) {
             int rc = ble_gap_security_initiate(conn_handle_);
-            ESP_LOGW(TAG, "Retry security (1) rc=%d", rc);
-            s_retry_count = 1;
-        } else if (s_retry_count == 1 && elapsed > 6000) {
-            int rc = ble_gap_security_initiate(conn_handle_);
-            ESP_LOGW(TAG, "Retry security (2) rc=%d", rc);
-            s_retry_count = 2;
+            ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
+            sec_retry_done_ = true;
         }
-    } else {
-        // Reset when not connected or once ENC is ready
-        s_retry_count = 0;
-        if (!connected_) {
-            sec_init_time_ms_ = 0;
-        }
+    } else if (!connected_) {
+        sec_retry_done_ = false;
+        sec_init_time_ms_ = 0;
     }
 }
 
