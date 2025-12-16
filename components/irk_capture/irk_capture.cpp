@@ -19,8 +19,8 @@ static const char HEX[] = "0123456789abcdef";
 //======================== IRK lifecycle (for readers) ========================
 /*
 Connect → Initiate security
-ENC_CHANGE → immediate IRK read from store; if available: publish & disconnect (1.0 behavior)
-             else: schedule late read at +5s (store commit lag), continue
+ENC_CHANGE → immediate IRK read from store; if available: publish & disconnect (1.0 behavior).
+             If ENC fails (status != 0), delete that peer's keys and retry security once (self-heal).
 DISCONNECT → immediate store read; schedule delayed read at +800ms; restart advertising
 While connected (post ENC) → poll every 1s starting at +2s, up to 45s, then disconnect when IRK captured
 All address reporting uses the peer identity address; IRK hex is reversed for parity with Arduino output.
@@ -372,6 +372,32 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
                 }
 
                 ESP_LOGI(TAG, "Encryption established; will attempt IRK capture shortly");
+            } else {
+                // Encryption failed (often due to stale keys). Delete this peer's keys and retry once.
+                if (!self->retried_after_enc_fail_) {
+                    struct ble_gap_conn_desc d{};
+                    if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
+                        struct ble_store_key_sec key{};
+                        key.peer_addr = d.peer_id_addr;
+
+                        int drc = ble_store_delete_peer_sec(&key);
+                        ESP_LOGW(TAG, "ENC fail; deleted peer sec rc=%d for %02X:%02X:%02X:%02X:%02X:%02X",
+                                 drc,
+                                 d.peer_id_addr.val[5], d.peer_id_addr.val[4], d.peer_id_addr.val[3],
+                                 d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0]);
+
+                        // Retry pairing immediately
+                        int rc = ble_gap_security_initiate(ev->enc_change.conn_handle);
+                        ESP_LOGW(TAG, "Re-initiate security after delete rc=%d", rc);
+                        self->retried_after_enc_fail_ = true;
+                    } else {
+                        ESP_LOGW(TAG, "ENC fail; conn desc not found; terminating");
+                        ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                    }
+                } else {
+                    ESP_LOGW(TAG, "ENC fail after retry; terminating");
+                    ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                }
             }
             return 0;
 
@@ -679,6 +705,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     connected_ = true;
     enc_ready_ = false;
     enc_time_ = 0;
+    retried_after_enc_fail_ = false;
 
     // Reset loop-helper state (1.0 single retry model)
     sec_retry_done_ = false;
@@ -710,6 +737,7 @@ void IRKCaptureComponent::on_disconnect() {
     conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
     enc_ready_ = false;
     enc_time_ = 0;
+    retried_after_enc_fail_ = false;
 
     // Reset loop-helper state
     sec_retry_done_ = false;
