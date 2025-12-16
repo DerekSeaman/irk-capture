@@ -16,6 +16,16 @@ namespace irk_capture {
 static const char *const TAG = "irk_capture";
 static const char HEX[] = "0123456789abcdef";
 
+//======================== IRK lifecycle (for readers) ========================
+/*
+Connect → Initiate security
+ENC_CHANGE → immediate IRK read from store; if available: publish (do not disconnect immediately)
+             else: schedule late read at +5s (store commit lag), continue
+DISCONNECT → immediate store read; schedule delayed read at +800ms; restart advertising
+While connected (post ENC) → poll every 1s starting at +2s, up to 45s, then disconnect when IRK captured
+All address reporting uses the peer identity address; IRK hex is reversed for parity with Arduino output.
+*/
+
 //======================== UUIDs ========================
 
 static const ble_uuid16_t UUID_SVC_HR       = BLE_UUID16_INIT(0x180D);
@@ -130,16 +140,6 @@ static void log_spacer() { ESP_LOGI(TAG, " "); }
 static void log_banner(const char *context_tag) {
     ESP_LOGI(TAG, "*** IRK CAPTURED *** (%s)", (context_tag ? context_tag : "unknown"));
 }
-
-//======================== Timer globals (grouped) ========================
-
-// Post-disconnect IRK check (+800 ms)
-static uint32_t g_post_disc_due = 0;
-static ble_addr_t g_last_peer_id = {};
-
-// Late ENC timer read (+5 s after ENC_CHANGE)
-static uint32_t g_late_enc_due = 0;
-static ble_addr_t g_enc_peer_id = {};
 
 //======================== Output helpers (centralized) ========================
 
@@ -316,7 +316,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             struct ble_gap_conn_desc d{};
             if (ble_gap_conn_find(ev->disconnect.conn.conn_handle, &d) == 0) {
                 // cache for delayed retry
-                g_last_peer_id = d.peer_id_addr;
+                self->timers_.last_peer_id = d.peer_id_addr;
 
                 struct ble_store_value_sec bond{};
                 struct ble_store_key_sec key{};
@@ -330,11 +330,11 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
                              rc, (rc == 0 ? (int)bond.irk_present : -1));
                 }
             } else {
-                memset(&g_last_peer_id, 0, sizeof(g_last_peer_id));
+                memset(&self->timers_.last_peer_id, 0, sizeof(self->timers_.last_peer_id));
             }
 
             // Schedule an extra delayed post-disconnect check (800 ms)
-            g_post_disc_due = now_ms() + IRKCaptureComponent::POST_DISC_DELAY_MS;
+            self->schedule_post_disconnect_check(self->timers_.last_peer_id);
 
             self->advertising_ = false;
             self->start_advertising();
@@ -342,6 +342,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
         }
 
         case BLE_GAP_EVENT_ENC_CHANGE:
+            ESP_LOGI(TAG, "ENC_CHANGE status=%d", ev->enc_change.status);
             if (ev->enc_change.status == 0) {
                 self->enc_ready_ = true;
                 self->enc_time_ = now_ms();
@@ -351,7 +352,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
                 // Immediate store read using identity address
                 struct ble_gap_conn_desc d{};
                 if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
-                    g_enc_peer_id = d.peer_id_addr;
+                    self->timers_.enc_peer_id = d.peer_id_addr;
 
                     struct ble_store_key_sec key{};
                     key.peer_addr = d.peer_id_addr;
@@ -360,13 +361,13 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
                     if (rc == 0 && bond.irk_present) {
                         std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
                         publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
-                        // Optionally terminate now for consistency with Arduino
-                        ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                        // Do NOT terminate immediately; allow Apple to complete discovery.
+                        // Termination can still occur later when appropriate.
                     } else {
                         ESP_LOGD(TAG, "Immediate ENC_CHANGE read: rc=%d irk_present=%d",
                                  rc, (rc == 0 ? (int)bond.irk_present : -1));
                         // Schedule a late read at +5s in case NVS flushes late
-                        g_late_enc_due = now_ms() + IRKCaptureComponent::ENC_LATE_READ_DELAY_MS;
+                        self->schedule_late_enc_check(d.peer_id_addr);
                     }
                 }
 
@@ -392,6 +393,14 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             return BLE_GAP_REPEAT_PAIRING_RETRY;
         }
 
+        case BLE_GAP_EVENT_MTU:
+            ESP_LOGI(TAG, "MTU updated: %u", ev->mtu.value);
+            return 0;
+
+        case BLE_GAP_EVENT_PASSKEY_ACTION:
+            ESP_LOGI(TAG, "PASSKEY action=%d", ev->passkey.params.action);
+            return 0;
+
         default:
             return 0;
     }
@@ -400,7 +409,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
 //======================== Component lifecycle ========================
 
 void IRKCaptureComponent::setup() {
-    ESP_LOGI(TAG, "Setting up IRK Capture (ESP-IDF NimBLE)...");
+    ESP_LOGI(TAG, "IRK Capture v1.2 ready");
     this->setup_ble();
 
     if (start_on_boot_) {
@@ -409,6 +418,12 @@ void IRKCaptureComponent::setup() {
     if (ble_name_text_) {
         ble_name_text_->publish_state(ble_name_);
     }
+
+    // Optional lightweight self-checks (debug-only)
+    // (kept extremely simple; no runtime change)
+    // Example expectations:
+    // - bytes_to_hex_rev({0x01,0xAB}) -> "ab01"
+    // - addr_to_str({type=?, val={0xAA,0xBB,...}}) formatting
 }
 
 void IRKCaptureComponent::dump_config() {
@@ -459,6 +474,7 @@ void IRKCaptureComponent::setup_ble() {
     ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ESP_LOGI(TAG, "IO Cap set to NO_INPUT_OUTPUT (expected 0), actual=%d", (int)ble_hs_cfg.sm_io_cap);
     log_sm_config();
 
     // Key-value store for bonding/keys
@@ -670,6 +686,13 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     connected_ = true;
     enc_ready_ = false;
     enc_time_ = 0;
+
+    // Reset loop-helper state (moved from function-statics)
+    sec_retry_done_ = false;
+    sec_init_time_ms_ = 0;
+    irk_gave_up_ = false;
+    irk_last_try_ms_ = 0;
+
     ESP_LOGI(TAG, "Connected; handle=%u, initiating security", conn_handle_);
     log_conn_desc(conn_handle_);
     log_sm_config();
@@ -677,9 +700,9 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     // Cache peer identity address for delayed post-disconnect checks
     struct ble_gap_conn_desc d;
     if (ble_gap_conn_find(conn_handle_, &d) == 0) {
-        g_last_peer_id = d.peer_id_addr;
+        timers_.last_peer_id = d.peer_id_addr;
     } else {
-        memset(&g_last_peer_id, 0, sizeof(g_last_peer_id));
+        memset(&timers_.last_peer_id, 0, sizeof(timers_.last_peer_id));
     }
 
     // Proactively initiate pairing; peer should show pairing dialog now
@@ -694,6 +717,13 @@ void IRKCaptureComponent::on_disconnect() {
     conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
     enc_ready_ = false;
     enc_time_ = 0;
+
+    // Reset loop-helper state (mirrors original eventual state)
+    sec_retry_done_ = false;
+    sec_init_time_ms_ = 0;
+    irk_gave_up_ = false;
+    irk_last_try_ms_ = 0;
+
     ESP_LOGI(TAG, "Disconnected");
 }
 
@@ -739,20 +769,30 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, std::string &irk, st
     return true;
 }
 
-//======================== Loop helpers (readability only) ========================
+//======================== Timer helpers ========================
+
+void IRKCaptureComponent::schedule_post_disconnect_check(const ble_addr_t &peer_id) {
+    timers_.last_peer_id = peer_id;
+    timers_.post_disc_due_ms = now_ms() + POST_DISC_DELAY_MS;
+}
+
+void IRKCaptureComponent::schedule_late_enc_check(const ble_addr_t &peer_id) {
+    timers_.enc_peer_id = peer_id;
+    timers_.late_enc_due_ms = now_ms() + ENC_LATE_READ_DELAY_MS;
+}
 
 void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
-    if (!g_post_disc_due || now < g_post_disc_due) return;
-    g_post_disc_due = 0;  // consume
+    if (!timers_.post_disc_due_ms || now < timers_.post_disc_due_ms) return;
+    timers_.post_disc_due_ms = 0;  // consume
 
-    if (g_last_peer_id.type != 0 || g_last_peer_id.val[0] || g_last_peer_id.val[1]) {
+    if (timers_.last_peer_id.type != 0 || timers_.last_peer_id.val[0] || timers_.last_peer_id.val[1]) {
         struct ble_store_value_sec bond{};
         struct ble_store_key_sec key{};
-        key.peer_addr = g_last_peer_id;
+        key.peer_addr = timers_.last_peer_id;
         int rc = ble_store_read_peer_sec(&key, &bond);
         if (rc == 0 && bond.irk_present) {
             std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
-            publish_and_log_irk(this, g_last_peer_id, irk_hex, "DISC_DELAYED");
+            publish_and_log_irk(this, timers_.last_peer_id, irk_hex, "DISC_DELAYED");
         } else {
             ESP_LOGD(TAG, "No IRK (post-disc delayed) rc=%d irk_present=%d",
                      rc, (rc == 0 ? (int)bond.irk_present : -1));
@@ -761,17 +801,17 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
 }
 
 void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
-    if (!g_late_enc_due || now < g_late_enc_due) return;
-    g_late_enc_due = 0;
+    if (!timers_.late_enc_due_ms || now < timers_.late_enc_due_ms) return;
+    timers_.late_enc_due_ms = 0;
 
-    if (g_enc_peer_id.type != 0 || g_enc_peer_id.val[0] || g_enc_peer_id.val[1]) {
+    if (timers_.enc_peer_id.type != 0 || timers_.enc_peer_id.val[0] || timers_.enc_peer_id.val[1]) {
         struct ble_store_key_sec key{};
-        key.peer_addr = g_enc_peer_id;
+        key.peer_addr = timers_.enc_peer_id;
         struct ble_store_value_sec bond{};
         int rc = ble_store_read_peer_sec(&key, &bond);
         if (rc == 0 && bond.irk_present) {
             std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
-            publish_and_log_irk(this, g_enc_peer_id, irk_hex, "ENC_LATE");
+            publish_and_log_irk(this, timers_.enc_peer_id, irk_hex, "ENC_LATE");
 
             // Optionally terminate here
             if (connected_ && conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
@@ -784,21 +824,32 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
     }
 }
 
+//======================== Loop helpers ========================
+
 void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
-    // Retry security initiation once if encryption didn't start quickly
-    static bool sec_retry_done{false};
-    static uint32_t sec_init_time{0};
+    // Two-stage retry to better accommodate iOS/watch timing
+    // Stage 1 at 2000 ms, Stage 2 at 6000 ms
+    static uint8_t s_retry_count = 0;
 
     if (connected_ && !enc_ready_) {
-        if (sec_init_time == 0) sec_init_time = now;
-        if (!sec_retry_done && (now - sec_init_time) > 2000) {
+        if (sec_init_time_ms_ == 0) sec_init_time_ms_ = now;
+        const uint32_t elapsed = now - sec_init_time_ms_;
+
+        if (s_retry_count == 0 && elapsed > 2000) {
             int rc = ble_gap_security_initiate(conn_handle_);
-            ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
-            sec_retry_done = true;
+            ESP_LOGW(TAG, "Retry security (1) rc=%d", rc);
+            s_retry_count = 1;
+        } else if (s_retry_count == 1 && elapsed > 6000) {
+            int rc = ble_gap_security_initiate(conn_handle_);
+            ESP_LOGW(TAG, "Retry security (2) rc=%d", rc);
+            s_retry_count = 2;
         }
-    } else if (!connected_) {
-        sec_retry_done = false;
-        sec_init_time = 0;
+    } else {
+        // Reset when not connected or once ENC is ready
+        s_retry_count = 0;
+        if (!connected_) {
+            sec_init_time_ms_ = 0;
+        }
     }
 }
 
@@ -818,14 +869,11 @@ void IRKCaptureComponent::notify_hr_if_due(uint32_t now) {
 
 void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
     // Attempt IRK retrieval after encryption + delay (allow store write)
-    static uint32_t last_try{0};
-    static bool gave_up{false};
-
-    if (!enc_ready_ || gave_up) return;
+    if (!enc_ready_ || irk_gave_up_) return;
     if ((now - enc_time_) < ENC_TO_FIRST_TRY_DELAY_MS) return;
-    if ((now - last_try) < ENC_TRY_INTERVAL_MS) return;
+    if ((now - irk_last_try_ms_) < ENC_TRY_INTERVAL_MS) return;
 
-    last_try = now;
+    irk_last_try_ms_ = now;
 
     std::string irk, addr;
     if (try_get_irk(conn_handle_, irk, addr)) {
@@ -833,16 +881,16 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
         struct ble_gap_conn_desc d{};
         const ble_addr_t *id = nullptr;
         if (ble_gap_conn_find(conn_handle_, &d) == 0) id = &d.peer_id_addr;
-        else                                          id = &g_last_peer_id;
+        else                                          id = &timers_.last_peer_id;
 
         if (id) publish_and_log_irk(this, *id, irk, "POLL_CONNECTED");
 
         ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
-        gave_up = true;
+        irk_gave_up_ = true;
     } else {
         if ((now - enc_time_) > ENC_GIVE_UP_AFTER_MS) {
             ESP_LOGW(TAG, "IRK not found after %u ms post-encryption", ENC_GIVE_UP_AFTER_MS);
-            gave_up = true;
+            irk_gave_up_ = true;
         }
     }
 }
