@@ -21,6 +21,17 @@
 namespace esphome {
 namespace irk_capture {
 
+/*
+Behavior parity checklist (v1.0 → v1.2):
+-  Same security init timing and single retry
+-  Same ENC_CHANGE immediate IRK read + optional terminate
+-  Same post-disconnect immediate and delayed read
+-  Same late ENC (+5s) read
+-  Same periodic poll for IRK while connected
+-  Same IRK hex order (reverse) and use of peer identity address
+-  Same advertising payload and MAC refresh behavior (blocking)
+*/
+
 // Forward-declare main component for child entities
 class IRKCaptureComponent;
 
@@ -141,6 +152,21 @@ class IRKCaptureComponent : public Component {
     bool enc_ready_{false};
     uint32_t enc_time_{0};
 
+    // Loop-helper state (moved from function-statics for clarity)
+    bool sec_retry_done_{false};
+    uint32_t sec_init_time_ms_{0};
+
+    bool irk_gave_up_{false};
+    uint32_t irk_last_try_ms_{0};
+
+    // Timer bundle to replace file-scope globals
+    struct Timers {
+        uint32_t post_disc_due_ms{0};
+        ble_addr_t last_peer_id{};
+        uint32_t late_enc_due_ms{0};
+        ble_addr_t enc_peer_id{};
+    } timers_;
+
     // BLE setup and GATT
     void setup_ble();
     void register_gatt_services();
@@ -148,9 +174,13 @@ class IRKCaptureComponent : public Component {
     // IRK helpers
     bool try_get_irk(uint16_t conn_handle, std::string &irk, std::string &addr);
 
-    // Loop helpers (readability only; same behavior)
+    // Timer helpers (readability only)
+    void schedule_post_disconnect_check(const ble_addr_t &peer_id);
+    void schedule_late_enc_check(const ble_addr_t &peer_id);
     void handle_post_disconnect_timer(uint32_t now_ms);
     void handle_late_enc_timer(uint32_t now_ms);
+
+    // Loop helpers (readability only; same behavior)
     void retry_security_if_needed(uint32_t now_ms);
     void notify_hr_if_due(uint32_t now_ms);
     void poll_irk_if_due(uint32_t now_ms);
