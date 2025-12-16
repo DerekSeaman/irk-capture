@@ -1,0 +1,80 @@
+# IRK Capture Package
+# This file is included via packages - users should not edit this directly
+# Version: 2024-12-10 - Arduino framework
+
+esphome:
+  name: irk-capture
+  friendly_name: IRK Capture
+
+# Substitutions with defaults
+substitutions:
+  board_type: ${board_type:esp32dev}
+  ble_name: ${ble_name:JBL Tune}
+  start_on_boot: ${start_on_boot:false}
+
+esp32:
+  board: ${board_type}
+  framework:
+    type: arduino
+    version: recommended
+
+logger:
+  level: INFO
+
+captive_portal:
+
+web_server:
+  port: 80
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/KyleTeal/irk-capture
+      ref: main
+    components: [irk_capture]
+    refresh: 0s
+
+esp32_ble:
+  enable_on_boot: false
+
+irk_capture:
+  id: irk
+  ble_name: "${ble_name}"
+  start_on_boot: ${start_on_boot}
+
+text_sensor:
+  - platform: irk_capture
+    irk_capture_id: irk
+    last_irk:
+      name: "Last Captured IRK"
+      id: last_irk
+    last_address:
+      name: "Last Device Address"
+      id: last_addr
+
+switch:
+  - platform: irk_capture
+    irk_capture_id: irk
+    advertising:
+      name: "BLE Advertising"
+      id: ble_advertising
+      restore_mode: ALWAYS_OFF
+
+button:
+  - platform: irk_capture
+    irk_capture_id: irk
+    new_mac:
+      name: "Generate New MAC"
+      id: new_mac_btn
+
+  - platform: restart
+    name: "Restart Device"
+
+text:
+  - platform: irk_capture
+    irk_capture_id: irk
+    ble_name:
+      name: "BLE Device Name"
+      id: ble_name_input
+      mode: text
+
