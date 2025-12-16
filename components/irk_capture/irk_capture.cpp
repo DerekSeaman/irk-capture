@@ -166,8 +166,8 @@ static struct ble_gatt_chr_def hr_chrs[] = {
         .uuid = &UUID_CHR_HR_MEAS.u,
         .access_cb = chr_read_hr,
         .arg = nullptr,
-        // Like Arduino: read requires ENC, but we will notify regardless of ENC.
-        .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_READ_ENC,
+        // Make HR notify-only to reduce immediate auth pressure; DevInfo/PROT still enforce READ_ENC.
+        .flags = BLE_GATT_CHR_F_NOTIFY,
         .val_handle = &g_hr_handle,
     },
     {0}
@@ -249,6 +249,7 @@ static int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, 
     return 0;
 }
 static int chr_read_hr(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *) {
+    // HR read path not used; notify is unprotected. Keep read guarded if ever called.
     if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
     uint8_t buf[2]; size_t len;
     hr_measurement_sample(buf, &len);
@@ -362,7 +363,6 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
                         std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
                         publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
                         // Do NOT terminate immediately; allow Apple to complete discovery.
-                        // Termination can still occur later when appropriate.
                     } else {
                         ESP_LOGD(TAG, "Immediate ENC_CHANGE read: rc=%d irk_present=%d",
                                  rc, (rc == 0 ? (int)bond.irk_present : -1));
@@ -418,12 +418,6 @@ void IRKCaptureComponent::setup() {
     if (ble_name_text_) {
         ble_name_text_->publish_state(ble_name_);
     }
-
-    // Optional lightweight self-checks (debug-only)
-    // (kept extremely simple; no runtime change)
-    // Example expectations:
-    // - bytes_to_hex_rev({0x01,0xAB}) -> "ab01"
-    // - addr_to_str({type=?, val={0xAA,0xBB,...}}) formatting
 }
 
 void IRKCaptureComponent::dump_config() {
@@ -534,6 +528,15 @@ void IRKCaptureComponent::start_advertising() {
         return;
     }
 
+    // Re-assert IO caps every time before we accept connections (defensive)
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ESP_LOGI(TAG, "SM (re-assert): io_cap=%d (expect 0)", (int)ble_hs_cfg.sm_io_cap);
+
     ble_hs_adv_fields fields{};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t *)ble_name_.c_str();
@@ -623,6 +626,15 @@ void IRKCaptureComponent::refresh_mac() {
             ESP_LOGI(TAG, "New MAC (set_rnd): %02X:%02X:%02X:%02X:%02X:%02X",
                      mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
 
+            // Re-assert IO caps again after address change (defensive)
+            ble_hs_cfg.sm_bonding = 1;
+            ble_hs_cfg.sm_mitm = 0;
+            ble_hs_cfg.sm_sc = 1;
+            ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
+            ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+            ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+            ESP_LOGI(TAG, "SM (post-set_rnd): io_cap=%d (expect 0)", (int)ble_hs_cfg.sm_io_cap);
+
             // Re-infer own address type for next adv start
             uint8_t own_addr_type;
             int rc2 = ble_hs_id_infer_auto(0, &own_addr_type);
@@ -682,12 +694,16 @@ void IRKCaptureComponent::update_ble_name(const std::string &name) {
 //======================== GAP helpers ========================
 
 void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
+    // Defensive: re-assert IO caps at connection time
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
+    ESP_LOGI(TAG, "SM (on_connect): io_cap=%d (expect 0)", (int)ble_hs_cfg.sm_io_cap);
+
     conn_handle_ = conn_handle;
     connected_ = true;
     enc_ready_ = false;
     enc_time_ = 0;
 
-    // Reset loop-helper state (moved from function-statics)
+    // Reset loop-helper state
     sec_retry_done_ = false;
     sec_init_time_ms_ = 0;
     irk_gave_up_ = false;
@@ -718,7 +734,7 @@ void IRKCaptureComponent::on_disconnect() {
     enc_ready_ = false;
     enc_time_ = 0;
 
-    // Reset loop-helper state (mirrors original eventual state)
+    // Reset loop-helper state
     sec_retry_done_ = false;
     sec_init_time_ms_ = 0;
     irk_gave_up_ = false;
