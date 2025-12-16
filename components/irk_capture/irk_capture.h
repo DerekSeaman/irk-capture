@@ -21,6 +21,7 @@
 namespace esphome {
 namespace irk_capture {
 
+// Forward-declare main component for child entities
 class IRKCaptureComponent;
 
 // Text input for BLE name
@@ -60,13 +61,17 @@ class IRKCaptureButton : public button::Button, public Component {
 // Main component
 class IRKCaptureComponent : public Component {
  public:
+    // Component lifecycle
     void setup() override;
     void loop() override;
     void dump_config() override;
     float get_setup_priority() const override { return -200.0f; }
 
+    // Configuration
     void set_ble_name(const std::string &name) { ble_name_ = name; }
     void set_start_on_boot(bool start) { start_on_boot_ = start; }
+
+    // Entities
     void set_irk_sensor(text_sensor::TextSensor *sensor) { irk_sensor_ = sensor; }
     void set_address_sensor(text_sensor::TextSensor *sensor) { address_sensor_ = sensor; }
     void set_advertising_switch(IRKCaptureSwitch *sw) {
@@ -82,24 +87,35 @@ class IRKCaptureComponent : public Component {
         txt->set_parent(this);
     }
 
+    // Public API
     void update_ble_name(const std::string &name);
     std::string get_ble_name() { return ble_name_; }
     void start_advertising();
     void stop_advertising();
-    void refresh_mac();
+    void refresh_mac();  // blocking (v1.0 behavior retained)
     bool is_advertising() { return advertising_; }
 
+    // Compatibility stubs (logic remains in GAP callbacks)
     void on_connect(uint16_t conn_handle);
     void on_disconnect();
     void on_auth_complete(bool encrypted);
 
-    // Publish IRK to sensors (called by centralized helper)
+    // Centralized publish utility
     void publish_irk_to_sensors(const std::string &irk_hex, const char *addr_str);
 
     // GAP event handler (static trampoline)
     static int gap_event_handler(struct ble_gap_event *event, void *arg);
 
  protected:
+    // Readability: timing constants
+    static constexpr uint32_t LOOP_MIN_INTERVAL_MS      = 50;
+    static constexpr uint32_t HR_NOTIFY_INTERVAL_MS     = 250;
+    static constexpr uint32_t POST_DISC_DELAY_MS        = 800;
+    static constexpr uint32_t ENC_LATE_READ_DELAY_MS    = 5000;
+    static constexpr uint32_t ENC_TO_FIRST_TRY_DELAY_MS = 2000;
+    static constexpr uint32_t ENC_TRY_INTERVAL_MS       = 1000;
+    static constexpr uint32_t ENC_GIVE_UP_AFTER_MS      = 45000;
+
     // Configuration
     std::string ble_name_{"IRK Capture"};
     bool start_on_boot_{true};
@@ -111,24 +127,33 @@ class IRKCaptureComponent : public Component {
     IRKCaptureButton *new_mac_button_{nullptr};
     IRKCaptureText *ble_name_text_{nullptr};
 
-    // State
+    // BLE handles/state
     uint16_t conn_handle_{BLE_HS_CONN_HANDLE_NONE};
     uint16_t hr_char_handle_{0};
-    uint16_t prot_char_handle_{0};   // Protected Info characteristic handle
+    uint16_t prot_char_handle_{0};
     bool advertising_{false};
+    bool host_synced_{false};
+    bool connected_{false};
+
+    // Timing/state
     uint32_t last_loop_{0};
     uint32_t last_notify_{0};
-    bool connected_{false};
-    bool host_synced_{false};
-
-    // Pairing/IRK timing control
     bool enc_ready_{false};
     uint32_t enc_time_{0};
 
-    // Internals
-    bool try_get_irk(uint16_t conn_handle, std::string &irk, std::string &addr);
+    // BLE setup and GATT
     void setup_ble();
     void register_gatt_services();
+
+    // IRK helpers
+    bool try_get_irk(uint16_t conn_handle, std::string &irk, std::string &addr);
+
+    // Loop helpers (readability only; same behavior)
+    void handle_post_disconnect_timer(uint32_t now_ms);
+    void handle_late_enc_timer(uint32_t now_ms);
+    void retry_security_if_needed(uint32_t now_ms);
+    void notify_hr_if_due(uint32_t now_ms);
+    void poll_irk_if_due(uint32_t now_ms);
 };
 
 }  // namespace irk_capture
