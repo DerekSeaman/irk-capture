@@ -124,13 +124,13 @@ class IRKCaptureComponent : public Component {
     uint32_t enc_time_{0};
     bool sec_retry_done_{false};
     uint32_t sec_init_time_ms_{0};
-    bool retried_after_enc_fail_{false};    // NEW: ensure only one delete+retry per connection
+    bool retried_after_enc_fail_{false};    // ensure only one delete+retry per connection
 
     // IRK polling state
     bool irk_gave_up_{false};
     uint32_t irk_last_try_ms_{0};
 
-    // Host state
+    // Host state (ESPHome-managed host; this is a soft flag)
     bool host_synced_{false};
 
     // Timing constants (ms)
