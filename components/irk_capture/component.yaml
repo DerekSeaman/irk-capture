@@ -1,0 +1,8 @@
+---
+# Component configuration for irk_capture
+# This file declares external library dependencies
+
+libraries:
+  - name: h2zero/NimBLE-Arduino
+    version: 2.2.1
+
