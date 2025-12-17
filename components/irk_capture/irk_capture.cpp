@@ -419,28 +419,28 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
         case BLE_GAP_EVENT_NOTIFY_TX:
             return 0;
 
-        case BLE_GAP_EVENT_L2CAP_UPDATE_REQ:
+        case 14:  // BLE_GAP_EVENT_L2CAP_UPDATE_REQ
             // Accept connection parameter updates
             return 0;
 
-        case BLE_GAP_EVENT_IDENTITY_RESOLVED:
+        case 16:  // BLE_GAP_EVENT_IDENTITY_RESOLVED
             // Identity resolved successfully (IRK working!)
             ESP_LOGD(TAG, "Peer identity resolved using IRK");
             return 0;
 
-        case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
+        case 18:  // BLE_GAP_EVENT_PHY_UPDATE_COMPLETE
             // PHY layer updated (normal)
             return 0;
 
-        case BLE_GAP_EVENT_AUTHORIZE:
+        case 27:  // BLE_GAP_EVENT_AUTHORIZE
             // Authorization event (allow by returning 0)
             return 0;
 
-        case BLE_GAP_EVENT_SUBRATE_CHANGE:
+        case 34:  // BLE_GAP_EVENT_SUBRATE_CHANGE
             // BLE 5.2+ subrate change (normal)
             return 0;
 
-        case BLE_GAP_EVENT_VS_HCI:
+        case 38:  // BLE_GAP_EVENT_VS_HCI
             // Vendor-specific HCI event (can ignore)
             return 0;
 
