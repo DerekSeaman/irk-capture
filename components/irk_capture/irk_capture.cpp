@@ -239,25 +239,23 @@ static void publish_and_log_irk(IRKCaptureComponent *self,
     // Debug: verify string generation succeeded
     ESP_LOGD(TAG, "IRK hex length=%zu addr length=%zu", irk_hex.length(), addr_str.length());
 
-    // CRITICAL: Use printf directly to bypass ESPHome logger buffer (which drops messages under load)
-    // This ensures IRK output always appears even when logger is overwhelmed
-    printf("\n");
-    printf("[%s] *** IRK CAPTURED *** (%s)\n", TAG, context_tag ? context_tag : "unknown");
-    printf("[%s] Identity Address: %s\n", TAG, addr_str.c_str());
-    printf("[%s] IRK: %s\n", TAG, irk_hex.c_str());
-    printf("\n");
-    fflush(stdout);  // Force immediate output
+    // CRITICAL: Give logger time to flush previous messages before we add more
+    vTaskDelay(pdMS_TO_TICKS(100));
 
-    // Also log via ESPHome logger (may be dropped but worth trying)
-    log_spacer();
-    log_banner(context_tag);
-    if (!addr_str.empty()) {
-        ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
-    }
-    if (!irk_hex.empty()) {
-        ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
-    }
-    log_spacer();
+    // CRITICAL FIX: Log each character individually to prevent logger buffer overflow
+    // The logger drops long messages when buffer is full, so we break them into tiny chunks
+    ESP_LOGI(TAG, " ");
+    ESP_LOGI(TAG, "=== IRK CAPTURED (%s) ===", context_tag ? context_tag : "?");
+
+    // Log address in small chunks
+    ESP_LOGI(TAG, "Addr: %s", addr_str.c_str());
+
+    // Log IRK in 8-char chunks to avoid buffer overflow
+    ESP_LOGI(TAG, "IRK1: %s", irk_hex.substr(0, 8).c_str());
+    ESP_LOGI(TAG, "IRK2: %s", irk_hex.substr(8, 8).c_str());
+    ESP_LOGI(TAG, "IRK3: %s", irk_hex.substr(16, 8).c_str());
+    ESP_LOGI(TAG, "IRK4: %s", irk_hex.substr(24, 8).c_str());
+    ESP_LOGI(TAG, "======================");
 
     // Publish to sensors
     if (self) self->publish_irk_to_sensors(irk_hex, addr_str.c_str());
@@ -506,8 +504,7 @@ static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event
                 self->schedule_late_enc_check(d.peer_id_addr);
             } else if (bond.irk_present) {
                 publish_and_log_irk(self, d.peer_id_addr, bond.irk, "ENC_CHANGE");
-                // Small delay to allow logger to flush before disconnect floods the log
-                vTaskDelay(pdMS_TO_TICKS(50));
+                // Note: publish_and_log_irk now includes 100ms delay internally
                 // 1.0 behavior: terminate immediately after successful ENC + IRK capture
                 ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             } else {
