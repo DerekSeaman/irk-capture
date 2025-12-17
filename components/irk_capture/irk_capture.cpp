@@ -525,9 +525,32 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             ESP_LOGI(TAG, "MTU updated: %u", ev->mtu.value);
             return 0;
 
-        case BLE_GAP_EVENT_PASSKEY_ACTION:
+        case BLE_GAP_EVENT_PASSKEY_ACTION: {
+            struct ble_sm_io pk_io = {};
+            int rc = 0;
+
             ESP_LOGI(TAG, "PASSKEY action=%d", ev->passkey.params.action);
+
+            switch (ev->passkey.params.action) {
+                case BLE_SM_IOACT_NUMCMP:
+                    // Numeric comparison - auto-confirm for Just Works
+                    pk_io.action = ev->passkey.params.action;
+                    pk_io.numcmp_accept = 1;  // Auto-accept
+                    rc = ble_sm_inject_io(ev->passkey.conn_handle, &pk_io);
+                    ESP_LOGI(TAG, "Numeric comparison auto-confirmed (rc=%d)", rc);
+                    break;
+
+                case BLE_SM_IOACT_NONE:
+                    // Just Works - nothing to do
+                    ESP_LOGD(TAG, "Just Works pairing (no interaction required)");
+                    break;
+
+                default:
+                    ESP_LOGW(TAG, "Unexpected passkey action=%d", ev->passkey.params.action);
+                    break;
+            }
             return 0;
+        }
 
         case BLE_GAP_EVENT_NOTIFY_RX:
             return 0;
@@ -633,7 +656,7 @@ void IRKCaptureComponent::setup_ble() {
     ble_hs_cfg.sm_bonding = 1;
     ble_hs_cfg.sm_mitm = 0;
     ble_hs_cfg.sm_sc = 1;
-    ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_ONLY;  // Required for Android SC compatibility (Just Works pairing)
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;  // Just Works pairing (no PIN)
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     log_sm_config();
