@@ -375,17 +375,21 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
 
                 ESP_LOGI(TAG, "Encryption established; will attempt IRK capture shortly");
             } else {
-                // Encryption failed - delete all bond data and terminate
-                ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing all bond data", ev->enc_change.status);
-                struct ble_gap_conn_desc d{};
-                if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
-                    // Delete ALL stored data for this peer (sec, cccd, etc.)
-                    ble_store_util_delete_peer(&d.peer_id_addr);
-                    ESP_LOGD(TAG, "Cleared all bond data for %02X:%02X:%02X:%02X:%02X:%02X",
-                             d.peer_id_addr.val[5], d.peer_id_addr.val[4], d.peer_id_addr.val[3],
-                             d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0]);
-                }
+                // Encryption failed - clear entire bond store and stop advertising briefly
+                ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing ALL bonds and stopping advertising", ev->enc_change.status);
+
+                // Clear everything - peer might be cached under different identity
+                ble_store_clear();
+
+                // Disconnect
                 ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+
+                // Stop advertising briefly to break retry loop, then restart
+                self->advertising_ = false;
+                ble_gap_adv_stop();
+
+                // Restart after 2 seconds to give peer time to reset
+                // Note: This will happen in on_disconnect via start_advertising()
             }
             return 0;
 
@@ -456,10 +460,6 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
 void IRKCaptureComponent::setup() {
     ESP_LOGI(TAG, "IRK Capture v1.2 ready");
     this->setup_ble();
-
-    // Clear all bonds on startup to ensure clean state
-    ESP_LOGI(TAG, "Clearing all bond data on startup for clean state");
-    ble_store_clear();
 
     if (start_on_boot_) {
         this->start_advertising();
