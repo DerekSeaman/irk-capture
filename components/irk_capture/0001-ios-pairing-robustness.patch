@@ -1,0 +1,89 @@
+From 3f2d7e2b9c1b1d0a2e4b6a7f8435d0c9a1b2c3d4 Mon Sep 17 00:00:00 2001
+From: You <you@example.com>
+Date: Tue, 16 Dec 2025 10:00:00 -0800
+Subject: [PATCH] iOS/watch pairing robustness: no early terminate on ENC_CHANGE,
+ add second security retry, log IO cap
+
+---
+ irk_capture.cpp | 46 ++++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 38 insertions(+), 8 deletions(-)
+
+diff --git a/irk_capture.cpp b/irk_capture.cpp
+index 1111111..2222222 100644
+--- a/irk_capture.cpp
++++ b/irk_capture.cpp
+@@ -219,6 +219,7 @@ void IRKCaptureComponent::setup_ble() {
+     ble_hs_cfg.sm_sc = 1;
+     ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
+     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
++    ESP_LOGI(TAG, "IO Cap set to NO_INPUT_OUTPUT (expected 0), actual=%d", (int)ble_hs_cfg.sm_io_cap);
+     log_sm_config();
+ 
+     // Key-value store for bonding/keys
+@@ -347,12 +348,12 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg)
+                     struct ble_store_value_sec bond{};
+                     int rc = ble_store_read_peer_sec(&key, &bond);
+                     if (rc == 0 && bond.irk_present) {
+                         std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
+                         publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
+-                         // Optionally terminate now for consistency with Arduino
+-                         ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
++                        // Do NOT terminate immediately; allow Apple to complete discovery.
++                        // Termination can still occur later when appropriate.
+                     } else {
+                         ESP_LOGD(TAG, "Immediate ENC_CHANGE read: rc=%d irk_present=%d",
+                                  rc, (rc == 0 ? (int)bond.irk_present : -1));
+                         // Schedule a late read at +5s in case NVS flushes late
+                         self->schedule_late_enc_check(d.peer_id_addr);
+@@ -606,17 +607,30 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
+     }
+ }
+ 
+ //======================== Loop helpers ========================
+ 
+- void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
+-     // Retry security initiation once if encryption didn't start quickly
+-     if (connected_ && !enc_ready_) {
+-         if (sec_init_time_ms_ == 0) sec_init_time_ms_ = now;
+-         if (!sec_retry_done_ && (now - sec_init_time_ms_) > 2000) {
+-             int rc = ble_gap_security_initiate(conn_handle_);
+-             ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
+-             sec_retry_done_ = true;
+-         }
+-     } else if (!connected_) {
+-         sec_retry_done_ = false;
+-         sec_init_time_ms_ = 0;
+-     }
++void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
++    // Two-stage retry to better accommodate iOS/watch timing
++    // Stage 1 at 2000 ms, Stage 2 at 6000 ms (no behavior change otherwise)
++    static uint8_t s_retry_count = 0;
++
++    if (connected_ && !enc_ready_) {
++        if (sec_init_time_ms_ == 0) sec_init_time_ms_ = now;
++        const uint32_t elapsed = now - sec_init_time_ms_;
++
++        if (s_retry_count == 0 && elapsed > 2000) {
++            int rc = ble_gap_security_initiate(conn_handle_);
++            ESP_LOGW(TAG, "Retry security (1) rc=%d", rc);
++            s_retry_count = 1;
++        } else if (s_retry_count == 1 && elapsed > 6000) {
++            int rc = ble_gap_security_initiate(conn_handle_);
++            ESP_LOGW(TAG, "Retry security (2) rc=%d", rc);
++            s_retry_count = 2;
++        }
++    } else {
++        // Reset when not connected or once ENC is ready
++        s_retry_count = 0;
++        if (!connected_) {
++            sec_init_time_ms_ = 0;
++        }
++    }
+ }
+ 
+ void IRKCaptureComponent::notify_hr_if_due(uint32_t now) {
+     if (hr_char_handle_ == 0) return;
+     if (now - last_notify_ <= HR_NOTIFY_INTERVAL_MS) return;
+-- 
+2.42.0

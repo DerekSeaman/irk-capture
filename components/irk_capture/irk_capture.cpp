@@ -15,7 +15,19 @@ namespace esphome {
 namespace irk_capture {
 
 static const char *const TAG = "irk_capture";
-static const char HEX[] = "0123456789abcdef";
+static constexpr char HEX[] = "0123456789abcdef";
+
+// GATT service and characteristic UUIDs
+static constexpr uint16_t UUID_SVC_HEART_RATE = 0x180D;
+static constexpr uint16_t UUID_CHR_HEART_RATE_MEASUREMENT = 0x2A37;
+static constexpr uint16_t UUID_SVC_DEVICE_INFO = 0x180A;
+static constexpr uint16_t UUID_CHR_MANUFACTURER_NAME = 0x2A29;
+static constexpr uint16_t UUID_CHR_MODEL_NUMBER = 0x2A24;
+static constexpr uint16_t UUID_SVC_BATTERY = 0x180F;
+static constexpr uint16_t UUID_CHR_BATTERY_LEVEL = 0x2A19;
+
+// BLE Appearance values
+static constexpr uint16_t APPEARANCE_HEART_RATE_SENSOR = 0x0340;
 
 //======================== IRK lifecycle (for readers) ========================
 /*
@@ -29,15 +41,15 @@ All address reporting uses the peer identity address; IRK hex is reversed for pa
 
 //======================== UUIDs ========================
 
-static const ble_uuid16_t UUID_SVC_HR       = BLE_UUID16_INIT(0x180D);
-static const ble_uuid16_t UUID_CHR_HR_MEAS  = BLE_UUID16_INIT(0x2A37);
+static const ble_uuid16_t UUID_SVC_HR       = BLE_UUID16_INIT(UUID_SVC_HEART_RATE);
+static const ble_uuid16_t UUID_CHR_HR_MEAS  = BLE_UUID16_INIT(UUID_CHR_HEART_RATE_MEASUREMENT);
 
-static const ble_uuid16_t UUID_SVC_DEVINFO  = BLE_UUID16_INIT(0x180A);
-static const ble_uuid16_t UUID_CHR_MANUF    = BLE_UUID16_INIT(0x2A29);
-static const ble_uuid16_t UUID_CHR_MODEL    = BLE_UUID16_INIT(0x2A24);
+static const ble_uuid16_t UUID_SVC_DEVINFO  = BLE_UUID16_INIT(UUID_SVC_DEVICE_INFO);
+static const ble_uuid16_t UUID_CHR_MANUF    = BLE_UUID16_INIT(UUID_CHR_MANUFACTURER_NAME);
+static const ble_uuid16_t UUID_CHR_MODEL    = BLE_UUID16_INIT(UUID_CHR_MODEL_NUMBER);
 
-static const ble_uuid16_t UUID_SVC_BAS      = BLE_UUID16_INIT(0x180F);
-static const ble_uuid16_t UUID_CHR_BATT_LVL = BLE_UUID16_INIT(0x2A19);
+static const ble_uuid16_t UUID_SVC_BAS      = BLE_UUID16_INIT(UUID_SVC_BATTERY);
+static const ble_uuid16_t UUID_CHR_BATT_LVL = BLE_UUID16_INIT(UUID_CHR_BATTERY_LEVEL);
 
 // Optional protected service/characteristic to force pairing via READ_ENC
 static const ble_uuid128_t UUID_SVC_PROT = BLE_UUID128_INIT(
@@ -56,19 +68,39 @@ static int chr_read_hr(uint16_t conn_handle, uint16_t attr_handle,
 static int chr_read_protected(uint16_t conn_handle, uint16_t attr_handle,
                               struct ble_gatt_access_ctxt *ctxt, void *arg);
 
+// GAP event handlers (forward decls)
+class IRKCaptureComponent;
+static int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *ev);
+static int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev);
+static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev);
+static int handle_gap_repeat_pairing(IRKCaptureComponent *self, struct ble_gap_event *ev);
+
 //======================== Small utilities (readability only) ========================
 
 static inline uint32_t now_ms() { return (uint32_t)(esp_timer_get_time() / 1000ULL); }
 
-static std::string bytes_to_hex_rev(const uint8_t *data, size_t len) {
+// Generic hex formatter for byte arrays
+static std::string to_hex_str(const uint8_t *data, size_t len, bool reverse = false) {
     std::string out;
     out.reserve(len * 2);
-    for (int i = (int)len - 1; i >= 0; --i) {
-        uint8_t c = data[i];
-        out.push_back(HEX[(c >> 4) & 0xF]);
-        out.push_back(HEX[c & 0xF]);
+    if (reverse) {
+        for (int i = (int)len - 1; i >= 0; --i) {
+            uint8_t c = data[i];
+            out.push_back(HEX[(c >> 4) & 0xF]);
+            out.push_back(HEX[c & 0xF]);
+        }
+    } else {
+        for (size_t i = 0; i < len; ++i) {
+            uint8_t c = data[i];
+            out.push_back(HEX[(c >> 4) & 0xF]);
+            out.push_back(HEX[c & 0xF]);
+        }
     }
     return out;
+}
+
+static std::string bytes_to_hex_rev(const uint8_t *data, size_t len) {
+    return to_hex_str(data, len, true);
 }
 
 static std::string addr_to_str(const ble_addr_t &a) {
@@ -151,8 +183,39 @@ static void log_banner(const char *context_tag) {
 
 static void publish_and_log_irk(IRKCaptureComponent *self,
                                 const ble_addr_t &peer_id_addr,
-                                const std::string &irk_hex,
+                                const uint8_t *irk_bytes,
                                 const char *context_tag) {
+    // Check if this IRK was already published by comparing raw bytes
+    // This avoids unnecessary hex formatting and duplicate sensor updates
+    if (self && self->irk_sensor_) {
+        const std::string &last_irk = self->irk_sensor_->get_state();
+        if (!last_irk.empty() && last_irk.length() == 32) {
+            // Convert last published hex back to bytes for comparison
+            uint8_t last_bytes[16];
+            bool valid = true;
+            for (size_t i = 0; i < 16; ++i) {
+                const char *hex_pair = last_irk.c_str() + (i * 2);
+                char hi = hex_pair[0], lo = hex_pair[1];
+                auto hex_val = [](char c) -> int {
+                    if (c >= '0' && c <= '9') return c - '0';
+                    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                    return -1;
+                };
+                int h = hex_val(hi), l = hex_val(lo);
+                if (h < 0 || l < 0) { valid = false; break; }
+                last_bytes[i] = (h << 4) | l;
+            }
+            // Compare raw bytes (reversed order since we store reversed hex)
+            if (valid && memcmp(irk_bytes, last_bytes, 16) == 0) {
+                ESP_LOGD(TAG, "IRK unchanged from last publish (%s); skipping duplicate", context_tag);
+                return;
+            }
+        }
+    }
+
+    // Format and publish the IRK
+    const std::string irk_hex = bytes_to_hex_rev(irk_bytes, 16);
     const std::string addr_str = addr_to_str(peer_id_addr);
     log_spacer();
     log_banner(context_tag);
@@ -301,123 +364,144 @@ void IRKCaptureButton::press_action() {
     parent_->refresh_mac();
 }
 
-//======================== GAP event handler ========================
+//======================== GAP event handlers (extracted) ========================
+
+static int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
+    if (ev->connect.status == 0) {
+        self->on_connect(ev->connect.conn_handle);
+    } else {
+        self->advertising_ = false;
+        self->start_advertising();
+    }
+    return 0;
+}
+
+static int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
+    ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)", ev->disconnect.reason, ev->disconnect.reason);
+    self->on_disconnect();
+
+    // Attempt post-disconnect IRK read using the peer identity address
+    struct ble_gap_conn_desc d{};
+    if (ble_gap_conn_find(ev->disconnect.conn.conn_handle, &d) == 0) {
+        // cache for delayed retry
+        self->timers_.last_peer_id = d.peer_id_addr;
+
+        struct ble_store_value_sec bond{};
+        struct ble_store_key_sec key{};
+        key.peer_addr = d.peer_id_addr;
+        int rc = ble_store_read_peer_sec(&key, &bond);
+        if (rc == BLE_HS_ENOENT) {
+            ESP_LOGD(TAG, "No bond for peer (ENOENT)");
+        } else if (rc != 0) {
+            ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d", rc);
+        } else if (bond.irk_present) {
+            publish_and_log_irk(self, d.peer_id_addr, bond.irk, "DISC_IMMEDIATE");
+        } else {
+            ESP_LOGD(TAG, "Bond present but no IRK in store post-disconnect");
+        }
+    } else {
+        memset(&self->timers_.last_peer_id, 0, sizeof(self->timers_.last_peer_id));
+    }
+
+    // Schedule an extra delayed post-disconnect check (800 ms)
+    self->schedule_post_disconnect_check(self->timers_.last_peer_id);
+
+    // Only restart advertising if not suppressed (IRK re-publish case)
+    self->advertising_ = false;
+    if (!self->suppress_next_adv_) {
+        self->start_advertising();
+    } else {
+        ESP_LOGI(TAG, "Advertising suppressed to break reconnect loop; will auto-restart in 5s");
+        self->suppress_next_adv_ = false;  // Reset for next time
+        // Update switch UI to show advertising is off during suppression
+        if (self->advertising_switch_) self->advertising_switch_->publish_state(false);
+        // Schedule auto-restart after 5 seconds to allow fresh connections later
+        self->adv_restart_time_ = now_ms() + 5000;
+    }
+    return 0;
+}
+
+static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev) {
+    ESP_LOGI(TAG, "ENC_CHANGE status=%d", ev->enc_change.status);
+    if (ev->enc_change.status == 0) {
+        self->enc_ready_ = true;
+        self->enc_time_ = now_ms();
+        self->on_auth_complete(true);
+        log_conn_desc(ev->enc_change.conn_handle);
+
+        // Immediate store read using identity address
+        struct ble_gap_conn_desc d{};
+        if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
+            self->timers_.enc_peer_id = d.peer_id_addr;
+
+            struct ble_store_key_sec key{};
+            key.peer_addr = d.peer_id_addr;
+            struct ble_store_value_sec bond{};
+            int rc = ble_store_read_peer_sec(&key, &bond);
+            if (rc == BLE_HS_ENOENT) {
+                ESP_LOGD(TAG, "No bond for peer yet (ENOENT); scheduling late check");
+                self->schedule_late_enc_check(d.peer_id_addr);
+            } else if (rc != 0) {
+                ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d; scheduling late check", rc);
+                self->schedule_late_enc_check(d.peer_id_addr);
+            } else if (bond.irk_present) {
+                publish_and_log_irk(self, d.peer_id_addr, bond.irk, "ENC_CHANGE");
+                // 1.0 behavior: terminate immediately after successful ENC + IRK capture
+                ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            } else {
+                ESP_LOGD(TAG, "Bond present but no IRK yet; scheduling late check");
+                self->schedule_late_enc_check(d.peer_id_addr);
+            }
+        }
+
+        ESP_LOGI(TAG, "Encryption established; will attempt IRK capture shortly");
+    } else {
+        // Encryption failed - clear all bonds and terminate
+        ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing all bonds", ev->enc_change.status);
+        ble_store_clear();  // Clear everything to force fresh pairing
+        ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+
+        // For DHKey failures (status=1288), stop advertising briefly to force peer to reset
+        if (ev->enc_change.status == 1288) {
+            ESP_LOGW(TAG, "DHKey failure detected - suppressing advertising to force peer reset");
+            self->suppress_next_adv_ = true;
+        }
+    }
+    return 0;
+}
+
+static int handle_gap_repeat_pairing(IRKCaptureComponent *self, struct ble_gap_event *ev) {
+    // Portable: get the current connection descriptor from the handle
+    struct ble_gap_conn_desc d{};
+    int rc = ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d);
+    if (rc == 0) {
+        const ble_addr_t *peer = &d.peer_id_addr;
+        ESP_LOGW(TAG, "Repeat pairing from %02X:%02X:%02X:%02X:%02X:%02X (clearing all bond data)",
+                 peer->val[5], peer->val[4], peer->val[3], peer->val[2], peer->val[1], peer->val[0]);
+        // Delete ALL stored data for this peer
+        ble_store_util_delete_peer(peer);
+    } else {
+        ESP_LOGW(TAG, "Repeat pairing: conn desc not found rc=%d", rc);
+    }
+    return BLE_GAP_REPEAT_PAIRING_RETRY;
+}
+
+//======================== GAP event handler (dispatcher) ========================
 
 int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) {
     auto *self = static_cast<IRKCaptureComponent *>(arg);
     switch (ev->type) {
         case BLE_GAP_EVENT_CONNECT:
-            if (ev->connect.status == 0) {
-                self->on_connect(ev->connect.conn_handle);
-            } else {
-                self->advertising_ = false;
-                self->start_advertising();
-            }
-            return 0;
+            return handle_gap_connect(self, ev);
 
-        case BLE_GAP_EVENT_DISCONNECT: {
-            ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)", ev->disconnect.reason, ev->disconnect.reason);
-            self->on_disconnect();
-
-            // Attempt post-disconnect IRK read using the peer identity address
-            struct ble_gap_conn_desc d{};
-            if (ble_gap_conn_find(ev->disconnect.conn.conn_handle, &d) == 0) {
-                // cache for delayed retry
-                self->timers_.last_peer_id = d.peer_id_addr;
-
-                struct ble_store_value_sec bond{};
-                struct ble_store_key_sec key{};
-                key.peer_addr = d.peer_id_addr;
-                int rc = ble_store_read_peer_sec(&key, &bond);
-                if (rc == 0 && bond.irk_present) {
-                    std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
-                    publish_and_log_irk(self, d.peer_id_addr, irk_hex, "DISC_IMMEDIATE");
-                } else {
-                    ESP_LOGD(TAG, "No IRK in store post-disconnect rc=%d irk_present=%d",
-                             rc, (rc == 0 ? (int)bond.irk_present : -1));
-                }
-            } else {
-                memset(&self->timers_.last_peer_id, 0, sizeof(self->timers_.last_peer_id));
-            }
-
-            // Schedule an extra delayed post-disconnect check (800 ms)
-            self->schedule_post_disconnect_check(self->timers_.last_peer_id);
-
-            // Only restart advertising if not suppressed (IRK re-publish case)
-            self->advertising_ = false;
-            if (!self->suppress_next_adv_) {
-                self->start_advertising();
-            } else {
-                ESP_LOGI(TAG, "Advertising suppressed to break reconnect loop; will auto-restart in 5s");
-                self->suppress_next_adv_ = false;  // Reset for next time
-                // Update switch UI to show advertising is off during suppression
-                if (self->advertising_switch_) self->advertising_switch_->publish_state(false);
-                // Schedule auto-restart after 5 seconds to allow fresh connections later
-                self->adv_restart_time_ = now_ms() + 5000;
-            }
-            return 0;
-        }
+        case BLE_GAP_EVENT_DISCONNECT:
+            return handle_gap_disconnect(self, ev);
 
         case BLE_GAP_EVENT_ENC_CHANGE:
-            ESP_LOGI(TAG, "ENC_CHANGE status=%d", ev->enc_change.status);
-            if (ev->enc_change.status == 0) {
-                self->enc_ready_ = true;
-                self->enc_time_ = now_ms();
-                self->on_auth_complete(true);
-                log_conn_desc(ev->enc_change.conn_handle);
+            return handle_gap_enc_change(self, ev);
 
-                // Immediate store read using identity address
-                struct ble_gap_conn_desc d{};
-                if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
-                    self->timers_.enc_peer_id = d.peer_id_addr;
-
-                    struct ble_store_key_sec key{};
-                    key.peer_addr = d.peer_id_addr;
-                    struct ble_store_value_sec bond{};
-                    int rc = ble_store_read_peer_sec(&key, &bond);
-                    if (rc == 0 && bond.irk_present) {
-                        std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
-                        publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
-                        // 1.0 behavior: terminate immediately after successful ENC + IRK capture
-                        ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-                    } else {
-                        ESP_LOGD(TAG, "Immediate ENC_CHANGE read: rc=%d irk_present=%d",
-                                 rc, (rc == 0 ? (int)bond.irk_present : -1));
-                        // Schedule a late read at +5s in case NVS flushes late
-                        self->schedule_late_enc_check(d.peer_id_addr);
-                    }
-                }
-
-                ESP_LOGI(TAG, "Encryption established; will attempt IRK capture shortly");
-            } else {
-                // Encryption failed - clear all bonds and terminate
-                ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing all bonds", ev->enc_change.status);
-                ble_store_clear();  // Clear everything to force fresh pairing
-                ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-
-                // For DHKey failures (status=1288), stop advertising briefly to force peer to reset
-                if (ev->enc_change.status == 1288) {
-                    ESP_LOGW(TAG, "DHKey failure detected - suppressing advertising to force peer reset");
-                    self->suppress_next_adv_ = true;
-                }
-            }
-            return 0;
-
-        case BLE_GAP_EVENT_REPEAT_PAIRING: {
-            // Portable: get the current connection descriptor from the handle
-            struct ble_gap_conn_desc d{};
-            int rc = ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d);
-            if (rc == 0) {
-                const ble_addr_t *peer = &d.peer_id_addr;
-                ESP_LOGW(TAG, "Repeat pairing from %02X:%02X:%02X:%02X:%02X:%02X (clearing all bond data)",
-                         peer->val[5], peer->val[4], peer->val[3], peer->val[2], peer->val[1], peer->val[0]);
-                // Delete ALL stored data for this peer
-                ble_store_util_delete_peer(peer);
-            } else {
-                ESP_LOGW(TAG, "Repeat pairing: conn desc not found rc=%d", rc);
-            }
-            return BLE_GAP_REPEAT_PAIRING_RETRY;
-        }
+        case BLE_GAP_EVENT_REPEAT_PAIRING:
+            return handle_gap_repeat_pairing(self, ev);
 
         case BLE_GAP_EVENT_MTU:
             ESP_LOGI(TAG, "MTU updated: %u", ev->mtu.value);
@@ -599,12 +683,12 @@ void IRKCaptureComponent::start_advertising() {
     fields.name_len = (uint8_t)ble_name_.size();
     fields.name_is_complete = 1;
 
-    // Appearance: Heart Rate Sensor (0x0340)
-    fields.appearance = 0x0340;
+    // Appearance: Heart Rate Sensor
+    fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
     fields.appearance_is_present = 1;
 
     // Include standard services in adv
-    uint16_t svc16[] = { 0x180D, 0x180F, 0x180A };
+    uint16_t svc16[] = { UUID_SVC_HEART_RATE, UUID_SVC_BATTERY, UUID_SVC_DEVICE_INFO };
     ble_uuid16_t uu16[3] = { BLE_UUID16_INIT(svc16[0]), BLE_UUID16_INIT(svc16[1]), BLE_UUID16_INIT(svc16[2]) };
     fields.uuids16 = uu16;
     fields.num_uuids16 = 3;
@@ -770,27 +854,29 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
             struct ble_store_key_sec key{};
             key.peer_addr = d.peer_id_addr;
             struct ble_store_value_sec bond{};
-            if (ble_store_read_peer_sec(&key, &bond) == 0) {
-                // We have bond data! Check if we have the IRK
-                if (bond.irk_present) {
-                    // Re-publish the IRK we already have
-                    std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
-                    char addr_str[18];
-                    snprintf(addr_str, sizeof(addr_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                             d.peer_id_addr.val[5], d.peer_id_addr.val[4], d.peer_id_addr.val[3],
-                             d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0]);
-                    publish_irk_to_sensors(irk_hex, addr_str);
-                    ESP_LOGI(TAG, "Re-published existing IRK for already-paired device");
-                    // Set flag to prevent immediate re-advertising (break the reconnect loop)
-                    suppress_next_adv_ = true;
-                    // Disconnect since we already have what we need
-                    ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
-                    return;  // Don't initiate security, we're done
-                } else {
-                    // No IRK in bond - delete and try fresh pairing
-                    ESP_LOGW(TAG, "Peer unbonded but we have cached bond without IRK. Clearing to force fresh pairing.");
-                    ble_store_util_delete_peer(&d.peer_id_addr);
-                }
+            int rc = ble_store_read_peer_sec(&key, &bond);
+            if (rc == BLE_HS_ENOENT) {
+                ESP_LOGD(TAG, "Peer unbonded and no cached bond (ENOENT) - will pair fresh");
+            } else if (rc != 0) {
+                ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d during bond mismatch check", rc);
+            } else if (bond.irk_present) {
+                // Re-publish the IRK we already have
+                std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
+                char addr_str[18];
+                snprintf(addr_str, sizeof(addr_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         d.peer_id_addr.val[5], d.peer_id_addr.val[4], d.peer_id_addr.val[3],
+                         d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0]);
+                publish_irk_to_sensors(irk_hex, addr_str);
+                ESP_LOGI(TAG, "Re-published existing IRK for already-paired device");
+                // Set flag to prevent immediate re-advertising (break the reconnect loop)
+                suppress_next_adv_ = true;
+                // Disconnect since we already have what we need
+                ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
+                return;  // Don't initiate security, we're done
+            } else {
+                // No IRK in bond - delete and try fresh pairing
+                ESP_LOGW(TAG, "Peer unbonded but we have cached bond without IRK. Clearing to force fresh pairing.");
+                ble_store_util_delete_peer(&d.peer_id_addr);
             }
         }
     } else {
@@ -825,7 +911,7 @@ void IRKCaptureComponent::on_auth_complete(bool) {
 
 //======================== IRK extraction ========================
 
-bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, std::string &irk, std::string &addr) {
+bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t &peer_id_out) {
     struct ble_store_value_sec bond{};
     struct ble_gap_conn_desc desc{};
 
@@ -849,9 +935,6 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, std::string &irk, st
         return false;
     }
 
-    // Always publish/return the identity address (not OTA/RPA)
-    addr = addr_to_str(desc.peer_id_addr);
-
     ESP_LOGD(TAG, "Bond read: ediv=%u, rand=%llu, irk_present=%d",
              (unsigned)bond.ediv, (unsigned long long)bond.rand_num, (int)bond.irk_present);
 
@@ -860,8 +943,9 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, std::string &irk, st
         return false;
     }
 
-    // Format IRK (reverse order to match Arduino output)
-    irk = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
+    // Return raw IRK bytes and peer identity address
+    memcpy(irk_out, bond.irk, 16);
+    peer_id_out = desc.peer_id_addr;
     return true;
 }
 
@@ -886,12 +970,14 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
         struct ble_store_key_sec key{};
         key.peer_addr = timers_.last_peer_id;
         int rc = ble_store_read_peer_sec(&key, &bond);
-        if (rc == 0 && bond.irk_present) {
-            std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
-            publish_and_log_irk(this, timers_.last_peer_id, irk_hex, "DISC_DELAYED");
+        if (rc == BLE_HS_ENOENT) {
+            ESP_LOGD(TAG, "No bond for peer (ENOENT) - post-disc delayed check");
+        } else if (rc != 0) {
+            ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - post-disc delayed check", rc);
+        } else if (bond.irk_present) {
+            publish_and_log_irk(this, timers_.last_peer_id, bond.irk, "DISC_DELAYED");
         } else {
-            ESP_LOGD(TAG, "No IRK (post-disc delayed) rc=%d irk_present=%d",
-                     rc, (rc == 0 ? (int)bond.irk_present : -1));
+            ESP_LOGD(TAG, "Bond present but no IRK - post-disc delayed check");
         }
     }
 }
@@ -905,17 +991,19 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
         key.peer_addr = timers_.enc_peer_id;
         struct ble_store_value_sec bond{};
         int rc = ble_store_read_peer_sec(&key, &bond);
-        if (rc == 0 && bond.irk_present) {
-            std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
-            publish_and_log_irk(this, timers_.enc_peer_id, irk_hex, "ENC_LATE");
+        if (rc == BLE_HS_ENOENT) {
+            ESP_LOGD(TAG, "No bond for peer (ENOENT) - late ENC check");
+        } else if (rc != 0) {
+            ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - late ENC check", rc);
+        } else if (bond.irk_present) {
+            publish_and_log_irk(this, timers_.enc_peer_id, bond.irk, "ENC_LATE");
 
             // 1.0 compatible: terminate after late capture if still connected
             if (connected_ && conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
                 ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
             }
         } else {
-            ESP_LOGD(TAG, "Late ENC timer read: rc=%d irk_present=%d",
-                     rc, (rc == 0 ? (int)bond.irk_present : -1));
+            ESP_LOGD(TAG, "Bond present but no IRK - late ENC check");
         }
     }
 }
@@ -973,16 +1061,10 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
 
     irk_last_try_ms_ = now;
 
-    std::string irk, addr;
-    if (try_get_irk(conn_handle_, irk, addr)) {
-        // Prefer current conn descriptor identity; fallback to cached if unavailable
-        struct ble_gap_conn_desc d{};
-        const ble_addr_t *id = nullptr;
-        if (ble_gap_conn_find(conn_handle_, &d) == 0) id = &d.peer_id_addr;
-        else                                          id = &timers_.last_peer_id;
-
-        if (id) publish_and_log_irk(this, *id, irk, "POLL_CONNECTED");
-
+    uint8_t irk_bytes[16];
+    ble_addr_t peer_id;
+    if (try_get_irk(conn_handle_, irk_bytes, peer_id)) {
+        publish_and_log_irk(this, peer_id, irk_bytes, "POLL_CONNECTED");
         ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
         irk_gave_up_ = true;
     } else {

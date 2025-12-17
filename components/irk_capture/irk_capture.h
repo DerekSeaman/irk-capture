@@ -154,7 +154,7 @@ class IRKCaptureComponent : public Component {
     } timers_{};
 
     // Internal helpers
-    bool try_get_irk(uint16_t conn_handle, std::string &irk, std::string &addr);
+    bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t &peer_id_out);
     void setup_ble();
     void register_gatt_services();
 
