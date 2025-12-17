@@ -732,6 +732,11 @@ void IRKCaptureComponent::setup_ble() {
         vTaskDelete(NULL);
     });
 
+    // Clear all bond data on boot to force iOS to see us as a fresh device
+    // Why: iOS caches devices aggressively; clearing bonds ensures clean slate
+    ESP_LOGI(TAG, "Clearing all bond data on boot for fresh iOS pairing");
+    ble_store_clear();
+
     // Seed initial static random address at boot (matches Arduino BLE library behavior)
     // Why: Provides stable identity before user-triggered refresh_mac rotations
     uint8_t rnd[6];
