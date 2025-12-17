@@ -6,6 +6,7 @@
 #include <esp_random.h>
 #include <esp_timer.h>
 #include <host/ble_store.h>
+#include <store/config/ble_store_config.h>
 
 // Some ESP-IDF 5.x package variants omit this prototype from headers; declare it explicitly.
 extern "C" int ble_store_config_init(void);
@@ -373,16 +374,13 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
 
                 ESP_LOGI(TAG, "Encryption established; will attempt IRK capture shortly");
             } else {
-                // Encryption failed - just terminate and let peer reconnect fresh
-                ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; terminating connection", ev->enc_change.status);
+                // Encryption failed - delete all bond data and terminate
+                ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing all bond data", ev->enc_change.status);
                 struct ble_gap_conn_desc d{};
                 if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
-                    // Delete stale keys so next connection will pair fresh
-                    struct ble_store_key_sec key{};
-                    key.peer_addr = d.peer_id_addr;
-                    int drc = ble_store_delete_peer_sec(&key);
-                    ESP_LOGD(TAG, "Deleted peer sec rc=%d for %02X:%02X:%02X:%02X:%02X:%02X",
-                             drc,
+                    // Delete ALL stored data for this peer (sec, cccd, etc.)
+                    ble_store_util_delete_peer(&d.peer_id_addr);
+                    ESP_LOGD(TAG, "Cleared all bond data for %02X:%02X:%02X:%02X:%02X:%02X",
                              d.peer_id_addr.val[5], d.peer_id_addr.val[4], d.peer_id_addr.val[3],
                              d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0]);
                 }
@@ -396,12 +394,10 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             int rc = ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d);
             if (rc == 0) {
                 const ble_addr_t *peer = &d.peer_id_addr;
-                ESP_LOGW(TAG, "Repeat pairing from %02X:%02X:%02X:%02X:%02X:%02X (clearing old bond if present)",
+                ESP_LOGW(TAG, "Repeat pairing from %02X:%02X:%02X:%02X:%02X:%02X (clearing all bond data)",
                          peer->val[5], peer->val[4], peer->val[3], peer->val[2], peer->val[1], peer->val[0]);
-                struct ble_store_key_sec key{};
-                key.peer_addr = *peer;
-                // Ignore return (not-found is fine)
-                ble_store_delete_peer_sec(&key);
+                // Delete ALL stored data for this peer
+                ble_store_util_delete_peer(peer);
             } else {
                 ESP_LOGW(TAG, "Repeat pairing: conn desc not found rc=%d", rc);
             }
