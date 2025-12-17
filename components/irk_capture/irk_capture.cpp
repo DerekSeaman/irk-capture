@@ -994,8 +994,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
              (unsigned)bond.ediv, (unsigned long long)bond.rand_num,
              (int)bond.irk_present, (int)bond.ltk_present, (int)bond.csrk_present);
 
-    ESP_LOGD(TAG, "Bond keys: peer_sec=%d our_sec=%d authenticated=%d sc=%d",
-             (int)bond.peer_keys.is_ours, (int)bond.our_sec.peer_keys.is_ours,
+    ESP_LOGD(TAG, "Bond security: authenticated=%d sc=%d",
              (int)bond.authenticated, (int)bond.sc);
 
     if (!bond.irk_present) {
