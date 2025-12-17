@@ -834,10 +834,24 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     // 1.0 behavior: single retry ~2s after initial initiate
     if (connected_ && !enc_ready_) {
         if (sec_init_time_ms_ == 0) sec_init_time_ms_ = now;
+
+        // Retry security at 2s
         if (!sec_retry_done_ && (now - sec_init_time_ms_) > 2000) {
             int rc = ble_gap_security_initiate(conn_handle_);
             ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
             sec_retry_done_ = true;
+        }
+
+        // If encryption still hasn't completed after 10s, assume peer forgot pairing
+        // Delete our bond and disconnect to force fresh pairing on reconnect
+        if ((now - sec_init_time_ms_) > 10000) {
+            struct ble_gap_conn_desc d{};
+            if (ble_gap_conn_find(conn_handle_, &d) == 0) {
+                ESP_LOGW(TAG, "Encryption timeout after 10s; peer may have forgotten pairing. Clearing bond data.");
+                ble_store_util_delete_peer(&d.peer_id_addr);
+            }
+            // Disconnect to trigger fresh pairing on next connection
+            ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
         }
     } else if (!connected_) {
         sec_retry_done_ = false;
