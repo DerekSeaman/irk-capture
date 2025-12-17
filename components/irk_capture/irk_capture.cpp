@@ -908,12 +908,12 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
             sec_retry_done_ = true;
         }
 
-        // If encryption still hasn't completed after 10s, assume peer forgot pairing
+        // If encryption still hasn't completed after 20s, assume peer forgot pairing
         // Delete our bond and disconnect to force fresh pairing on reconnect
-        if ((now - sec_init_time_ms_) > 10000) {
+        if ((now - sec_init_time_ms_) > 20000) {
             struct ble_gap_conn_desc d{};
             if (ble_gap_conn_find(conn_handle_, &d) == 0) {
-                ESP_LOGW(TAG, "Encryption timeout after 10s; peer may have forgotten pairing. Clearing bond data.");
+                ESP_LOGW(TAG, "Encryption timeout after 20s; peer may have forgotten pairing. Clearing bond data.");
                 ble_store_util_delete_peer(&d.peer_id_addr);
             }
             // Disconnect to trigger fresh pairing on next connection
