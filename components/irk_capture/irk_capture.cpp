@@ -716,6 +716,17 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     struct ble_gap_conn_desc d;
     if (ble_gap_conn_find(conn_handle_, &d) == 0) {
         timers_.last_peer_id = d.peer_id_addr;
+
+        // Check for bond state mismatch: peer thinks it's unbonded but we have bond data
+        if (!d.sec_state.bonded) {
+            struct ble_store_key_sec key{};
+            key.peer_addr = d.peer_id_addr;
+            struct ble_store_value_sec bond{};
+            if (ble_store_read_peer_sec(&key, &bond) == 0) {
+                ESP_LOGW(TAG, "Peer unbonded but we have cached bond data. Clearing to force fresh pairing.");
+                ble_store_util_delete_peer(&d.peer_id_addr);
+            }
+        }
     } else {
         memset(&timers_.last_peer_id, 0, sizeof(timers_.last_peer_id));
     }
