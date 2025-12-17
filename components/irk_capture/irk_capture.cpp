@@ -343,8 +343,10 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             if (!self->suppress_next_adv_) {
                 self->start_advertising();
             } else {
-                ESP_LOGI(TAG, "Advertising suppressed to break reconnect loop");
+                ESP_LOGI(TAG, "Advertising suppressed to break reconnect loop; will auto-restart in 5s");
                 self->suppress_next_adv_ = false;  // Reset for next time
+                // Schedule auto-restart after 5 seconds to allow fresh connections later
+                self->adv_restart_time_ = now_ms() + 5000;
             }
             return 0;
         }
@@ -484,6 +486,13 @@ void IRKCaptureComponent::loop() {
     // Timers for IRK checks
     handle_post_disconnect_timer(now);
     handle_late_enc_timer(now);
+
+    // Auto-restart advertising if suppressed and timer expired
+    if (!advertising_ && adv_restart_time_ != 0 && now >= adv_restart_time_) {
+        adv_restart_time_ = 0;
+        ESP_LOGI(TAG, "Auto-restarting advertising after suppression timeout");
+        start_advertising();
+    }
 
     // Pairing robustness (1.0 single retry)
     retry_security_if_needed(now);
