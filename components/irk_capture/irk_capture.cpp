@@ -381,8 +381,9 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
 
                 ESP_LOGI(TAG, "Encryption established; will attempt IRK capture shortly");
             } else {
-                // Encryption failed - just terminate and let peer retry fresh
-                ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; terminating connection", ev->enc_change.status);
+                // Encryption failed - clear all bonds and terminate
+                ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing all bonds", ev->enc_change.status);
+                ble_store_clear();  // Clear everything to force fresh pairing
                 ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             }
             return 0;
