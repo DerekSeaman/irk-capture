@@ -720,6 +720,9 @@ void IRKCaptureComponent::start_advertising() {
         return;
     }
 
+    // Refresh DevInfo name pointer to ensure it's current (ble_name_ may have reallocated)
+    devinfo_chrs[1].arg = (void *)ble_name_.c_str();
+
     ble_hs_adv_fields fields{};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t *)ble_name_.c_str();
@@ -803,6 +806,10 @@ void IRKCaptureComponent::refresh_mac() {
     ESP_LOGI(TAG, "Clearing all bond data before MAC refresh");
     ble_store_clear();
 
+    // Reset suppression flags since we're starting fresh with new MAC
+    suppress_next_adv_ = false;
+    adv_restart_time_ = 0;
+
     // Log previous MAC before change
     log_mac("Previous");
 
@@ -868,14 +875,8 @@ void IRKCaptureComponent::update_ble_name(const std::string &name) {
     // Update DevInfo model read callback source
     devinfo_chrs[1].arg = (void *)ble_name_.c_str();
 
-    // Restart advertising with the new name first (keeps UI consistent)
-    if (advertising_) {
-        this->stop_advertising();
-        delay(100);
-        this->start_advertising();
-    }
-
-    // Immediately rotate MAC after name change
+    // Rotate MAC (which stops adv, clears bonds, changes MAC, and restarts adv)
+    // This handles the advertising restart automatically with the new name
     this->refresh_mac();
 }
 
