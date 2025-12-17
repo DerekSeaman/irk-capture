@@ -474,6 +474,8 @@ static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event
             } else if (bond.irk_present) {
                 std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
                 publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
+                // Short delay to let logger flush IRK before disconnect floods the buffer
+                vTaskDelay(pdMS_TO_TICKS(20));
                 // 1.0 behavior: terminate immediately after successful ENC + IRK capture
                 ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             } else {
