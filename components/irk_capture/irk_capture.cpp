@@ -434,6 +434,10 @@ void IRKCaptureComponent::setup() {
     ESP_LOGI(TAG, "IRK Capture v1.2 ready");
     this->setup_ble();
 
+    // Clear all bonds on startup to ensure clean state
+    ESP_LOGI(TAG, "Clearing all bond data on startup for clean state");
+    ble_store_clear();
+
     if (start_on_boot_) {
         this->start_advertising();
     }
@@ -617,6 +621,10 @@ void IRKCaptureComponent::refresh_mac() {
         delay(10);
         App.feed_wdt();
     }
+
+    // Clear all bonds since MAC change invalidates them
+    ESP_LOGI(TAG, "Clearing all bond data before MAC refresh");
+    ble_store_clear();
 
     // Log previous MAC before change
     log_mac("Previous");
