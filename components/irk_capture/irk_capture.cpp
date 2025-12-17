@@ -78,6 +78,11 @@ static std::string addr_to_str(const ble_addr_t &a) {
     return std::string(buf);
 }
 
+static bool addr_is_zero(const ble_addr_t &a) {
+    return a.type == 0 && a.val[0] == 0 && a.val[1] == 0 && a.val[2] == 0 &&
+           a.val[3] == 0 && a.val[4] == 0 && a.val[5] == 0;
+}
+
 static bool is_encrypted(uint16_t conn_handle) {
     struct ble_gap_conn_desc d;
     if (ble_gap_conn_find(conn_handle, &d) == 0) {
@@ -87,8 +92,8 @@ static bool is_encrypted(uint16_t conn_handle) {
 }
 
 static void hr_measurement_sample(uint8_t *buf, size_t *len) {
-    buf[0] = 0x06;  // flags
-    buf[1] = (uint8_t)(esp_random() & 0xFF);
+    buf[0] = 0x00;  // flags: HR value format UINT8, no sensor contact, no energy expended
+    buf[1] = (uint8_t)(60 + (esp_random() % 40));  // 60-99 bpm
     *len = 2;
 }
 
@@ -835,8 +840,12 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, std::string &irk, st
     key_sec.peer_addr = desc.peer_id_addr;
 
     rc = ble_store_read_peer_sec(&key_sec, &bond);
+    if (rc == BLE_HS_ENOENT) {
+        ESP_LOGD(TAG, "No bond for peer (ENOENT)");
+        return false;
+    }
     if (rc != 0) {
-        ESP_LOGD(TAG, "ble_store_read_peer_sec rc=%d", rc);
+        ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d", rc);
         return false;
     }
 
@@ -872,7 +881,7 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
     if (!timers_.post_disc_due_ms || now < timers_.post_disc_due_ms) return;
     timers_.post_disc_due_ms = 0;  // consume
 
-    if (timers_.last_peer_id.type != 0 || timers_.last_peer_id.val[0] || timers_.last_peer_id.val[1]) {
+    if (!addr_is_zero(timers_.last_peer_id)) {
         struct ble_store_value_sec bond{};
         struct ble_store_key_sec key{};
         key.peer_addr = timers_.last_peer_id;
@@ -891,7 +900,7 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
     if (!timers_.late_enc_due_ms || now < timers_.late_enc_due_ms) return;
     timers_.late_enc_due_ms = 0;
 
-    if (timers_.enc_peer_id.type != 0 || timers_.enc_peer_id.val[0] || timers_.enc_peer_id.val[1]) {
+    if (!addr_is_zero(timers_.enc_peer_id)) {
         struct ble_store_key_sec key{};
         key.peer_addr = timers_.enc_peer_id;
         struct ble_store_value_sec bond{};
@@ -950,7 +959,7 @@ void IRKCaptureComponent::notify_hr_if_due(uint32_t now) {
     uint8_t buf[2]; size_t len;
     hr_measurement_sample(buf, &len);
     struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, len);
-    int rc = ble_gattc_notify_custom(conn_handle_, hr_char_handle_, om);
+    int rc = ble_gatts_notify_custom(conn_handle_, hr_char_handle_, om);
     if (rc != 0) {
         ESP_LOGD(TAG, "notify rc=%d", rc);
     }
