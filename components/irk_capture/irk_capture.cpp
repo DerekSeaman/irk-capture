@@ -373,31 +373,20 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
 
                 ESP_LOGI(TAG, "Encryption established; will attempt IRK capture shortly");
             } else {
-                // Encryption failed (often due to stale keys). Delete this peer's keys and retry once.
-                if (!self->retried_after_enc_fail_) {
-                    struct ble_gap_conn_desc d{};
-                    if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
-                        struct ble_store_key_sec key{};
-                        key.peer_addr = d.peer_id_addr;
-
-                        int drc = ble_store_delete_peer_sec(&key);
-                        ESP_LOGW(TAG, "ENC fail; deleted peer sec rc=%d for %02X:%02X:%02X:%02X:%02X:%02X",
-                                 drc,
-                                 d.peer_id_addr.val[5], d.peer_id_addr.val[4], d.peer_id_addr.val[3],
-                                 d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0]);
-
-                        // Retry pairing immediately
-                        int rc = ble_gap_security_initiate(ev->enc_change.conn_handle);
-                        ESP_LOGW(TAG, "Re-initiate security after delete rc=%d", rc);
-                        self->retried_after_enc_fail_ = true;
-                    } else {
-                        ESP_LOGW(TAG, "ENC fail; conn desc not found; terminating");
-                        ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-                    }
-                } else {
-                    ESP_LOGW(TAG, "ENC fail after retry; terminating");
-                    ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                // Encryption failed - just terminate and let peer reconnect fresh
+                ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; terminating connection", ev->enc_change.status);
+                struct ble_gap_conn_desc d{};
+                if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
+                    // Delete stale keys so next connection will pair fresh
+                    struct ble_store_key_sec key{};
+                    key.peer_addr = d.peer_id_addr;
+                    int drc = ble_store_delete_peer_sec(&key);
+                    ESP_LOGD(TAG, "Deleted peer sec rc=%d for %02X:%02X:%02X:%02X:%02X:%02X",
+                             drc,
+                             d.peer_id_addr.val[5], d.peer_id_addr.val[4], d.peer_id_addr.val[3],
+                             d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0]);
                 }
+                ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             }
             return 0;
 
@@ -737,7 +726,6 @@ void IRKCaptureComponent::on_disconnect() {
     conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
     enc_ready_ = false;
     enc_time_ = 0;
-    retried_after_enc_fail_ = false;
 
     // Reset loop-helper state
     sec_retry_done_ = false;

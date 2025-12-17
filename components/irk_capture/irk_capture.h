@@ -126,7 +126,6 @@ class IRKCaptureComponent : public Component {
     uint32_t enc_time_{0};
     bool sec_retry_done_{false};
     uint32_t sec_init_time_ms_{0};
-    bool retried_after_enc_fail_{false};    // ensure only one delete+retry per connection
 
     // IRK polling state
     bool irk_gave_up_{false};
