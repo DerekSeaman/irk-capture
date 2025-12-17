@@ -385,6 +385,12 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
                 ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing all bonds", ev->enc_change.status);
                 ble_store_clear();  // Clear everything to force fresh pairing
                 ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+
+                // For DHKey failures (status=1288), stop advertising briefly to force peer to reset
+                if (ev->enc_change.status == 1288) {
+                    ESP_LOGW(TAG, "DHKey failure detected - suppressing advertising to force peer reset");
+                    self->suppress_next_adv_ = true;
+                }
             }
             return 0;
 
