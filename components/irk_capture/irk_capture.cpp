@@ -148,10 +148,22 @@ static void hr_measurement_sample(uint8_t *buf, size_t *len) {
 static void log_conn_desc(uint16_t conn_handle) {
     struct ble_gap_conn_desc d;
     if (ble_gap_conn_find(conn_handle, &d) == 0) {
+        // Security state
         ESP_LOGI(TAG, "sec: enc=%d bonded=%d auth=%d key_size=%u",
                  d.sec_state.encrypted, d.sec_state.bonded, d.sec_state.authenticated, d.sec_state.key_size);
+
+        // Addresses
         ESP_LOGI(TAG, "peer ota=%s type=%d", addr_to_str(d.peer_ota_addr).c_str(), d.peer_ota_addr.type);
         ESP_LOGI(TAG, "peer id =%s type=%d", addr_to_str(d.peer_id_addr).c_str(), d.peer_id_addr.type);
+
+        // Connection parameters (helpful for Android watch debugging)
+        ESP_LOGD(TAG, "conn params: interval=%u latency=%u timeout=%u supervision_timeout=%u",
+                 d.conn_itvl, d.conn_latency, d.supervision_timeout, d.supervision_timeout);
+
+        // Role and features
+        ESP_LOGD(TAG, "role=%s our_ota=%s",
+                 d.role == BLE_GAP_ROLE_MASTER ? "master" : "slave",
+                 addr_to_str(d.our_ota_addr).c_str());
     }
 }
 
@@ -353,8 +365,10 @@ void IRKCaptureButton::press_action() {
 
 static int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     if (ev->connect.status == 0) {
+        ESP_LOGI(TAG, "Connection established successfully");
         self->on_connect(ev->connect.conn_handle);
     } else {
+        ESP_LOGW(TAG, "Connection failed: status=%d (0x%02X)", ev->connect.status, ev->connect.status);
         self->advertising_ = false;
         self->start_advertising();
     }
@@ -407,7 +421,31 @@ static int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event
 }
 
 static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev) {
-    ESP_LOGI(TAG, "ENC_CHANGE status=%d", ev->enc_change.status);
+    ESP_LOGI(TAG, "ENC_CHANGE status=%d (0x%02X)", ev->enc_change.status, ev->enc_change.status);
+
+    // Log common encryption failure reasons for Android troubleshooting
+    if (ev->enc_change.status != 0) {
+        const char *status_desc = "Unknown";
+        switch (ev->enc_change.status) {
+            case 1: status_desc = "Passkey Entry Failed"; break;
+            case 2: status_desc = "OOB Not Available"; break;
+            case 3: status_desc = "Authentication Requirements"; break;
+            case 4: status_desc = "Confirm Value Failed"; break;
+            case 5: status_desc = "Pairing Not Supported"; break;
+            case 6: status_desc = "Encryption Key Size"; break;
+            case 7: status_desc = "Command Not Supported"; break;
+            case 8: status_desc = "Unspecified Reason"; break;
+            case 9: status_desc = "Repeated Attempts"; break;
+            case 10: status_desc = "Invalid Parameters"; break;
+            case 11: status_desc = "DHKey Check Failed"; break;
+            case 12: status_desc = "Numeric Comparison Failed"; break;
+            case 13: status_desc = "BR/EDR Pairing in Progress"; break;
+            case 14: status_desc = "Cross-transport Key Derivation"; break;
+            case 1288: status_desc = "DHKey Check Failed (NimBLE)"; break;
+        }
+        ESP_LOGW(TAG, "ENC_CHANGE failed: %s (status=%d)", status_desc, ev->enc_change.status);
+    }
+
     if (ev->enc_change.status == 0) {
         self->enc_ready_ = true;
         self->enc_time_ = now_ms();
@@ -495,10 +533,26 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             ESP_LOGI(TAG, "MTU updated: %u", ev->mtu.value);
             return 0;
 
-        case BLE_GAP_EVENT_PASSKEY_ACTION:
-            ESP_LOGI(TAG, "PASSKEY action=%d", ev->passkey.params.action);
+        case BLE_GAP_EVENT_PASSKEY_ACTION: {
+            const char *action_desc = "Unknown";
+            switch (ev->passkey.params.action) {
+                case BLE_SM_IOACT_NONE: action_desc = "None"; break;
+                case BLE_SM_IOACT_OOB: action_desc = "OOB"; break;
+                case BLE_SM_IOACT_INPUT: action_desc = "Input (peer displays passkey)"; break;
+                case BLE_SM_IOACT_DISP: action_desc = "Display (we should show passkey)"; break;
+                case BLE_SM_IOACT_NUMCMP: action_desc = "Numeric Comparison"; break;
+            }
+            ESP_LOGI(TAG, "PASSKEY_ACTION: %s (action=%d)", action_desc, ev->passkey.params.action);
+
+            // Log passkey if we're supposed to display it (shouldn't happen with NO_INPUT_OUTPUT)
+            if (ev->passkey.params.action == BLE_SM_IOACT_DISP) {
+                ESP_LOGW(TAG, "UNEXPECTED: Peer requested passkey display (passkey=%06lu)",
+                         (unsigned long)ev->passkey.params.numcmp);
+            }
+
             // Just log and return - main branch behavior
             return 0;
+        }
 
         case BLE_GAP_EVENT_NOTIFY_RX:
             return 0;
@@ -923,6 +977,8 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
     struct ble_store_key_sec key_sec{};
     key_sec.peer_addr = desc.peer_id_addr;
 
+    ESP_LOGD(TAG, "Reading bond for peer: %s", addr_to_str(desc.peer_id_addr).c_str());
+
     rc = ble_store_read_peer_sec(&key_sec, &bond);
     if (rc == BLE_HS_ENOENT) {
         ESP_LOGD(TAG, "No bond for peer (ENOENT)");
@@ -933,11 +989,18 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
         return false;
     }
 
-    ESP_LOGD(TAG, "Bond read: ediv=%u, rand=%llu, irk_present=%d",
-             (unsigned)bond.ediv, (unsigned long long)bond.rand_num, (int)bond.irk_present);
+    // Detailed bond information for Android troubleshooting
+    ESP_LOGD(TAG, "Bond found: ediv=%u rand=%llu irk_present=%d ltk_present=%d csrk_present=%d",
+             (unsigned)bond.ediv, (unsigned long long)bond.rand_num,
+             (int)bond.irk_present, (int)bond.ltk_present, (int)bond.csrk_present);
+
+    ESP_LOGD(TAG, "Bond keys: peer_sec=%d our_sec=%d authenticated=%d sc=%d",
+             (int)bond.peer_keys.is_ours, (int)bond.our_sec.peer_keys.is_ours,
+             (int)bond.authenticated, (int)bond.sc);
 
     if (!bond.irk_present) {
-        ESP_LOGD(TAG, "Bond present but no IRK (peer did not distribute ID)");
+        ESP_LOGW(TAG, "Bond present but no IRK (peer did not distribute ID key)");
+        ESP_LOGW(TAG, "Peer key distribution may be incomplete or unsupported by device");
         return false;
     }
 
