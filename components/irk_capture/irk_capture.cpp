@@ -414,15 +414,38 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             return 0;
 
         case BLE_GAP_EVENT_NOTIFY_RX:
-            // Just acknowledge, don't log spam
             return 0;
 
         case BLE_GAP_EVENT_NOTIFY_TX:
-            // Just acknowledge, don't log spam
+            return 0;
+
+        case BLE_GAP_EVENT_L2CAP_UPDATE_REQ:
+            // Accept connection parameter updates
+            return 0;
+
+        case BLE_GAP_EVENT_IDENTITY_RESOLVED:
+            // Identity resolved successfully (IRK working!)
+            ESP_LOGD(TAG, "Peer identity resolved using IRK");
+            return 0;
+
+        case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
+            // PHY layer updated (normal)
+            return 0;
+
+        case BLE_GAP_EVENT_AUTHORIZE:
+            // Authorization event (allow by returning 0)
+            return 0;
+
+        case BLE_GAP_EVENT_SUBRATE_CHANGE:
+            // BLE 5.2+ subrate change (normal)
+            return 0;
+
+        case BLE_GAP_EVENT_VS_HCI:
+            // Vendor-specific HCI event (can ignore)
             return 0;
 
         default:
-            // Log any unhandled GAP events for debugging
+            // Log truly unknown GAP events
             ESP_LOGD(TAG, "Unhandled GAP event type=%d", ev->type);
             return 0;
     }
