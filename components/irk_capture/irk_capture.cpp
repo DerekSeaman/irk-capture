@@ -525,32 +525,10 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             ESP_LOGI(TAG, "MTU updated: %u", ev->mtu.value);
             return 0;
 
-        case BLE_GAP_EVENT_PASSKEY_ACTION: {
-            struct ble_sm_io pk_io = {};
-            int rc = 0;
-
+        case BLE_GAP_EVENT_PASSKEY_ACTION:
             ESP_LOGI(TAG, "PASSKEY action=%d", ev->passkey.params.action);
-
-            switch (ev->passkey.params.action) {
-                case BLE_SM_IOACT_NUMCMP:
-                    // Numeric comparison - auto-confirm for Just Works
-                    pk_io.action = ev->passkey.params.action;
-                    pk_io.numcmp_accept = 1;  // Auto-accept
-                    rc = ble_sm_inject_io(ev->passkey.conn_handle, &pk_io);
-                    ESP_LOGI(TAG, "Numeric comparison auto-confirmed (rc=%d)", rc);
-                    break;
-
-                case BLE_SM_IOACT_NONE:
-                    // Just Works - nothing to do
-                    ESP_LOGD(TAG, "Just Works pairing (no interaction required)");
-                    break;
-
-                default:
-                    ESP_LOGW(TAG, "Unexpected passkey action=%d", ev->passkey.params.action);
-                    break;
-            }
+            // Just log and return - main branch behavior
             return 0;
-        }
 
         case BLE_GAP_EVENT_NOTIFY_RX:
             return 0;
