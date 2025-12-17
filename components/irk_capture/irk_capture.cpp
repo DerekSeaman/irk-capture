@@ -597,14 +597,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
 //======================== Component lifecycle ========================
 
 void IRKCaptureComponent::setup() {
-    // Always generate dynamic BLE device name: "IRK XXXXXX" where XXXXXX is a random 6-digit number
-    // Why: Makes each boot appear as a fresh device to iOS, bypassing persistent Bluetooth cache
-    uint32_t random_num = esp_random() % 1000000;  // 0-999999
-    char name_buf[16];
-    snprintf(name_buf, sizeof(name_buf), "IRK %06u", random_num);
-    ble_name_ = name_buf;
-
-    ESP_LOGI(TAG, "IRK Capture v%s ready (BLE name: %s)", VERSION, ble_name_.c_str());
+    ESP_LOGI(TAG, "IRK Capture v%s ready", VERSION);
     this->setup_ble();
 
     if (start_on_boot_) {
