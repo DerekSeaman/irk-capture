@@ -345,6 +345,8 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             } else {
                 ESP_LOGI(TAG, "Advertising suppressed to break reconnect loop; will auto-restart in 5s");
                 self->suppress_next_adv_ = false;  // Reset for next time
+                // Update switch UI to show advertising is off during suppression
+                if (self->advertising_switch_) self->advertising_switch_->publish_state(false);
                 // Schedule auto-restart after 5 seconds to allow fresh connections later
                 self->adv_restart_time_ = now_ms() + 5000;
             }
