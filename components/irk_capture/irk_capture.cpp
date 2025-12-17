@@ -694,7 +694,6 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     connected_ = true;
     enc_ready_ = false;
     enc_time_ = 0;
-    retried_after_enc_fail_ = false;
 
     // Reset loop-helper state (1.0 single retry model)
     sec_retry_done_ = false;
