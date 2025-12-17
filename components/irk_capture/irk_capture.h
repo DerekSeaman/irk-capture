@@ -126,6 +126,7 @@ class IRKCaptureComponent : public Component {
     uint32_t enc_time_{0};
     bool sec_retry_done_{false};
     uint32_t sec_init_time_ms_{0};
+    bool suppress_next_adv_{false};  // Prevent immediate re-advertising after IRK re-publish
 
     // IRK polling state
     bool irk_gave_up_{false};

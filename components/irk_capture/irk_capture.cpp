@@ -338,8 +338,14 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             // Schedule an extra delayed post-disconnect check (800 ms)
             self->schedule_post_disconnect_check(self->timers_.last_peer_id);
 
+            // Only restart advertising if not suppressed (IRK re-publish case)
             self->advertising_ = false;
-            self->start_advertising();
+            if (!self->suppress_next_adv_) {
+                self->start_advertising();
+            } else {
+                ESP_LOGI(TAG, "Advertising suppressed to break reconnect loop");
+                self->suppress_next_adv_ = false;  // Reset for next time
+            }
             return 0;
         }
 
@@ -752,6 +758,8 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
                              d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0]);
                     publish_irk_to_sensors(irk_hex, addr_str);
                     ESP_LOGI(TAG, "Re-published existing IRK for already-paired device");
+                    // Set flag to prevent immediate re-advertising (break the reconnect loop)
+                    suppress_next_adv_ = true;
                     // Disconnect since we already have what we need
                     ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
                     return;  // Don't initiate security, we're done
