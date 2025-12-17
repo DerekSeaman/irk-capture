@@ -217,14 +217,10 @@ static void publish_and_log_irk(IRKCaptureComponent *self,
                                 const std::string &irk_hex,
                                 const char *context_tag) {
     const std::string addr_str = addr_to_str(peer_id_addr);
-
-    // Log everything in one atomic block to prevent logger from dropping lines
     log_spacer();
     log_banner(context_tag);
-
-    // Combine critical info into single log statement to prevent splitting
-    ESP_LOGI(TAG, "Identity Address: %s | IRK: %s", addr_str.c_str(), irk_hex.c_str());
-
+    ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
+    ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
     log_spacer();
     if (self) self->publish_irk_to_sensors(irk_hex, addr_str.c_str());
 }
@@ -474,8 +470,6 @@ static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event
             } else if (bond.irk_present) {
                 std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
                 publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
-                // Short delay to let logger flush IRK before disconnect floods the buffer
-                vTaskDelay(pdMS_TO_TICKS(20));
                 // 1.0 behavior: terminate immediately after successful ENC + IRK capture
                 ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             } else {
