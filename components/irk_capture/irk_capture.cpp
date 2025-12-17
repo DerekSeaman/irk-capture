@@ -217,12 +217,14 @@ static void publish_and_log_irk(IRKCaptureComponent *self,
                                 const std::string &irk_hex,
                                 const char *context_tag) {
     const std::string addr_str = addr_to_str(peer_id_addr);
+
+    // Log everything in one atomic block to prevent logger from dropping lines
     log_spacer();
     log_banner(context_tag);
-    ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
-    vTaskDelay(pdMS_TO_TICKS(10));  // Short delay to ensure address line flushes
-    ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
-    vTaskDelay(pdMS_TO_TICKS(10));  // Short delay to ensure IRK line flushes before disconnect
+
+    // Combine critical info into single log statement to prevent splitting
+    ESP_LOGI(TAG, "Identity Address: %s | IRK: %s", addr_str.c_str(), irk_hex.c_str());
+
     log_spacer();
     if (self) self->publish_irk_to_sensors(irk_hex, addr_str.c_str());
 }
@@ -651,9 +653,15 @@ void IRKCaptureComponent::loop() {
 
 void IRKCaptureComponent::setup_ble() {
     // NVS for key store
-    // Always erase NVS on boot since we use dynamic names/MACs - old bonds are invalid
-    nvs_flash_erase();
-    nvs_flash_init();
+    auto err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
+    // Clear only BLE bond store on boot since we use dynamic names/MACs - old bonds are invalid
+    // This preserves ESPHome's other NVS data (preferences, safe mode, etc.)
+    ble_store_clear();
 
     // NimBLE host
     nimble_port_init();
