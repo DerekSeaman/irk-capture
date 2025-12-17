@@ -311,6 +311,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             return 0;
 
         case BLE_GAP_EVENT_DISCONNECT: {
+            ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)", ev->disconnect.reason, ev->disconnect.reason);
             self->on_disconnect();
 
             // Attempt post-disconnect IRK read using the peer identity address
@@ -412,7 +413,17 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             ESP_LOGI(TAG, "PASSKEY action=%d", ev->passkey.params.action);
             return 0;
 
+        case BLE_GAP_EVENT_NOTIFY_RX:
+            // Just acknowledge, don't log spam
+            return 0;
+
+        case BLE_GAP_EVENT_NOTIFY_TX:
+            // Just acknowledge, don't log spam
+            return 0;
+
         default:
+            // Log any unhandled GAP events for debugging
+            ESP_LOGD(TAG, "Unhandled GAP event type=%d", ev->type);
             return 0;
     }
 }
