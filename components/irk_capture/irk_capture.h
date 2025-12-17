@@ -150,15 +150,6 @@ class IRKCaptureComponent : public Component {
     // Host state (ESPHome-managed host; this is a soft flag)
     bool host_synced_{false};
 
-    // Timing constants (ms)
-    static constexpr uint32_t LOOP_MIN_INTERVAL_MS = 50;
-    static constexpr uint32_t HR_NOTIFY_INTERVAL_MS = 1000;
-    static constexpr uint32_t ENC_TO_FIRST_TRY_DELAY_MS = 1000;
-    static constexpr uint32_t ENC_TRY_INTERVAL_MS = 1000;
-    static constexpr uint32_t ENC_GIVE_UP_AFTER_MS = 45000;
-    static constexpr uint32_t POST_DISC_DELAY_MS = 800;
-    static constexpr uint32_t ENC_LATE_READ_DELAY_MS = 5000;
-
     // Timer targets and cached peer ids
     struct Timers {
         uint32_t post_disc_due_ms{0};

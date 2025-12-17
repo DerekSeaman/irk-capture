@@ -15,7 +15,19 @@ namespace esphome {
 namespace irk_capture {
 
 static const char *const TAG = "irk_capture";
+static constexpr char VERSION[] = "1.2";
 static constexpr char HEX[] = "0123456789abcdef";
+
+// Timing configuration (all values in ms)
+struct TimingConfig {
+    static constexpr uint32_t LOOP_MIN_INTERVAL_MS = 50;
+    static constexpr uint32_t HR_NOTIFY_INTERVAL_MS = 1000;
+    static constexpr uint32_t ENC_TO_FIRST_TRY_DELAY_MS = 1000;
+    static constexpr uint32_t ENC_TRY_INTERVAL_MS = 1000;
+    static constexpr uint32_t ENC_GIVE_UP_AFTER_MS = 45000;
+    static constexpr uint32_t POST_DISC_DELAY_MS = 800;
+    static constexpr uint32_t ENC_LATE_READ_DELAY_MS = 5000;
+};
 
 // GATT service and characteristic UUIDs
 static constexpr uint16_t UUID_SVC_HEART_RATE = 0x180D;
@@ -37,6 +49,9 @@ ENC_CHANGE → immediate IRK read from store; if available: publish & disconnect
 DISCONNECT → immediate store read; schedule delayed read at +800ms; restart advertising
 While connected (post ENC) → poll every 1s starting at +2s, up to 45s, then disconnect when IRK captured
 All address reporting uses the peer identity address; IRK hex is reversed for parity with Arduino output.
+
+Why this lifecycle: Maintains compatibility with v1.0 behavior (immediate disconnect after capture)
+while adding robustness for timing variations across different BLE peer implementations.
 */
 
 //======================== UUIDs ========================
@@ -99,6 +114,7 @@ static std::string to_hex_str(const uint8_t *data, size_t len, bool reverse = fa
     return out;
 }
 
+// Reverse byte order for hex output (matches Arduino BLE library convention for IRK display)
 static std::string bytes_to_hex_rev(const uint8_t *data, size_t len) {
     return to_hex_str(data, len, true);
 }
@@ -134,12 +150,8 @@ static void log_conn_desc(uint16_t conn_handle) {
     if (ble_gap_conn_find(conn_handle, &d) == 0) {
         ESP_LOGI(TAG, "sec: enc=%d bonded=%d auth=%d key_size=%u",
                  d.sec_state.encrypted, d.sec_state.bonded, d.sec_state.authenticated, d.sec_state.key_size);
-        ESP_LOGI(TAG, "peer ota=%02X:%02X:%02X:%02X:%02X:%02X type=%d",
-                 d.peer_ota_addr.val[5], d.peer_ota_addr.val[4], d.peer_ota_addr.val[3],
-                 d.peer_ota_addr.val[2], d.peer_ota_addr.val[1], d.peer_ota_addr.val[0], d.peer_ota_addr.type);
-        ESP_LOGI(TAG, "peer id =%02X:%02X:%02X:%02X:%02X:%02X type=%d",
-                 d.peer_id_addr.val[5], d.peer_id_addr.val[4], d.peer_id_addr.val[3],
-                 d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0], d.peer_id_addr.type);
+        ESP_LOGI(TAG, "peer ota=%s type=%d", addr_to_str(d.peer_ota_addr).c_str(), d.peer_ota_addr.type);
+        ESP_LOGI(TAG, "peer id =%s type=%d", addr_to_str(d.peer_id_addr).c_str(), d.peer_id_addr.type);
     }
 }
 
@@ -167,11 +179,18 @@ static void log_mac(const char *prefix) {
     uint8_t mac[6];
     uint8_t type;
     if (get_own_addr(mac, &type)) {
-        ESP_LOGI(TAG, "%s MAC: %02X:%02X:%02X:%02X:%02X:%02X (type=%u)",
-                 prefix, mac[5], mac[4], mac[3], mac[2], mac[1], mac[0], type);
+        ble_addr_t addr{};
+        for (int i = 0; i < 6; ++i) addr.val[i] = mac[i];
+        ESP_LOGI(TAG, "%s MAC: %s (type=%u)", prefix, addr_to_str(addr).c_str(), type);
     } else {
         ESP_LOGW(TAG, "%s MAC: unknown (could not read)", prefix);
     }
+}
+
+// Helper to safely append const string or default value
+static int append_const_string_or_default(struct os_mbuf *om, const char *str, const char *default_str) {
+    const char *val = str ? str : default_str;
+    return os_mbuf_append(om, val, strlen(val));
 }
 
 static void log_spacer() { ESP_LOGI(TAG, " "); }
@@ -307,9 +326,7 @@ static struct ble_gatt_svc_def gatt_svcs[] = {
 
 static int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *arg) {
     if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
-    const char *str = (const char *)arg;
-    if (!str) str = "IRK Capture";
-    os_mbuf_append(ctxt->om, str, strlen(str));
+    append_const_string_or_default(ctxt->om, (const char *)arg, "IRK Capture");
     return 0;
 }
 static int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *) {
@@ -326,9 +343,7 @@ static int chr_read_hr(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ct
 }
 static int chr_read_protected(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *arg) {
     if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
-    const char *str = (const char *)arg;
-    if (!str) str = "Protected Info";
-    os_mbuf_append(ctxt->om, str, strlen(str));
+    append_const_string_or_default(ctxt->om, (const char *)arg, "Protected Info");
     return 0;
 }
 
@@ -555,7 +570,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
 //======================== Component lifecycle ========================
 
 void IRKCaptureComponent::setup() {
-    ESP_LOGI(TAG, "IRK Capture v1.2 ready");
+    ESP_LOGI(TAG, "IRK Capture v%s ready", VERSION);
     this->setup_ble();
 
     if (start_on_boot_) {
@@ -574,7 +589,7 @@ void IRKCaptureComponent::dump_config() {
 
 void IRKCaptureComponent::loop() {
     const uint32_t now = now_ms();
-    if (now - last_loop_ < LOOP_MIN_INTERVAL_MS) return;
+    if (now - last_loop_ < TimingConfig::LOOP_MIN_INTERVAL_MS) return;
     last_loop_ = now;
 
     // Timers for IRK checks
@@ -641,7 +656,8 @@ void IRKCaptureComponent::setup_ble() {
         vTaskDelete(NULL);
     });
 
-    // Static random address at boot (Arduino does this too)
+    // Seed initial static random address at boot (matches Arduino BLE library behavior)
+    // Why: Provides stable identity before user-triggered refresh_mac rotations
     uint8_t rnd[6];
     esp_fill_random(rnd, sizeof(rnd));
     rnd[0] |= 0xC0;  // static random
@@ -742,11 +758,12 @@ void IRKCaptureComponent::refresh_mac() {
     }
 
     // Ensure idle before changing address (up to 500 ms)
+    // Bounded loop with App.feed_wdt() prevents watchdog timeout during wait
     const uint32_t t0 = now_ms();
     while ((advertising_ || conn_handle_ != BLE_HS_CONN_HANDLE_NONE) &&
            (now_ms() - t0) < 500) {
         delay(10);
-        App.feed_wdt();
+        App.feed_wdt();  // Watchdog safety: prevent timeout during blocking wait
     }
 
     // Clear all bonds since MAC change invalidates them
@@ -956,12 +973,13 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 
 void IRKCaptureComponent::schedule_post_disconnect_check(const ble_addr_t &peer_id) {
     timers_.last_peer_id = peer_id;
-    timers_.post_disc_due_ms = now_ms() + POST_DISC_DELAY_MS;
+    timers_.post_disc_due_ms = now_ms() + TimingConfig::POST_DISC_DELAY_MS;
 }
 
+// Schedule delayed IRK check to allow NVS flush after encryption (some platforms delay write)
 void IRKCaptureComponent::schedule_late_enc_check(const ble_addr_t &peer_id) {
     timers_.enc_peer_id = peer_id;
-    timers_.late_enc_due_ms = now_ms() + ENC_LATE_READ_DELAY_MS;
+    timers_.late_enc_due_ms = now_ms() + TimingConfig::ENC_LATE_READ_DELAY_MS;
 }
 
 void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
@@ -1044,7 +1062,7 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
 
 void IRKCaptureComponent::notify_hr_if_due(uint32_t now) {
     if (hr_char_handle_ == 0) return;
-    if (now - last_notify_ <= HR_NOTIFY_INTERVAL_MS) return;
+    if (now - last_notify_ <= TimingConfig::HR_NOTIFY_INTERVAL_MS) return;
 
     last_notify_ = now;
     uint8_t buf[2]; size_t len;
@@ -1059,8 +1077,8 @@ void IRKCaptureComponent::notify_hr_if_due(uint32_t now) {
 void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
     // Attempt IRK retrieval after encryption + delay (allow store write)
     if (!enc_ready_ || irk_gave_up_) return;
-    if ((now - enc_time_) < ENC_TO_FIRST_TRY_DELAY_MS) return;
-    if ((now - irk_last_try_ms_) < ENC_TRY_INTERVAL_MS) return;
+    if ((now - enc_time_) < TimingConfig::ENC_TO_FIRST_TRY_DELAY_MS) return;
+    if ((now - irk_last_try_ms_) < TimingConfig::ENC_TRY_INTERVAL_MS) return;
 
     irk_last_try_ms_ = now;
 
@@ -1071,8 +1089,8 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
         ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
         irk_gave_up_ = true;
     } else {
-        if ((now - enc_time_) > ENC_GIVE_UP_AFTER_MS) {
-            ESP_LOGW(TAG, "IRK not found after %u ms post-encryption", ENC_GIVE_UP_AFTER_MS);
+        if ((now - enc_time_) > TimingConfig::ENC_GIVE_UP_AFTER_MS) {
+            ESP_LOGW(TAG, "IRK not found after %u ms post-encryption", TimingConfig::ENC_GIVE_UP_AFTER_MS);
             irk_gave_up_ = true;
         }
     }
