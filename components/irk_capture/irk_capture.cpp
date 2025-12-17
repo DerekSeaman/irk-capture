@@ -659,10 +659,6 @@ void IRKCaptureComponent::setup_ble() {
         nvs_flash_init();
     }
 
-    // Clear only BLE bond store on boot since we use dynamic names/MACs - old bonds are invalid
-    // This preserves ESPHome's other NVS data (preferences, safe mode, etc.)
-    ble_store_clear();
-
     // NimBLE host
     nimble_port_init();
 
