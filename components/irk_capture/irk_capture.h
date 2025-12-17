@@ -63,7 +63,7 @@ static int handle_gap_disconnect(class IRKCaptureComponent *self, struct ble_gap
 static int handle_gap_enc_change(class IRKCaptureComponent *self, struct ble_gap_event *ev);
 static int handle_gap_repeat_pairing(class IRKCaptureComponent *self, struct ble_gap_event *ev);
 static void publish_and_log_irk(class IRKCaptureComponent *self, const ble_addr_t &peer_id_addr,
-                                const uint8_t *irk_bytes, const char *context_tag);
+                                const std::string &irk_hex, const char *context_tag);
 
 // Main component
 class IRKCaptureComponent : public Component {
@@ -80,7 +80,7 @@ class IRKCaptureComponent : public Component {
     friend int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev);
     friend int handle_gap_repeat_pairing(IRKCaptureComponent *self, struct ble_gap_event *ev);
     friend void publish_and_log_irk(IRKCaptureComponent *self, const ble_addr_t &peer_id_addr,
-                                    const uint8_t *irk_bytes, const char *context_tag);
+                                    const std::string &irk_hex, const char *context_tag);
 
     // Configuration setters
     void set_ble_name(const std::string &name) { ble_name_ = name; }

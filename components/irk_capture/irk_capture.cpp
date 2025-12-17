@@ -214,50 +214,14 @@ static void log_banner(const char *context_tag) {
 
 static void publish_and_log_irk(IRKCaptureComponent *self,
                                 const ble_addr_t &peer_id_addr,
-                                const uint8_t *irk_bytes,
+                                const std::string &irk_hex,
                                 const char *context_tag) {
-    // Debug: verify input data validity
-    ESP_LOGD(TAG, "publish_and_log_irk called: context=%s irk_ptr=%p",
-             (context_tag ? context_tag : "null"), (void*)irk_bytes);
-
-    if (!irk_bytes) {
-        ESP_LOGE(TAG, "IRK bytes pointer is NULL!");
-        return;
-    }
-
-    // Log raw IRK bytes for debugging
-    ESP_LOGD(TAG, "IRK raw bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-             irk_bytes[0], irk_bytes[1], irk_bytes[2], irk_bytes[3],
-             irk_bytes[4], irk_bytes[5], irk_bytes[6], irk_bytes[7],
-             irk_bytes[8], irk_bytes[9], irk_bytes[10], irk_bytes[11],
-             irk_bytes[12], irk_bytes[13], irk_bytes[14], irk_bytes[15]);
-
-    // Generate strings in local scope to avoid stack issues
-    const std::string irk_hex = bytes_to_hex_rev(irk_bytes, 16);
     const std::string addr_str = addr_to_str(peer_id_addr);
-
-    // Debug: verify string generation succeeded
-    ESP_LOGD(TAG, "IRK hex length=%zu addr length=%zu", irk_hex.length(), addr_str.length());
-
-    // CRITICAL: Give logger time to flush previous messages before we add more
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // CRITICAL FIX: Log each character individually to prevent logger buffer overflow
-    // The logger drops long messages when buffer is full, so we break them into tiny chunks
-    ESP_LOGI(TAG, " ");
-    ESP_LOGI(TAG, "=== IRK CAPTURED (%s) ===", context_tag ? context_tag : "?");
-
-    // Log address in small chunks
-    ESP_LOGI(TAG, "Addr: %s", addr_str.c_str());
-
-    // Log IRK in 8-char chunks to avoid buffer overflow
-    ESP_LOGI(TAG, "IRK1: %s", irk_hex.substr(0, 8).c_str());
-    ESP_LOGI(TAG, "IRK2: %s", irk_hex.substr(8, 8).c_str());
-    ESP_LOGI(TAG, "IRK3: %s", irk_hex.substr(16, 8).c_str());
-    ESP_LOGI(TAG, "IRK4: %s", irk_hex.substr(24, 8).c_str());
-    ESP_LOGI(TAG, "======================");
-
-    // Publish to sensors
+    log_spacer();
+    log_banner(context_tag);
+    ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
+    ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
+    log_spacer();
     if (self) self->publish_irk_to_sensors(irk_hex, addr_str.c_str());
 }
 
@@ -429,7 +393,8 @@ static int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event
         } else if (rc != 0) {
             ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d", rc);
         } else if (bond.irk_present) {
-            publish_and_log_irk(self, d.peer_id_addr, bond.irk, "DISC_IMMEDIATE");
+            std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
+            publish_and_log_irk(self, d.peer_id_addr, irk_hex, "DISC_IMMEDIATE");
         } else {
             ESP_LOGD(TAG, "Bond present but no IRK in store post-disconnect");
         }
@@ -503,8 +468,8 @@ static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event
                 ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d; scheduling late check", rc);
                 self->schedule_late_enc_check(d.peer_id_addr);
             } else if (bond.irk_present) {
-                publish_and_log_irk(self, d.peer_id_addr, bond.irk, "ENC_CHANGE");
-                // Note: publish_and_log_irk now includes 100ms delay internally
+                std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
+                publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
                 // 1.0 behavior: terminate immediately after successful ENC + IRK capture
                 ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             } else {
@@ -1072,7 +1037,8 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
         } else if (rc != 0) {
             ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - post-disc delayed check", rc);
         } else if (bond.irk_present) {
-            publish_and_log_irk(this, timers_.last_peer_id, bond.irk, "DISC_DELAYED");
+            std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
+            publish_and_log_irk(this, timers_.last_peer_id, irk_hex, "DISC_DELAYED");
         } else {
             ESP_LOGD(TAG, "Bond present but no IRK - post-disc delayed check");
         }
@@ -1093,7 +1059,8 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
         } else if (rc != 0) {
             ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - late ENC check", rc);
         } else if (bond.irk_present) {
-            publish_and_log_irk(this, timers_.enc_peer_id, bond.irk, "ENC_LATE");
+            std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
+            publish_and_log_irk(this, timers_.enc_peer_id, irk_hex, "ENC_LATE");
 
             // 1.0 compatible: terminate after late capture if still connected
             if (connected_ && conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
@@ -1161,7 +1128,8 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
     uint8_t irk_bytes[16];
     ble_addr_t peer_id;
     if (try_get_irk(conn_handle_, irk_bytes, peer_id)) {
-        publish_and_log_irk(this, peer_id, irk_bytes, "POLL_CONNECTED");
+        std::string irk_hex = bytes_to_hex_rev(irk_bytes, sizeof(irk_bytes));
+        publish_and_log_irk(this, peer_id, irk_hex, "POLL_CONNECTED");
         ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
         irk_gave_up_ = true;
     } else {
