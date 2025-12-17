@@ -375,21 +375,9 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
 
                 ESP_LOGI(TAG, "Encryption established; will attempt IRK capture shortly");
             } else {
-                // Encryption failed - clear entire bond store and stop advertising briefly
-                ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing ALL bonds and stopping advertising", ev->enc_change.status);
-
-                // Clear everything - peer might be cached under different identity
-                ble_store_clear();
-
-                // Disconnect
+                // Encryption failed - just terminate and let peer retry fresh
+                ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; terminating connection", ev->enc_change.status);
                 ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-
-                // Stop advertising briefly to break retry loop, then restart
-                self->advertising_ = false;
-                ble_gap_adv_stop();
-
-                // Restart after 2 seconds to give peer time to reset
-                // Note: This will happen in on_disconnect via start_advertising()
             }
             return 0;
 
