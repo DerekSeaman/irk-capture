@@ -239,29 +239,24 @@ static void publish_and_log_irk(IRKCaptureComponent *self,
     // Debug: verify string generation succeeded
     ESP_LOGD(TAG, "IRK hex length=%zu addr length=%zu", irk_hex.length(), addr_str.length());
 
+    // CRITICAL: Use printf directly to bypass ESPHome logger buffer (which drops messages under load)
+    // This ensures IRK output always appears even when logger is overwhelmed
+    printf("\n");
+    printf("[%s] *** IRK CAPTURED *** (%s)\n", TAG, context_tag ? context_tag : "unknown");
+    printf("[%s] Identity Address: %s\n", TAG, addr_str.c_str());
+    printf("[%s] IRK: %s\n", TAG, irk_hex.c_str());
+    printf("\n");
+    fflush(stdout);  // Force immediate output
+
+    // Also log via ESPHome logger (may be dropped but worth trying)
     log_spacer();
     log_banner(context_tag);
-
-    // Print address first (shorter string, less likely to fail)
     if (!addr_str.empty()) {
         ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
-    } else {
-        ESP_LOGW(TAG, "Identity Address: <empty>");
     }
-
-    // Print IRK (longer string, may hit buffer limits)
     if (!irk_hex.empty()) {
-        // Split into two parts if needed to avoid logger buffer overflow
-        if (irk_hex.length() > 32) {
-            ESP_LOGI(TAG, "IRK (part 1): %s", irk_hex.substr(0, 16).c_str());
-            ESP_LOGI(TAG, "IRK (part 2): %s", irk_hex.substr(16).c_str());
-        } else {
-            ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
-        }
-    } else {
-        ESP_LOGW(TAG, "IRK: <empty>");
+        ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
     }
-
     log_spacer();
 
     // Publish to sensors
