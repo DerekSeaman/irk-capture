@@ -618,7 +618,9 @@ void IRKCaptureComponent::setup() {
 
 void IRKCaptureComponent::dump_config() {
     ESP_LOGCONFIG(TAG, "IRK Capture:");
+    vTaskDelay(pdMS_TO_TICKS(5));
     ESP_LOGCONFIG(TAG, "  BLE Name: %s", ble_name_.c_str());
+    vTaskDelay(pdMS_TO_TICKS(5));
     ESP_LOGCONFIG(TAG, "  Advertising: %s", advertising_ ? "YES" : "NO");
 }
 
