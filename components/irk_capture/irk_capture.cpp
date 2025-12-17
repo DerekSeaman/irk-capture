@@ -941,7 +941,11 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
 
     // Proactively initiate pairing; peer should show pairing dialog now
     int rc = ble_gap_security_initiate(conn_handle_);
-    if (rc != 0 && rc != BLE_HS_EALREADY) {
+    if (rc == BLE_HS_EBUSY) {
+        // Peer is already initiating security - skip our retry to avoid conflicts
+        ESP_LOGD(TAG, "Peer already initiating security (EBUSY); skipping retry");
+        sec_retry_done_ = true;  // Skip the 2-second retry since peer is handling it
+    } else if (rc != 0 && rc != BLE_HS_EALREADY) {
         ESP_LOGW(TAG, "ble_gap_security_initiate rc=%d", rc);
     }
 }
