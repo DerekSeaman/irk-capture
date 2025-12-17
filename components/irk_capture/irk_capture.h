@@ -56,6 +56,13 @@ class IRKCaptureButton : public button::Button, public Component {
     IRKCaptureComponent *parent_{nullptr};
 };
 
+// Forward declarations for friend functions
+static int handle_gap_connect(class IRKCaptureComponent *self, struct ble_gap_event *ev);
+static int handle_gap_disconnect(class IRKCaptureComponent *self, struct ble_gap_event *ev);
+static int handle_gap_enc_change(class IRKCaptureComponent *self, struct ble_gap_event *ev);
+static int handle_gap_repeat_pairing(class IRKCaptureComponent *self, struct ble_gap_event *ev);
+static void publish_and_log_irk(class IRKCaptureComponent *self, const ble_addr_t &peer_id_addr, const uint8_t *irk_bytes, const char *context_tag);
+
 // Main component
 class IRKCaptureComponent : public Component {
  public:
@@ -64,6 +71,13 @@ class IRKCaptureComponent : public Component {
     void loop() override;
     void dump_config() override;
     float get_setup_priority() const override { return -200.0f; }
+
+    // Friend functions for GAP event handlers and helpers
+    friend int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *ev);
+    friend int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev);
+    friend int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev);
+    friend int handle_gap_repeat_pairing(IRKCaptureComponent *self, struct ble_gap_event *ev);
+    friend void publish_and_log_irk(IRKCaptureComponent *self, const ble_addr_t &peer_id_addr, const uint8_t *irk_bytes, const char *context_tag);
 
     // Configuration setters
     void set_ble_name(const std::string &name) { ble_name_ = name; }
