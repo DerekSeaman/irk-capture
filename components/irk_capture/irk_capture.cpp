@@ -204,36 +204,6 @@ static void publish_and_log_irk(IRKCaptureComponent *self,
                                 const ble_addr_t &peer_id_addr,
                                 const uint8_t *irk_bytes,
                                 const char *context_tag) {
-    // Check if this IRK was already published by comparing raw bytes
-    // This avoids unnecessary hex formatting and duplicate sensor updates
-    if (self && self->irk_sensor_) {
-        const std::string &last_irk = self->irk_sensor_->get_state();
-        if (!last_irk.empty() && last_irk.length() == 32) {
-            // Convert last published hex back to bytes for comparison
-            uint8_t last_bytes[16];
-            bool valid = true;
-            for (size_t i = 0; i < 16; ++i) {
-                const char *hex_pair = last_irk.c_str() + (i * 2);
-                char hi = hex_pair[0], lo = hex_pair[1];
-                auto hex_val = [](char c) -> int {
-                    if (c >= '0' && c <= '9') return c - '0';
-                    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                    return -1;
-                };
-                int h = hex_val(hi), l = hex_val(lo);
-                if (h < 0 || l < 0) { valid = false; break; }
-                last_bytes[i] = (h << 4) | l;
-            }
-            // Compare raw bytes (reversed order since we store reversed hex)
-            if (valid && memcmp(irk_bytes, last_bytes, 16) == 0) {
-                ESP_LOGD(TAG, "IRK unchanged from last publish (%s); skipping duplicate", context_tag);
-                return;
-            }
-        }
-    }
-
-    // Format and publish the IRK
     const std::string irk_hex = bytes_to_hex_rev(irk_bytes, 16);
     const std::string addr_str = addr_to_str(peer_id_addr);
     log_spacer();
