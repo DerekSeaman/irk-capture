@@ -450,7 +450,6 @@ static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event
         self->enc_ready_ = true;
         self->enc_time_ = now_ms();
         self->on_auth_complete(true);
-        log_conn_desc(ev->enc_change.conn_handle);
 
         // Immediate store read using identity address
         struct ble_gap_conn_desc d{};
