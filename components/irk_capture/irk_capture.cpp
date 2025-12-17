@@ -651,11 +651,9 @@ void IRKCaptureComponent::loop() {
 
 void IRKCaptureComponent::setup_ble() {
     // NVS for key store
-    auto err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        nvs_flash_init();
-    }
+    // Always erase NVS on boot since we use dynamic names/MACs - old bonds are invalid
+    nvs_flash_erase();
+    nvs_flash_init();
 
     // NimBLE host
     nimble_port_init();
