@@ -781,13 +781,22 @@ void IRKCaptureComponent::refresh_mac() {
         ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
     }
 
-    // Ensure idle before changing address (up to 500 ms)
-    // Bounded loop with App.feed_wdt() prevents watchdog timeout during wait
+    // Give NimBLE time to actually stop advertising and close connections
+    // Our advertising_ flag is set immediately, but the stack needs time
+    delay(100);
+
+    // Ensure idle before changing address (up to 500 ms additional wait if needed)
     const uint32_t t0 = now_ms();
-    while ((advertising_ || conn_handle_ != BLE_HS_CONN_HANDLE_NONE) &&
-           (now_ms() - t0) < 500) {
+    while (conn_handle_ != BLE_HS_CONN_HANDLE_NONE && (now_ms() - t0) < 500) {
         delay(10);
         App.feed_wdt();  // Watchdog safety: prevent timeout during blocking wait
+    }
+
+    // Check if connection actually closed
+    if (conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
+        ESP_LOGW(TAG, "Connection still active after 500ms wait (conn_handle=%u)", conn_handle_);
+    } else {
+        ESP_LOGD(TAG, "System idle confirmed (no connection)");
     }
 
     // Clear all bonds since MAC change invalidates them
