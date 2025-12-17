@@ -7,6 +7,8 @@
 #include "esphome/components/text/text.h"
 
 // Use ESP-IDF NimBLE directly instead of Arduino wrapper
+#include <nimble/nimble_port.h>
+#include <nimble/nimble_port_freertos.h>
 #include <host/ble_hs.h>
 #include <host/ble_gap.h>
 #include <host/ble_gatt.h>
