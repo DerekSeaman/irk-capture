@@ -487,12 +487,9 @@ static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event
         ble_store_clear();  // Clear everything to force fresh pairing
         ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
 
-        // For authentication/DHKey failures, suppress advertising to force peer reset
-        // Status 7 = BLE_SM_ERR_AUTHREQ (authentication requirements)
-        // Status 1288 = DHKey check failure
-        if (ev->enc_change.status == 7 || ev->enc_change.status == 1288) {
-            ESP_LOGW(TAG, "Authentication/DHKey failure (status=%d) - suppressing advertising to force peer reset",
-                     ev->enc_change.status);
+        // For DHKey failures (status=1288), stop advertising briefly to force peer to reset
+        if (ev->enc_change.status == 1288) {
+            ESP_LOGW(TAG, "DHKey failure detected - suppressing advertising to force peer reset");
             self->suppress_next_adv_ = true;
         }
     }
