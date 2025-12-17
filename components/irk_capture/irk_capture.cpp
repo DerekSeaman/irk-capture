@@ -216,13 +216,55 @@ static void publish_and_log_irk(IRKCaptureComponent *self,
                                 const ble_addr_t &peer_id_addr,
                                 const uint8_t *irk_bytes,
                                 const char *context_tag) {
+    // Debug: verify input data validity
+    ESP_LOGD(TAG, "publish_and_log_irk called: context=%s irk_ptr=%p",
+             (context_tag ? context_tag : "null"), (void*)irk_bytes);
+
+    if (!irk_bytes) {
+        ESP_LOGE(TAG, "IRK bytes pointer is NULL!");
+        return;
+    }
+
+    // Log raw IRK bytes for debugging
+    ESP_LOGD(TAG, "IRK raw bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+             irk_bytes[0], irk_bytes[1], irk_bytes[2], irk_bytes[3],
+             irk_bytes[4], irk_bytes[5], irk_bytes[6], irk_bytes[7],
+             irk_bytes[8], irk_bytes[9], irk_bytes[10], irk_bytes[11],
+             irk_bytes[12], irk_bytes[13], irk_bytes[14], irk_bytes[15]);
+
+    // Generate strings in local scope to avoid stack issues
     const std::string irk_hex = bytes_to_hex_rev(irk_bytes, 16);
     const std::string addr_str = addr_to_str(peer_id_addr);
+
+    // Debug: verify string generation succeeded
+    ESP_LOGD(TAG, "IRK hex length=%zu addr length=%zu", irk_hex.length(), addr_str.length());
+
     log_spacer();
     log_banner(context_tag);
-    ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
-    ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
+
+    // Print address first (shorter string, less likely to fail)
+    if (!addr_str.empty()) {
+        ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
+    } else {
+        ESP_LOGW(TAG, "Identity Address: <empty>");
+    }
+
+    // Print IRK (longer string, may hit buffer limits)
+    if (!irk_hex.empty()) {
+        // Split into two parts if needed to avoid logger buffer overflow
+        if (irk_hex.length() > 32) {
+            ESP_LOGI(TAG, "IRK (part 1): %s", irk_hex.substr(0, 16).c_str());
+            ESP_LOGI(TAG, "IRK (part 2): %s", irk_hex.substr(16).c_str());
+        } else {
+            ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
+        }
+    } else {
+        ESP_LOGW(TAG, "IRK: <empty>");
+    }
+
     log_spacer();
+
+    // Publish to sensors
     if (self) self->publish_irk_to_sensors(irk_hex, addr_str.c_str());
 }
 
@@ -469,6 +511,8 @@ static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event
                 self->schedule_late_enc_check(d.peer_id_addr);
             } else if (bond.irk_present) {
                 publish_and_log_irk(self, d.peer_id_addr, bond.irk, "ENC_CHANGE");
+                // Small delay to allow logger to flush before disconnect floods the log
+                vTaskDelay(pdMS_TO_TICKS(50));
                 // 1.0 behavior: terminate immediately after successful ENC + IRK capture
                 ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             } else {
