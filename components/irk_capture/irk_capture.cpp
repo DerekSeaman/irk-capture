@@ -220,8 +220,9 @@ static void publish_and_log_irk(IRKCaptureComponent *self,
     log_spacer();
     log_banner(context_tag);
     ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
+    vTaskDelay(pdMS_TO_TICKS(10));  // Short delay to ensure address line flushes
     ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
-    taskYIELD();  // Give logger task a chance to flush before disconnect floods the buffer
+    vTaskDelay(pdMS_TO_TICKS(10));  // Short delay to ensure IRK line flushes before disconnect
     log_spacer();
     if (self) self->publish_irk_to_sensors(irk_hex, addr_str.c_str());
 }
