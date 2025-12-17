@@ -754,8 +754,24 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
             key.peer_addr = d.peer_id_addr;
             struct ble_store_value_sec bond{};
             if (ble_store_read_peer_sec(&key, &bond) == 0) {
-                ESP_LOGW(TAG, "Peer unbonded but we have cached bond data. Clearing to force fresh pairing.");
-                ble_store_util_delete_peer(&d.peer_id_addr);
+                // We have bond data! Check if we have the IRK
+                if (bond.irk_present) {
+                    // Re-publish the IRK we already have
+                    std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
+                    char addr_str[18];
+                    snprintf(addr_str, sizeof(addr_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                             d.peer_id_addr.val[5], d.peer_id_addr.val[4], d.peer_id_addr.val[3],
+                             d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0]);
+                    publish_irk_to_sensors(irk_hex, addr_str);
+                    ESP_LOGI(TAG, "Re-published existing IRK for already-paired device");
+                    // Disconnect since we already have what we need
+                    ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
+                    return;  // Don't initiate security, we're done
+                } else {
+                    // No IRK in bond - delete and try fresh pairing
+                    ESP_LOGW(TAG, "Peer unbonded but we have cached bond without IRK. Clearing to force fresh pairing.");
+                    ble_store_util_delete_peer(&d.peer_id_addr);
+                }
             }
         }
     } else {
