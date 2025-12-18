@@ -85,10 +85,10 @@ static int chr_read_protected(uint16_t conn_handle, uint16_t attr_handle,
 
 // GAP event handlers (forward decls)
 class IRKCaptureComponent;
-static int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *ev);
-static int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev);
-static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev);
-static int handle_gap_repeat_pairing(IRKCaptureComponent *self, struct ble_gap_event *ev);
+int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *ev);
+int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev);
+int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev);
+int handle_gap_repeat_pairing(IRKCaptureComponent *self, struct ble_gap_event *ev);
 
 //======================== Small utilities (readability only) ========================
 
@@ -212,10 +212,10 @@ static void log_banner(const char *context_tag) {
 
 //======================== Output helpers (centralized) ========================
 
-static void publish_and_log_irk(IRKCaptureComponent *self,
-                                const ble_addr_t &peer_id_addr,
-                                const std::string &irk_hex,
-                                const char *context_tag) {
+void publish_and_log_irk(IRKCaptureComponent *self,
+                         const ble_addr_t &peer_id_addr,
+                         const std::string &irk_hex,
+                         const char *context_tag) {
     const std::string addr_str = addr_to_str(peer_id_addr);
     log_spacer();
     log_banner(context_tag);
@@ -362,7 +362,7 @@ void IRKCaptureButton::press_action() {
 
 //======================== GAP event handlers (extracted) ========================
 
-static int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
+int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     if (ev->connect.status == 0) {
         ESP_LOGI(TAG, "Connection established successfully");
         self->on_connect(ev->connect.conn_handle);
@@ -374,7 +374,7 @@ static int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *e
     return 0;
 }
 
-static int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
+int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)", ev->disconnect.reason, ev->disconnect.reason);
     self->on_disconnect();
 
@@ -420,7 +420,7 @@ static int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event
     return 0;
 }
 
-static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev) {
+int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     ESP_LOGI(TAG, "ENC_CHANGE status=%d (0x%02X)", ev->enc_change.status, ev->enc_change.status);
 
     // Log common encryption failure reasons for Android troubleshooting
@@ -493,7 +493,7 @@ static int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event
     return 0;
 }
 
-static int handle_gap_repeat_pairing(IRKCaptureComponent *self, struct ble_gap_event *ev) {
+int handle_gap_repeat_pairing(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     // Portable: get the current connection descriptor from the handle
     struct ble_gap_conn_desc d{};
     int rc = ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d);
