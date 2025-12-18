@@ -18,15 +18,92 @@ static const char *const TAG = "irk_capture";
 static constexpr char VERSION[] = "1.2";
 static constexpr char HEX[] = "0123456789abcdef";
 
+//======================== NAMING CONVENTIONS ========================
+/*
+This codebase follows ESPHome style guidelines:
+- Member variables: trailing underscore (conn_handle_, advertising_)
+- Local variables/parameters: snake_case (conn_handle, peer_id)
+- Functions: snake_case (try_get_irk, start_advertising)
+- Constants: UPPER_SNAKE_CASE or constexpr with descriptive names
+- Classes: PascalCase (IRKCaptureComponent)
+*/
+
+//======================== THREADING MODEL ========================
+/*
+CRITICAL: This component runs in a multi-threaded environment:
+1. NimBLE task: Executes all GAP event callbacks (connect, disconnect, enc_change, etc.)
+2. ESPHome main task: Executes loop(), setup(), and UI callbacks (switch, button, text)
+
+RACE CONDITION WARNINGS:
+- timers_ struct fields are accessed from BOTH tasks without mutex protection
+- Member variables like conn_handle_, advertising_, enc_ready_ can be read/written concurrently
+- This design relies on ESP32 atomic reads/writes for 32-bit aligned variables
+- Safe because operations are simple flag checks and assignments, not complex state machines
+- If timing bugs occur, add mutex protection around timers_ and critical state variables
+
+ESPHome component lifecycle guarantees:
+- setup() completes before loop() starts
+- All set_*() configuration calls complete before setup()
+- Parent pointers (IRKCaptureText, IRKCaptureSwitch, etc.) are always valid after setup()
+*/
+
+//======================== ERROR HANDLING STRATEGY ========================
+/*
+Logging severity levels used throughout:
+- ESP_LOGE: Critical failures that prevent IRK capture (NimBLE init fails, store errors)
+- ESP_LOGW: Recoverable issues or unexpected states (pairing retry, IRK not yet available)
+- ESP_LOGI: Normal operational events (connection, disconnection, IRK captured)
+- ESP_LOGD: Detailed debugging (GAP events, state transitions, timer scheduling)
+
+Philosophy: Log enough to debug pairing issues remotely, but avoid spam during normal operation.
+*/
+
+//======================== STATE MACHINE OVERVIEW ========================
+/*
+Component operates as a state machine with these primary states:
+
+1. IDLE (advertising_ = false, connected_ = false)
+   - Waiting for user to enable advertising switch
+   - Transitions to ADVERTISING when start_advertising() called
+
+2. ADVERTISING (advertising_ = true, connected_ = false)
+   - Broadcasting BLE advertisements with current MAC and device name
+   - Transitions to CONNECTED on BLE_GAP_EVENT_CONNECT
+
+3. CONNECTED (connected_ = true, advertising_ = false)
+   - Peer device connected, initiating security/pairing
+   - Transitions to ENCRYPTED when BLE_GAP_EVENT_ENC_CHANGE succeeds
+
+4. ENCRYPTED (connected_ = true, enc_ready_ = true)
+   - Secure connection established, polling for IRK in NVS bond store
+   - Transitions to DISCONNECTING when IRK captured or timeout (45s)
+
+5. DISCONNECTING (connected_ = false, suppress_next_adv_ may be true)
+   - IRK retrieval attempts continue via timers after disconnect
+   - Transitions back to ADVERTISING after suppression period expires
+
+Key flags:
+- advertising_: BLE stack is actively advertising
+- connected_: Peer is currently connected
+- enc_ready_: Encryption/pairing completed successfully
+- irk_gave_up_: Exceeded 45s timeout without capturing IRK
+- suppress_next_adv_: Prevent immediate re-advertising after successful IRK capture
+- sec_retry_done_: Already attempted one security retry after ENC failure
+*/
+
 // Timing configuration (all values in ms)
 struct TimingConfig {
-    static constexpr uint32_t LOOP_MIN_INTERVAL_MS = 50;
-    static constexpr uint32_t HR_NOTIFY_INTERVAL_MS = 1000;
-    static constexpr uint32_t ENC_TO_FIRST_TRY_DELAY_MS = 1000;
-    static constexpr uint32_t ENC_TRY_INTERVAL_MS = 1000;
-    static constexpr uint32_t ENC_GIVE_UP_AFTER_MS = 45000;
-    static constexpr uint32_t POST_DISC_DELAY_MS = 800;
-    static constexpr uint32_t ENC_LATE_READ_DELAY_MS = 5000;
+    static constexpr uint32_t LOOP_MIN_INTERVAL_MS = 50;           // Minimum time between loop() executions
+    static constexpr uint32_t HR_NOTIFY_INTERVAL_MS = 1000;        // Heart rate notification interval (keeps connection alive)
+    static constexpr uint32_t ENC_TO_FIRST_TRY_DELAY_MS = 1000;    // Delay from encryption to first IRK poll (allows NVS write to complete)
+    static constexpr uint32_t ENC_TRY_INTERVAL_MS = 1000;          // Interval between IRK polling attempts while connected
+    static constexpr uint32_t ENC_GIVE_UP_AFTER_MS = 45000;        // Maximum time to poll for IRK before giving up
+    static constexpr uint32_t POST_DISC_DELAY_MS = 800;            // Delay after disconnect for deferred IRK check (allows NVS flush)
+    static constexpr uint32_t ENC_LATE_READ_DELAY_MS = 5000;       // Extended delay for IRK check after failed encryption
+    static constexpr uint32_t IRK_MIN_POLL_INTERVAL_MS = 200;      // Minimum time between IRK polling attempts (prevents spam)
+    static constexpr uint32_t SEC_RETRY_DELAY_MS = 2000;           // Delay before retrying security after encryption failure
+    static constexpr uint32_t SEC_TIMEOUT_MS = 20000;              // Timeout for encryption to complete (assumes peer forgot pairing)
+    static constexpr uint32_t ADV_SUPPRESS_DURATION_MS = 2000;     // How long to suppress advertising after IRK capture
 };
 
 // GATT service and characteristic UUIDs
@@ -212,6 +289,16 @@ static void log_banner(const char *context_tag) {
 
 //======================== Output helpers (centralized) ========================
 
+/**
+ * @brief Centralized IRK output helper - logs and publishes IRK to Home Assistant sensors
+ * @param self Pointer to IRKCaptureComponent instance (may be null during cleanup)
+ * @param peer_id_addr Peer's identity address (stable across reconnections)
+ * @param irk_hex IRK in hex string format (already reversed for output compatibility)
+ * @param context_tag Context label for logging (e.g., "ENC_IMMEDIATE", "DISC_IMMEDIATE", "POLL_CONNECTED")
+ *
+ * This is the single point of IRK output, ensuring consistent formatting across all capture paths.
+ * Called from multiple locations: ENC_CHANGE, DISCONNECT, post-disconnect timer, polling loop.
+ */
 void publish_and_log_irk(IRKCaptureComponent *self,
                          const ble_addr_t &peer_id_addr,
                          const std::string &irk_hex,
@@ -361,7 +448,26 @@ void IRKCaptureButton::press_action() {
 }
 
 //======================== GAP event handlers (extracted) ========================
+/*
+GAP Event Handler Return Value Semantics:
+- Return 0: Event handled successfully, continue normal NimBLE processing
+- Return BLE_GAP_REPEAT_PAIRING_RETRY: Delete peer bond and retry pairing (only valid for REPEAT_PAIRING event)
+- Return BLE_GAP_REPEAT_PAIRING_IGNORE: Ignore repeat pairing request (only valid for REPEAT_PAIRING event)
+- Other non-zero values: Error occurred, but NimBLE will continue (logged but not fatal)
 
+THREADING: These handlers run in NimBLE task context, NOT ESPHome main task.
+Avoid blocking operations and heavy computation in these functions.
+*/
+
+/**
+ * @brief Handles BLE_GAP_EVENT_CONNECT - called when peer connects or connection fails
+ * @param self Pointer to IRKCaptureComponent instance
+ * @param ev GAP event structure containing connection details
+ * @return 0 (always - connection success/failure is logged only)
+ *
+ * On successful connection, initiates security/pairing via on_connect().
+ * On failure, restarts advertising to allow retry.
+ */
 int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     if (ev->connect.status == 0) {
         ESP_LOGI(TAG, "Connection established successfully");
@@ -374,6 +480,15 @@ int handle_gap_connect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     return 0;
 }
 
+/**
+ * @brief Handles BLE_GAP_EVENT_DISCONNECT - called when peer disconnects
+ * @param self Pointer to IRKCaptureComponent instance
+ * @param ev GAP event structure containing disconnect reason
+ * @return 0 (always)
+ *
+ * Attempts immediate IRK read from NVS, schedules delayed read (+800ms),
+ * and restarts advertising unless suppressed (IRK re-publish case).
+ */
 int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)", ev->disconnect.reason, ev->disconnect.reason);
     self->on_disconnect();
@@ -420,10 +535,19 @@ int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     return 0;
 }
 
+/**
+ * @brief Handles BLE_GAP_EVENT_ENC_CHANGE - called when encryption/pairing completes or fails
+ * @param self Pointer to IRKCaptureComponent instance
+ * @param ev GAP event structure containing encryption status
+ * @return 0 (always)
+ *
+ * On success (status=0): Attempts immediate IRK read and schedules delayed read (+5s).
+ * On failure: Logs detailed error, deletes stale bond, and retries security once.
+ */
 int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     ESP_LOGI(TAG, "ENC_CHANGE status=%d (0x%02X)", ev->enc_change.status, ev->enc_change.status);
 
-    // Log common encryption failure reasons for Android troubleshooting
+    // Log common encryption failure reasons for debugging (especially Android pairing issues)
     if (ev->enc_change.status != 0) {
         const char *status_desc = "Unknown";
         switch (ev->enc_change.status) {
@@ -493,6 +617,16 @@ int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     return 0;
 }
 
+/**
+ * @brief Handles BLE_GAP_EVENT_REPEAT_PAIRING - peer attempting to pair when already bonded
+ * @param self Pointer to IRKCaptureComponent instance (unused, but kept for consistency)
+ * @param ev GAP event structure containing repeat pairing details
+ * @return BLE_GAP_REPEAT_PAIRING_RETRY (instructs NimBLE to delete bond and retry pairing)
+ *
+ * This event occurs when a peer device has forgotten our bond but we still have theirs stored.
+ * We delete our stale bond data and return RETRY to allow NimBLE to complete fresh pairing.
+ * This is essential for recovering from out-of-sync bond states between devices.
+ */
 int handle_gap_repeat_pairing(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     // Portable: get the current connection descriptor from the handle
     struct ble_gap_conn_desc d{};
@@ -501,12 +635,12 @@ int handle_gap_repeat_pairing(IRKCaptureComponent *self, struct ble_gap_event *e
         const ble_addr_t *peer = &d.peer_id_addr;
         ESP_LOGW(TAG, "Repeat pairing from %02X:%02X:%02X:%02X:%02X:%02X (clearing all bond data)",
                  peer->val[5], peer->val[4], peer->val[3], peer->val[2], peer->val[1], peer->val[0]);
-        // Delete ALL stored data for this peer
+        // Delete ALL stored data for this peer to allow fresh pairing
         ble_store_util_delete_peer(peer);
     } else {
         ESP_LOGW(TAG, "Repeat pairing: conn desc not found rc=%d", rc);
     }
-    return BLE_GAP_REPEAT_PAIRING_RETRY;
+    return BLE_GAP_REPEAT_PAIRING_RETRY;  // Tell NimBLE to retry pairing with clean slate
 }
 
 //======================== GAP event handler (dispatcher) ========================
@@ -975,7 +1109,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 
     int rc = ble_gap_conn_find(conn_handle, &desc);
     if (rc != 0) {
-        ESP_LOGD(TAG, "ble_gap_conn_find rc=%d", rc);
+        ESP_LOGD(TAG, "ble_gap_conn_find failed rc=%d (handle may be invalid)", rc);
         return false;
     }
 
@@ -987,15 +1121,15 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 
     rc = ble_store_read_peer_sec(&key_sec, &bond);
     if (rc == BLE_HS_ENOENT) {
-        ESP_LOGD(TAG, "No bond for peer (ENOENT)");
+        ESP_LOGD(TAG, "No bond for peer (ENOENT) - IRK not yet written to NVS");
         return false;
     }
     if (rc != 0) {
-        ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d", rc);
+        ESP_LOGW(TAG, "ble_store_read_peer_sec failed rc=%d", rc);
         return false;
     }
 
-    // Detailed bond information for Android troubleshooting
+    // Detailed bond information for debugging
     ESP_LOGD(TAG, "Bond found: ediv=%u rand=%llu irk_present=%d ltk_present=%d csrk_present=%d",
              (unsigned)bond.ediv, (unsigned long long)bond.rand_num,
              (int)bond.irk_present, (int)bond.ltk_present, (int)bond.csrk_present);
@@ -1003,14 +1137,16 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
     ESP_LOGD(TAG, "Bond security: authenticated=%d sc=%d",
              (int)bond.authenticated, (int)bond.sc);
 
+    // Defensive bounds check: Ensure IRK is present before copying
+    // NimBLE guarantees bond.irk[16] array size, but validate presence flag
     if (!bond.irk_present) {
         ESP_LOGW(TAG, "Bond present but no IRK (peer did not distribute ID key)");
         ESP_LOGW(TAG, "Peer key distribution may be incomplete or unsupported by device");
         return false;
     }
 
-    // Return raw IRK bytes and peer identity address
-    memcpy(irk_out, bond.irk, 16);
+    // Return raw IRK bytes (16 bytes guaranteed by NimBLE) and peer identity address
+    std::memcpy(irk_out, bond.irk, 16);
     peer_id_out = desc.peer_id_addr;
     return true;
 }
@@ -1080,23 +1216,24 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
 //======================== Loop helpers ========================
 
 void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
-    // 1.0 behavior: single retry ~2s after initial initiate
+    // 1.0 behavior: single retry after SEC_RETRY_DELAY_MS from initial initiate
     if (connected_ && !enc_ready_) {
         if (sec_init_time_ms_ == 0) sec_init_time_ms_ = now;
 
-        // Retry security at 2s
-        if (!sec_retry_done_ && (now - sec_init_time_ms_) > 2000) {
+        // Retry security after configured delay
+        if (!sec_retry_done_ && (now - sec_init_time_ms_) > TimingConfig::SEC_RETRY_DELAY_MS) {
             int rc = ble_gap_security_initiate(conn_handle_);
             ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
             sec_retry_done_ = true;
         }
 
-        // If encryption still hasn't completed after 20s, assume peer forgot pairing
+        // If encryption still hasn't completed after timeout, assume peer forgot pairing
         // Delete our bond and disconnect to force fresh pairing on reconnect
-        if ((now - sec_init_time_ms_) > 20000) {
+        if ((now - sec_init_time_ms_) > TimingConfig::SEC_TIMEOUT_MS) {
             struct ble_gap_conn_desc d{};
             if (ble_gap_conn_find(conn_handle_, &d) == 0) {
-                ESP_LOGW(TAG, "Encryption timeout after 20s; peer may have forgotten pairing. Clearing bond data.");
+                ESP_LOGW(TAG, "Encryption timeout after %u ms; peer may have forgotten pairing. Clearing bond data.",
+                         TimingConfig::SEC_TIMEOUT_MS);
                 ble_store_util_delete_peer(&d.peer_id_addr);
             }
             // Disconnect to trigger fresh pairing on next connection
