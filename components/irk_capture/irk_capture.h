@@ -22,7 +22,7 @@ namespace irk_capture {
 
 class IRKCaptureComponent;
 
-// Text input for BLE name.
+// Text input for BLE name
 class IRKCaptureText : public text::Text, public Component {
  public:
     void set_parent(IRKCaptureComponent *parent) { parent_ = parent; }

@@ -8,7 +8,7 @@
 #include <host/ble_store.h>
 #include <store/config/ble_store_config.h>
 
-// Some ESP-IDF 5.x package variants omit this prototype from headers; declare it explicitly.
+// Some ESP-IDF 5.x package variants omit this prototype from headers; declare it explicitly
 extern "C" int ble_store_config_init(void);
 
 namespace esphome {
