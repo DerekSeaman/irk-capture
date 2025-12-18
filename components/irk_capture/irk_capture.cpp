@@ -1102,7 +1102,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     }
 
     // Give the logger a tiny chance to flush this burst without impacting behavior
-    ets_delay_us(500);  // 0.5 ms
+    delayMicroseconds(500);  // 0.5 ms
 }
 
 void IRKCaptureComponent::on_disconnect() {
