@@ -21,11 +21,11 @@ static constexpr char HEX[] = "0123456789abcdef";
 //======================== NAMING CONVENTIONS ========================
 /*
 This codebase follows ESPHome style guidelines:
-- Member variables: trailing underscore (conn_handle_, advertising_)
-- Local variables/parameters: snake_case (conn_handle, peer_id)
-- Functions: snake_case (try_get_irk, start_advertising)
-- Constants: UPPER_SNAKE_CASE or constexpr with descriptive names
-- Classes: PascalCase (IRKCaptureComponent)
+-   Member variables: trailing underscore (conn_handle_, advertising_)
+-   Local variables/parameters: snake_case (conn_handle, peer_id)
+-   Functions: snake_case (try_get_irk, start_advertising)
+-   Constants: UPPER_SNAKE_CASE or constexpr with descriptive names
+-   Classes: PascalCase (IRKCaptureComponent)
 */
 
 //======================== THREADING MODEL ========================
@@ -35,25 +35,29 @@ CRITICAL: This component runs in a multi-threaded environment:
 2. ESPHome main task: Executes loop(), setup(), and UI callbacks (switch, button, text)
 
 RACE CONDITION WARNINGS:
-- timers_ struct fields are accessed from BOTH tasks without mutex protection
-- Member variables like conn_handle_, advertising_, enc_ready_ can be read/written concurrently
-- This design relies on ESP32 atomic reads/writes for 32-bit aligned variables
-- Safe because operations are simple flag checks and assignments, not complex state machines
-- If timing bugs occur, add mutex protection around timers_ and critical state variables
+-   timers_ struct fields are accessed from BOTH tasks without mutex protection
+-   Member variables like conn_handle_, advertising_, enc_ready_ can be read/written concurrently
+-   This design relies on ESP32 atomic reads/writes for 32-bit aligned variables
+-   Safe because operations are simple flag checks and assignments, not complex state machines
+-   If timing bugs occur, add mutex protection around timers_ and critical state variables
 
 ESPHome component lifecycle guarantees:
-- setup() completes before loop() starts
-- All set_*() configuration calls complete before setup()
-- Parent pointers (IRKCaptureText, IRKCaptureSwitch, etc.) are always valid after setup()
+-   setup() completes before loop() starts
+-   All set_*() configuration calls complete before setup()
+-   Parent pointers (IRKCaptureText, IRKCaptureSwitch, etc.) are always valid after setup()
+
+NOTE: ble_addr_t is a multi-word struct. When copying timers_.last_peer_id / timers_.enc_peer_id
+across tasks, we snapshot into a local before use to reduce the chance of torn reads. This is
+best-effort diagnostics only; if timing bugs are observed, add a mutex around timers_.
 */
 
 //======================== ERROR HANDLING STRATEGY ========================
 /*
 Logging severity levels used throughout:
-- ESP_LOGE: Critical failures that prevent IRK capture (NimBLE init fails, store errors)
-- ESP_LOGW: Recoverable issues or unexpected states (pairing retry, IRK not yet available)
-- ESP_LOGI: Normal operational events (connection, disconnection, IRK captured)
-- ESP_LOGD: Detailed debugging (GAP events, state transitions, timer scheduling)
+-   ESP_LOGE: Critical failures that prevent IRK capture (NimBLE init fails, store errors)
+-   ESP_LOGW: Recoverable issues or unexpected states (pairing retry, IRK not yet available)
+-   ESP_LOGI: Normal operational events (connection, disconnection, IRK captured)
+-   ESP_LOGD: Detailed debugging (GAP events, state transitions, timer scheduling)
 
 Philosophy: Log enough to debug pairing issues remotely, but avoid spam during normal operation.
 */
@@ -83,12 +87,12 @@ Component operates as a state machine with these primary states:
    - Transitions back to ADVERTISING after suppression period expires
 
 Key flags:
-- advertising_: BLE stack is actively advertising
-- connected_: Peer is currently connected
-- enc_ready_: Encryption/pairing completed successfully
-- irk_gave_up_: Exceeded 45s timeout without capturing IRK
-- suppress_next_adv_: Prevent immediate re-advertising after successful IRK capture
-- sec_retry_done_: Already attempted one security retry after ENC failure
+-   advertising_: BLE stack is actively advertising
+-   connected_: Peer is currently connected
+-   enc_ready_: Encryption/pairing completed successfully
+-   irk_gave_up_: Exceeded 45s timeout without capturing IRK
+-   suppress_next_adv_: Prevent immediate re-advertising after successful IRK capture
+-   sec_retry_done_: Already attempted one security retry after ENC failure
 */
 
 // Timing configuration (all values in ms)
@@ -339,7 +343,7 @@ static struct ble_gatt_chr_def devinfo_chrs[] = {
     {
         .uuid = &UUID_CHR_MODEL.u,
         .access_cb = chr_read_devinfo,
-        .arg = (void *)"IRK Capture",
+        .arg = (void *)"IRK Capture", // refreshed to ble_name_.c_str() before advertising
         .flags = BLE_GATT_CHR_F_READ_ENC,
     },
     {0}
@@ -394,11 +398,14 @@ static struct ble_gatt_svc_def gatt_svcs[] = {
 
 static int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *arg) {
     if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
-    append_const_string_or_default(ctxt->om, (const char *)arg, "IRK Capture");
+    // Debug visibility for potential pointer lifetime issues
+    const char *val = (const char *)arg;
+    ESP_LOGD(TAG, "DevInfo read (ptr=%p) value='%s'", (void *)val, val ? val : "(null)");
+    append_const_string_or_default(ctxt->om, val, "IRK Capture");
     return 0;
 }
 static int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *) {
-    uint8_t lvl = 100;
+    uint8_t lvl = 100; // Placeholder static battery level
     os_mbuf_append(ctxt->om, &lvl, 1);
     return 0;
 }
@@ -450,10 +457,10 @@ void IRKCaptureButton::press_action() {
 //======================== GAP event handlers (extracted) ========================
 /*
 GAP Event Handler Return Value Semantics:
-- Return 0: Event handled successfully, continue normal NimBLE processing
-- Return BLE_GAP_REPEAT_PAIRING_RETRY: Delete peer bond and retry pairing (only valid for REPEAT_PAIRING event)
-- Return BLE_GAP_REPEAT_PAIRING_IGNORE: Ignore repeat pairing request (only valid for REPEAT_PAIRING event)
-- Other non-zero values: Error occurred, but NimBLE will continue (logged but not fatal)
+-   Return 0: Event handled successfully, continue normal NimBLE processing
+-   Return BLE_GAP_REPEAT_PAIRING_RETRY: Delete peer bond and retry pairing (only valid for REPEAT_PAIRING event)
+-   Return BLE_GAP_REPEAT_PAIRING_IGNORE: Ignore repeat pairing request (only valid for REPEAT_PAIRING event)
+-   Other non-zero values: Error occurred, but NimBLE will continue (logged but not fatal)
 
 THREADING: These handlers run in NimBLE task context, NOT ESPHome main task.
 Avoid blocking operations and heavy computation in these functions.
@@ -515,6 +522,7 @@ int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
         }
     } else {
         memset(&self->timers_.last_peer_id, 0, sizeof(self->timers_.last_peer_id));
+        ESP_LOGD(TAG, "Disconnect: conn desc not found; cleared last_peer_id");
     }
 
     // Schedule an extra delayed post-disconnect check (800 ms)
@@ -571,6 +579,7 @@ int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     }
 
     if (ev->enc_change.status == 0) {
+        ESP_LOGI(TAG, "Encryption established; attempting immediate IRK capture");
         self->enc_ready_ = true;
         self->enc_time_ = now_ms();
         self->on_auth_complete(true);
@@ -600,8 +609,6 @@ int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev) {
                 self->schedule_late_enc_check(d.peer_id_addr);
             }
         }
-
-        ESP_LOGI(TAG, "Encryption established; will attempt IRK capture shortly");
     } else {
         // Encryption failed - clear all bonds and terminate
         ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing all bonds", ev->enc_change.status);
@@ -717,7 +724,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event *ev, void *arg) 
             return 0;
 
         default:
-            // Log truly unknown GAP events
+            // More verbose default logging to aid future SDK changes
             ESP_LOGD(TAG, "Unhandled GAP event type=%d", ev->type);
             return 0;
     }
@@ -786,7 +793,13 @@ void IRKCaptureComponent::setup_ble() {
 
     // Security (1.0: set once here; no later re-asserts)
     ble_hs_cfg.reset_cb = [](int reason) { ESP_LOGW(TAG, "NimBLE reset reason=%d", reason); };
-    ble_hs_cfg.sync_cb = []() { ESP_LOGI(TAG, "NimBLE host synced"); };
+    ble_hs_cfg.sync_cb = []() {
+        ESP_LOGI(TAG, "NimBLE host synced");
+        // Print SM config once early to reduce chances of log drops later
+        ESP_LOGI(TAG, "SM config (on sync): bonding=%d mitm=%d sc=%d io_cap=%d our_key_dist=0x%02X their_key_dist=0x%02X",
+                 (int)ble_hs_cfg.sm_bonding, (int)ble_hs_cfg.sm_mitm, (int)ble_hs_cfg.sm_sc, (int)ble_hs_cfg.sm_io_cap,
+                 (unsigned)ble_hs_cfg.sm_our_key_dist, (unsigned)ble_hs_cfg.sm_their_key_dist);
+    };
 
     ble_hs_cfg.sm_bonding = 1;
     ble_hs_cfg.sm_mitm = 0;
@@ -982,14 +995,17 @@ void IRKCaptureComponent::refresh_mac() {
             this->start_advertising();
             return;
         } else if (rc == BLE_HS_EINVAL) {
-            ESP_LOGW(TAG, "ble_hs_id_set_rnd EINVAL (try %d): %02X:%02X:%02X:%02X:%02X:%02X",
-                     tries + 1, mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
+            // Documented transient: host may not be ready to accept new RANDOM identity yet
+            ESP_LOGW(TAG, "ble_hs_id_set_rnd EINVAL (try %d): %02X:%02X:%02X:%02X:%02X:%02X; adv=%d conn=%d",
+                     tries + 1, mac[5], mac[4], mac[3], mac[2], mac[1], mac[0],
+                     (int)advertising_, (conn_handle_ != BLE_HS_CONN_HANDLE_NONE));
 
-            // Nudge: re-infer type, short delay, and retry
             uint8_t own_addr_type;
             (void)ble_hs_id_infer_auto(0, &own_addr_type);
             ESP_LOGD(TAG, "Current own_addr_type=%u; will retry set_rnd", own_addr_type);
-            delay(50);
+
+            // Mild backoff to improve reliability without altering semantics
+            delay(50 + (tries * 20));
         } else {
             ESP_LOGE(TAG, "ble_hs_id_set_rnd rc=%d (try %d)", rc, tries + 1);
             delay(20);
@@ -1027,6 +1043,9 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     sec_init_time_ms_ = 0;
     irk_gave_up_ = false;
     irk_last_try_ms_ = 0;
+
+    // Compact summary to increase chance at least one key line survives under log pressure
+    ESP_LOGI(TAG, "Conn start: handle=%u enc_ready=%d adv=%d", conn_handle_, (int)enc_ready_, (int)advertising_);
 
     ESP_LOGI(TAG, "Connected; handle=%u, initiating security", conn_handle_);
     log_conn_desc(conn_handle_);
@@ -1069,6 +1088,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
         }
     } else {
         memset(&timers_.last_peer_id, 0, sizeof(timers_.last_peer_id));
+        ESP_LOGD(TAG, "on_connect: ble_gap_conn_find failed; cleared cached last_peer_id");
     }
 
     // Proactively initiate pairing; peer should show pairing dialog now
@@ -1080,6 +1100,9 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     } else if (rc != 0 && rc != BLE_HS_EALREADY) {
         ESP_LOGW(TAG, "ble_gap_security_initiate rc=%d", rc);
     }
+
+    // Give the logger a tiny chance to flush this burst without impacting behavior
+    ets_delay_us(500);  // 0.5 ms
 }
 
 void IRKCaptureComponent::on_disconnect() {
@@ -1138,7 +1161,6 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
              (int)bond.authenticated, (int)bond.sc);
 
     // Defensive bounds check: Ensure IRK is present before copying
-    // NimBLE guarantees bond.irk[16] array size, but validate presence flag
     if (!bond.irk_present) {
         ESP_LOGW(TAG, "Bond present but no IRK (peer did not distribute ID key)");
         ESP_LOGW(TAG, "Peer key distribution may be incomplete or unsupported by device");
@@ -1158,7 +1180,6 @@ void IRKCaptureComponent::schedule_post_disconnect_check(const ble_addr_t &peer_
     timers_.post_disc_due_ms = now_ms() + TimingConfig::POST_DISC_DELAY_MS;
 }
 
-// Schedule delayed IRK check to allow NVS flush after encryption (some platforms delay write)
 void IRKCaptureComponent::schedule_late_enc_check(const ble_addr_t &peer_id) {
     timers_.enc_peer_id = peer_id;
     timers_.late_enc_due_ms = now_ms() + TimingConfig::ENC_LATE_READ_DELAY_MS;
@@ -1168,21 +1189,27 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
     if (!timers_.post_disc_due_ms || now < timers_.post_disc_due_ms) return;
     timers_.post_disc_due_ms = 0;  // consume
 
-    if (!addr_is_zero(timers_.last_peer_id)) {
-        struct ble_store_value_sec bond{};
-        struct ble_store_key_sec key{};
-        key.peer_addr = timers_.last_peer_id;
-        int rc = ble_store_read_peer_sec(&key, &bond);
-        if (rc == BLE_HS_ENOENT) {
-            ESP_LOGD(TAG, "No bond for peer (ENOENT) - post-disc delayed check");
-        } else if (rc != 0) {
-            ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - post-disc delayed check", rc);
-        } else if (bond.irk_present) {
-            std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
-            publish_and_log_irk(this, timers_.last_peer_id, irk_hex, "DISC_DELAYED");
-        } else {
-            ESP_LOGD(TAG, "Bond present but no IRK - post-disc delayed check");
-        }
+    // Snapshot peer id locally to minimize chance of torn reads across tasks
+    ble_addr_t peer_id = timers_.last_peer_id;
+
+    if (addr_is_zero(peer_id)) {
+        ESP_LOGD(TAG, "Post-disc timer fired but last_peer_id is zero (skipping)");
+        return;
+    }
+
+    struct ble_store_value_sec bond{};
+    struct ble_store_key_sec key{};
+    key.peer_addr = peer_id;
+    int rc = ble_store_read_peer_sec(&key, &bond);
+    if (rc == BLE_HS_ENOENT) {
+        ESP_LOGD(TAG, "No bond for peer (ENOENT) - post-disc delayed check");
+    } else if (rc != 0) {
+        ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - post-disc delayed check", rc);
+    } else if (bond.irk_present) {
+        std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
+        publish_and_log_irk(this, peer_id, irk_hex, "DISC_DELAYED");
+    } else {
+        ESP_LOGD(TAG, "Bond present but no IRK - post-disc delayed check");
     }
 }
 
@@ -1190,26 +1217,32 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
     if (!timers_.late_enc_due_ms || now < timers_.late_enc_due_ms) return;
     timers_.late_enc_due_ms = 0;
 
-    if (!addr_is_zero(timers_.enc_peer_id)) {
-        struct ble_store_key_sec key{};
-        key.peer_addr = timers_.enc_peer_id;
-        struct ble_store_value_sec bond{};
-        int rc = ble_store_read_peer_sec(&key, &bond);
-        if (rc == BLE_HS_ENOENT) {
-            ESP_LOGD(TAG, "No bond for peer (ENOENT) - late ENC check");
-        } else if (rc != 0) {
-            ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - late ENC check", rc);
-        } else if (bond.irk_present) {
-            std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
-            publish_and_log_irk(this, timers_.enc_peer_id, irk_hex, "ENC_LATE");
+    // Snapshot peer id locally to minimize chance of torn reads across tasks
+    ble_addr_t peer_id = timers_.enc_peer_id;
 
-            // 1.0 compatible: terminate after late capture if still connected
-            if (connected_ && conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
-                ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
-            }
-        } else {
-            ESP_LOGD(TAG, "Bond present but no IRK - late ENC check");
+    if (addr_is_zero(peer_id)) {
+        ESP_LOGD(TAG, "Late ENC timer fired but enc_peer_id is zero (skipping)");
+        return;
+    }
+
+    struct ble_store_key_sec key{};
+    key.peer_addr = peer_id;
+    struct ble_store_value_sec bond{};
+    int rc = ble_store_read_peer_sec(&key, &bond);
+    if (rc == BLE_HS_ENOENT) {
+        ESP_LOGD(TAG, "No bond for peer (ENOENT) - late ENC check");
+    } else if (rc != 0) {
+        ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - late ENC check", rc);
+    } else if (bond.irk_present) {
+        std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
+        publish_and_log_irk(this, peer_id, irk_hex, "ENC_LATE");
+
+        // 1.0 compatible: terminate after late capture if still connected
+        if (connected_ && conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
+            ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
         }
+    } else {
+        ESP_LOGD(TAG, "Bond present but no IRK - late ENC check");
     }
 }
 
@@ -1222,6 +1255,8 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
 
         // Retry security after configured delay
         if (!sec_retry_done_ && (now - sec_init_time_ms_) > TimingConfig::SEC_RETRY_DELAY_MS) {
+            uint32_t elapsed = now - sec_init_time_ms_;
+            ESP_LOGI(TAG, "Retrying security initiate after %u ms", elapsed);
             int rc = ble_gap_security_initiate(conn_handle_);
             ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
             sec_retry_done_ = true;
@@ -1232,9 +1267,12 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
         if ((now - sec_init_time_ms_) > TimingConfig::SEC_TIMEOUT_MS) {
             struct ble_gap_conn_desc d{};
             if (ble_gap_conn_find(conn_handle_, &d) == 0) {
-                ESP_LOGW(TAG, "Encryption timeout after %u ms; peer may have forgotten pairing. Clearing bond data.",
-                         TimingConfig::SEC_TIMEOUT_MS);
+                ESP_LOGW(TAG, "Encryption timeout after %u ms; clearing bond for %s to force fresh pairing.",
+                         TimingConfig::SEC_TIMEOUT_MS, addr_to_str(d.peer_id_addr).c_str());
                 ble_store_util_delete_peer(&d.peer_id_addr);
+            } else {
+                ESP_LOGW(TAG, "Encryption timeout after %u ms; conn desc not found during cleanup.",
+                         TimingConfig::SEC_TIMEOUT_MS);
             }
             // Disconnect to trigger fresh pairing on next connection
             ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);

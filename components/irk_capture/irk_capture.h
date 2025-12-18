@@ -162,6 +162,8 @@ class IRKCaptureComponent : public Component {
         uint32_t late_enc_due_ms{0};
         ble_addr_t last_peer_id{};
         ble_addr_t enc_peer_id{};
+        // NOTE: ble_addr_t is multi-word. We snapshot into locals before use (see .cpp)
+        // to reduce chances of torn reads across tasks. If timing bugs occur, add a mutex.
     } timers_{};
 
     // Internal helpers
