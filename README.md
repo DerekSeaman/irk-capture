@@ -30,6 +30,8 @@ This IRK capture component turns your ESP32 into a BLE peripheral that **adverti
 
 ![ESPHome IRK Capture Device](docs/screenshot-1.jpg)
 
+![ESPHome IRK Capture Logs](docs/screenshot-2.jpg)
+
 ## Requirements
 
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
