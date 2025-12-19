@@ -83,6 +83,7 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
 
 5. **Flash to your ESP32:**
    - In ESPHome Device Builder, click "Install" and choose your connection method
+   - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. 
 
 ### Using Standalone Configuration
 
