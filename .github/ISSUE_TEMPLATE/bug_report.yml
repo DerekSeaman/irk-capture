@@ -1,0 +1,129 @@
+name: Bug Report
+description: Report a bug or issue with IRK Capture
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the information below to help us diagnose and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear description of what the bug is
+      placeholder: Describe the issue you're experiencing
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: Describe what you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+      placeholder: Describe what actually occurred
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this issue?
+      placeholder: |
+        1. Flash ESP32 with...
+        2. Pair with device...
+        3. See error...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: esp32_variant
+    attributes:
+      label: ESP32 Variant
+      description: Which ESP32 board are you using?
+      options:
+        - ESP32
+        - ESP32-C3
+        - ESP32-C6
+        - ESP32-S3
+        - Other (specify in additional context)
+    validations:
+      required: true
+
+  - type: input
+    id: esphome_version
+    attributes:
+      label: ESPHome Version
+      description: What version of ESPHome are you using?
+      placeholder: "e.g., 2024.11.0"
+    validations:
+      required: true
+
+  - type: input
+    id: irk_version
+    attributes:
+      label: IRK Capture Version
+      description: What version of IRK Capture are you using?
+      placeholder: "e.g., 1.4.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device_type
+    attributes:
+      label: Device Type
+      description: What type of device are you trying to capture IRK from?
+      options:
+        - iPhone
+        - iPad
+        - Apple Watch
+        - Android Phone
+        - Android Tablet
+        - Other (specify in additional context)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: ESPHome Logs
+      description: Please paste relevant ESPHome logs here
+      placeholder: |
+        Paste logs from ESPHome Device Builder or esphome logs command
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Your IRK Capture configuration (sanitize any secrets)
+      placeholder: |
+        irk_capture:
+          id: irk
+          ble_name: "IRK Capture"
+          start_on_boot: true
+      render: yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any other information that might help diagnose the issue
+      placeholder: Add any other context about the problem here
+    validations:
+      required: false

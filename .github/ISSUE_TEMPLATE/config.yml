@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/DerekSeaman/irk-capture/blob/main/README.md
+    about: Check the README for installation and usage instructions
+  - name: Discussions
+    url: https://github.com/DerekSeaman/irk-capture/discussions
+    about: Ask questions and discuss ideas with the community
