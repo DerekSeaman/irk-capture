@@ -161,7 +161,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 
 This IRK capture component has been successfully tested with:
 
-- **Apple iOS 26 family:**
+- **Apple OS 26 family:**
   - iPhone
   - Apple Watch
   - iPad
@@ -183,6 +183,7 @@ This IRK capture component has been successfully tested with:
 - After pairing, **forget/unpair the BLE device** from your device's Bluetooth settings
 - Turn Bluetooth OFF on your device
 - Press the **"Restart Device"** button on the ESPHome device page
+- Turn Bluetooth ON on your device
 - Try pairing again from scratch
 - Power cycle your device, restart the ESP32 device, and try pairing again
 
