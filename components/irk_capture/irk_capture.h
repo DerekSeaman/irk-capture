@@ -88,6 +88,8 @@ class IRKCaptureComponent : public Component {
     // Configuration setters
     void set_ble_name(const std::string &name) { ble_name_ = name; }
     void set_start_on_boot(bool start) { start_on_boot_ = start; }
+    void set_continuous_mode(bool enable) { continuous_mode_ = enable; }
+    void set_max_captures(uint8_t max) { max_captures_ = max; }
     void set_irk_sensor(text_sensor::TextSensor *sensor) { irk_sensor_ = sensor; }
     void set_address_sensor(text_sensor::TextSensor *sensor) { address_sensor_ = sensor; }
     void set_advertising_switch(IRKCaptureSwitch *sw) {
@@ -126,6 +128,8 @@ class IRKCaptureComponent : public Component {
     // Configuration/state
     std::string ble_name_{"IRK Capture"};
     bool start_on_boot_{true};
+    bool continuous_mode_{false};      // Phase 2.1: Keep advertising after captures
+    uint8_t max_captures_{1};          // Phase 2.1: Max captures (0=unlimited)
     text_sensor::TextSensor *irk_sensor_{nullptr};
     text_sensor::TextSensor *address_sensor_{nullptr};
     IRKCaptureSwitch *advertising_switch_{nullptr};
@@ -153,6 +157,19 @@ class IRKCaptureComponent : public Component {
     bool irk_gave_up_{false};
     uint32_t irk_last_try_ms_{0};
 
+    // Phase 1 & 2: IRK capture tracking
+    struct IRKCacheEntry {
+        std::string irk_hex;
+        std::string mac_addr;
+        uint32_t first_seen_ms;
+        uint32_t last_seen_ms;
+        uint8_t capture_count;
+    };
+    std::vector<IRKCacheEntry> irk_cache_;     // Phase 2.2: Deduplication cache
+    uint8_t total_captures_{0};                 // Phase 2.1: Total IRKs captured this session
+    uint32_t last_publish_time_{0};             // Phase 2.2: Last IRK publish timestamp
+    uint32_t pairing_start_time_{0};            // Phase 1: Global pairing timeout
+
     // Host state (ESPHome-managed host; this is a soft flag)
     bool host_synced_{false};
 
@@ -170,6 +187,10 @@ class IRKCaptureComponent : public Component {
     bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t &peer_id_out);
     void setup_ble();
     void register_gatt_services();
+
+    // Phase 1 & 2 helpers
+    bool is_valid_irk(const uint8_t irk[16]);
+    bool should_publish_irk(const std::string &irk_hex, const std::string &addr);
 
     // Timer handlers
     void schedule_post_disconnect_check(const ble_addr_t &peer_id);

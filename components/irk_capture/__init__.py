@@ -9,6 +9,8 @@ CODEOWNERS = ["@esphome"]
 
 CONF_BLE_NAME = "ble_name"
 CONF_START_ON_BOOT = "start_on_boot"
+CONF_CONTINUOUS_MODE = "continuous_mode"
+CONF_MAX_CAPTURES = "max_captures"
 
 irk_capture_ns = cg.esphome_ns.namespace("irk_capture")
 IRKCaptureComponent = irk_capture_ns.class_("IRKCaptureComponent", cg.Component)
@@ -17,6 +19,8 @@ CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(IRKCaptureComponent),
     cv.Optional(CONF_BLE_NAME, default="Beats Solo4"): cv.string,
     cv.Optional(CONF_START_ON_BOOT, default=True): cv.boolean,
+    cv.Optional(CONF_CONTINUOUS_MODE, default=False): cv.boolean,
+    cv.Optional(CONF_MAX_CAPTURES, default=1): cv.int_range(min=0, max=255),
 }).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config):
@@ -24,6 +28,8 @@ async def to_code(config):
     await cg.register_component(var, config)
     cg.add(var.set_ble_name(config[CONF_BLE_NAME]))
     cg.add(var.set_start_on_boot(config[CONF_START_ON_BOOT]))
+    cg.add(var.set_continuous_mode(config[CONF_CONTINUOUS_MODE]))
+    cg.add(var.set_max_captures(config[CONF_MAX_CAPTURES]))
 
     # Enable NimBLE in ESP-IDF
     esp32.add_idf_sdkconfig_option("CONFIG_BT_ENABLED", True)

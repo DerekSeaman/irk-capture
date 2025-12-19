@@ -15,7 +15,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char *const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.2";
+static constexpr char VERSION[] = "1.5-dev";
 static constexpr char HEX[] = "0123456789abcdef";
 
 //======================== NAMING CONVENTIONS ========================
@@ -108,6 +108,8 @@ struct TimingConfig {
     static constexpr uint32_t SEC_RETRY_DELAY_MS = 2000;           // Delay before retrying security after encryption failure
     static constexpr uint32_t SEC_TIMEOUT_MS = 20000;              // Timeout for encryption to complete (assumes peer forgot pairing)
     static constexpr uint32_t ADV_SUPPRESS_DURATION_MS = 2000;     // How long to suppress advertising after IRK capture
+    static constexpr uint32_t PAIRING_TOTAL_TIMEOUT_MS = 90000;    // Phase 1: Global pairing timeout (90s max)
+    static constexpr uint32_t MIN_REPUBLISH_INTERVAL_MS = 60000;   // Phase 2.2: Min time between republishing same IRK (60s)
 };
 
 // GATT service and characteristic UUIDs
@@ -291,6 +293,82 @@ static void log_banner(const char *context_tag) {
     ESP_LOGI(TAG, "*** IRK CAPTURED *** (%s)", (context_tag ? context_tag : "unknown"));
 }
 
+//======================== Phase 1: IRK Validation ========================
+
+/**
+ * @brief Validates that an IRK is not all-zero or all-FF (invalid/uninitialized)
+ * @param irk 16-byte IRK array
+ * @return true if IRK is valid, false if invalid
+ */
+bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
+    // Reject all-zero IRK (invalid)
+    bool all_zero = true;
+    for (int i = 0; i < 16; i++) {
+        if (irk[i] != 0x00) {
+            all_zero = false;
+            break;
+        }
+    }
+    if (all_zero) {
+        ESP_LOGW(TAG, "Rejected all-zero IRK (invalid)");
+        return false;
+    }
+
+    // Reject all-FF IRK (uninitialized)
+    bool all_ff = true;
+    for (int i = 0; i < 16; i++) {
+        if (irk[i] != 0xFF) {
+            all_ff = false;
+            break;
+        }
+    }
+    if (all_ff) {
+        ESP_LOGW(TAG, "Rejected all-FF IRK (uninitialized)");
+        return false;
+    }
+
+    return true;
+}
+
+//======================== Phase 2.2: IRK Deduplication ========================
+
+/**
+ * @brief Checks if IRK should be published (deduplication + rate limiting)
+ * @param irk_hex IRK in hex string format
+ * @param addr MAC address string
+ * @return true if should publish, false if duplicate/rate-limited
+ */
+bool IRKCaptureComponent::should_publish_irk(const std::string &irk_hex, const std::string &addr) {
+    uint32_t now = now_ms();
+
+    // Check cache for duplicate
+    for (auto &entry : irk_cache_) {
+        if (entry.irk_hex == irk_hex && entry.mac_addr == addr) {
+            // Same device reconnecting - rate limit republishing
+            if ((now - last_publish_time_) < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
+                ESP_LOGI(TAG, "Suppressing duplicate IRK (published %u ms ago)",
+                         now - last_publish_time_);
+                entry.last_seen_ms = now;
+                entry.capture_count++;
+                return false;
+            }
+            entry.last_seen_ms = now;
+            entry.capture_count++;
+            ESP_LOGI(TAG, "Re-publishing IRK (capture #%u)", entry.capture_count);
+            last_publish_time_ = now;
+            return true;
+        }
+    }
+
+    // New IRK - add to cache (max 10 entries, FIFO eviction)
+    if (irk_cache_.size() >= 10) {
+        irk_cache_.erase(irk_cache_.begin());
+    }
+    irk_cache_.push_back({irk_hex, addr, now, now, 1});
+    last_publish_time_ = now;
+    return true;
+}
+
 //======================== Output helpers (centralized) ========================
 
 /**
@@ -308,10 +386,29 @@ void publish_and_log_irk(IRKCaptureComponent *self,
                          const std::string &irk_hex,
                          const char *context_tag) {
     const std::string addr_str = addr_to_str(peer_id_addr);
+
+    // Phase 2.2: Check deduplication
+    if (self && !self->should_publish_irk(irk_hex, addr_str)) {
+        return;  // Skip publishing duplicate
+    }
+
     log_spacer();
     log_banner(context_tag);
     ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
     ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
+
+    // Phase 2.1: Continuous mode tracking
+    if (self) {
+        self->total_captures_++;
+        ESP_LOGI(TAG, "Total captures this session: %u", self->total_captures_);
+
+        // Phase 2.1: Check if max captures reached
+        if (self->continuous_mode_ && self->max_captures_ > 0 &&
+            self->total_captures_ >= self->max_captures_) {
+            ESP_LOGI(TAG, "Max captures (%u) reached in continuous mode", self->max_captures_);
+        }
+    }
+
     log_spacer();
     if (self) self->publish_irk_to_sensors(irk_hex, addr_str.c_str());
 }
@@ -528,16 +625,32 @@ int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     // Schedule an extra delayed post-disconnect check (800 ms)
     self->schedule_post_disconnect_check(self->timers_.last_peer_id);
 
-    // Only restart advertising if not suppressed (IRK re-publish case)
+    // Phase 2.1: Continuous mode - manage advertising based on mode and capture count
     self->advertising_ = false;
-    if (!self->suppress_next_adv_) {
+
+    // Check if we should stop advertising (max captures reached)
+    bool should_stop_adv = false;
+    if (self->continuous_mode_ && self->max_captures_ > 0 &&
+        self->total_captures_ >= self->max_captures_) {
+        ESP_LOGI(TAG, "Max captures (%u) reached - stopping advertising", self->max_captures_);
+        should_stop_adv = true;
+    }
+
+    // Restart advertising logic
+    if (should_stop_adv) {
+        // Don't restart - max captures reached
+        if (self->advertising_switch_) self->advertising_switch_->publish_state(false);
+    } else if (!self->suppress_next_adv_) {
+        // Normal case: restart advertising
+        if (self->continuous_mode_) {
+            ESP_LOGI(TAG, "Continuous mode: restarting advertising for next device");
+        }
         self->start_advertising();
     } else {
+        // Suppression case: delay restart
         ESP_LOGI(TAG, "Advertising suppressed to break reconnect loop; will auto-restart in 5s");
         self->suppress_next_adv_ = false;  // Reset for next time
-        // Update switch UI to show advertising is off during suppression
         if (self->advertising_switch_) self->advertising_switch_->publish_state(false);
-        // Schedule auto-restart after 5 seconds to allow fresh connections later
         self->adv_restart_time_ = now_ms() + 5000;
     }
     return 0;
@@ -771,6 +884,24 @@ void IRKCaptureComponent::loop() {
     // Pairing robustness (1.0 single retry)
     retry_security_if_needed(now);
 
+    // Phase 1: Global pairing timeout (90s max)
+    if (connected_ && pairing_start_time_ != 0) {
+        uint32_t elapsed = now - pairing_start_time_;
+        if (elapsed > TimingConfig::PAIRING_TOTAL_TIMEOUT_MS) {
+            ESP_LOGW(TAG, "Pairing timeout after %u seconds - resetting connection",
+                     elapsed / 1000);
+
+            // Force disconnect and clear bonds
+            struct ble_gap_conn_desc d{};
+            if (ble_gap_conn_find(conn_handle_, &d) == 0) {
+                ble_store_util_delete_peer(&d.peer_id_addr);
+            }
+            ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
+
+            pairing_start_time_ = 0;
+        }
+    }
+
     if (!connected_ || conn_handle_ == BLE_HS_CONN_HANDLE_NONE) return;
 
     // HR notify and IRK polling (post-ENC)
@@ -784,6 +915,35 @@ void IRKCaptureComponent::setup_ble() {
     // NVS for key store
     auto err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS full or version mismatch - erasing");
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
+    // Phase 1: NVS health check - verify storage actually works
+    nvs_handle_t nvs_test_handle;
+    err = nvs_open("irk_test", NVS_READWRITE, &nvs_test_handle);
+    if (err == ESP_OK) {
+        // Test write
+        uint32_t test_val = 0xDEADBEEF;
+        err = nvs_set_u32(nvs_test_handle, "test", test_val);
+        if (err == ESP_OK) {
+            err = nvs_commit(nvs_test_handle);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "NVS commit failed (err=%d) - bond storage may not work!", err);
+            } else {
+                ESP_LOGI(TAG, "NVS health check passed");
+            }
+        }
+        nvs_close(nvs_test_handle);
+
+        // Clean up test namespace
+        nvs_open("irk_test", NVS_READWRITE, &nvs_test_handle);
+        nvs_erase_all(nvs_test_handle);
+        nvs_commit(nvs_test_handle);
+        nvs_close(nvs_test_handle);
+    } else {
+        ESP_LOGE(TAG, "NVS open failed (err=%d) - IRK capture will fail! Erasing and retrying...", err);
         nvs_flash_erase();
         nvs_flash_init();
     }
@@ -1044,6 +1204,9 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     irk_gave_up_ = false;
     irk_last_try_ms_ = 0;
 
+    // Phase 1: Start global pairing timeout
+    pairing_start_time_ = now_ms();
+
     // Compact summary to increase chance at least one key line survives under log pressure
     ESP_LOGI(TAG, "Conn start: handle=%u enc_ready=%d adv=%d", conn_handle_, (int)enc_ready_, (int)advertising_);
 
@@ -1117,6 +1280,9 @@ void IRKCaptureComponent::on_disconnect() {
     irk_gave_up_ = false;
     irk_last_try_ms_ = 0;
 
+    // Phase 1: Clear pairing timeout
+    pairing_start_time_ = 0;
+
     ESP_LOGI(TAG, "Disconnected");
 }
 
@@ -1164,6 +1330,12 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
     if (!bond.irk_present) {
         ESP_LOGW(TAG, "Bond present but no IRK (peer did not distribute ID key)");
         ESP_LOGW(TAG, "Peer key distribution may be incomplete or unsupported by device");
+        return false;
+    }
+
+    // Phase 1: Validate IRK before accepting
+    if (!is_valid_irk(bond.irk)) {
+        ESP_LOGW(TAG, "IRK failed validation (all-zero or all-FF)");
         return false;
     }
 
