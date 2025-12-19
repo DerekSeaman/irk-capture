@@ -2,17 +2,17 @@
 
 This ESPHome package will capture Apple and Android Bluetooth Identity Resolving Keys (IRK) using an ESP32 running ESPHome. Use the captured IRKs with the [Private BLE Device](https://www.home-assistant.io/integrations/private_ble_device/) integration in Home Assistant for reliable room-level presence detection. I use the Bermuda BLE Trilateration integration with IRKs for room-level presence detection. 
 
-This package uses the ESP-IDE framework, for broad ESP32 board compatibility. This is in contrast with the Arduino framework which when used with ESPHome, has more limited board support. For example, the ESP32-C6 board is not supported when using the Arudiono framework. 
+This package uses the ESP-IDE framework, for broad ESP32 board compatibility. This is in contrast with the Arduino framework which when used with ESPHome, has more limited board support. For example, the ESP32-C6 board is not supported when using the Arduino framework. 
 
 ## What is a BLE IRK and Why Is It Needed?
 
-Modern Apple and Android devices use **BLE privacy features** that randomize their MAC addresses periodically to prevent tracking. This creates a problem for ESPHome Bluetooth Proxy tracking in Home Assistant - your device appears as a different device every time its MAC address changes.
+Modern Apple and Android devices use **BLE privacy features** that randomize their MAC addresses periodically to prevent tracking. This creates a problem for ESPHome Bluetooth Proxy tracking in Home Assistant - your device appears as a different device every time its MAC address changes. This can happen as often as every 15 minutes.
 
 The **Identity Resolving Key (IRK)** is a cryptographic key exchanged during BLE pairing that allows authorized devices to resolve these random MAC addresses back to the original device. By capturing a device's IRK, you can reliably track it for presence detection even as it randomizes its MAC address.
 
 Capturing IRKs from devices can be very tricky, as the Bluetooth stack can very widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes. 
 
-Bluetooth uses an 'identity address' that is separate from the readily seen Bluetooth MAC address. The identity address is randomized each time the ESP32 device boots up. This means that even if you use the UI option to change the ESP32 BT MAC, your device may not see your ESP32 as new as the identity address is not changed. 
+Bluetooth uses an 'identity address' that is separate from the readily seen Bluetooth MAC address. The identity address is randomized each time the ESP32 device boots up. This means that even if you use the UI option to change the ESP32 BT MAC, your device may not see your ESP32 as new as the identity address is not changed. It is best to always restart your ESP32 to get a new random identity address and MAC. This should appear as an entirely new Bluetooth device to your phone or watch. 
 
 ## What This Package Does
 
@@ -31,6 +31,7 @@ This IRK capture component turns your ESP32 into a BLE peripheral that **adverti
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESPHome** 2024.x or newer
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
+- **ESPHome Device Builder** (Optional, but makes managing ESPHome devices in Home Assistant easier)
 
 ## Installation
 
@@ -38,7 +39,7 @@ This IRK capture component turns your ESP32 into a BLE peripheral that **adverti
 
 If you're using the ESPHome Device Builder add-on in Home Assistant, follow these steps:
 
-1. **Create the common directory structure:**
+1. **Create the 'common' directory, if not already present:**
    ```
    /config/esphome/
    ├── common/
@@ -53,7 +54,7 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
 3. **Create your device YAML:**
    - Use [irk-capture-device.yaml](ESPHome%20Devices/irk-capture-device.yaml) as a template
    - Create a new dummy device in ESPHome, and take note of the unique API and OTA keys.
-   - Replace the following values:
+   - Replace the following values in the YAML from this repo:
 
    ```yaml
    substitutions:
@@ -98,12 +99,12 @@ After flashing and connecting to Home Assistant, the following entities will be 
 
 | Entity | Type | Description |
 |--------|------|-------------|
-| **IRK** | Text Sensor | The captured IRK in format `irk:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
+| **IRK** | Text Sensor | The captured IRK in format `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
-| **BLE Advertising** | Switch | Turn Bluetooth advertising on/off (starts OFF by default) |
+| **BLE Advertising** | Switch | Turn Bluetooth advertising on/off (starts ON by default) |
 | **BLE Device Name** | Text Input | Change the advertised Bluetooth name (default: "IRK Capture") |
 | **Generate New MAC** | Button | Generate a new random MAC address for the ESP32 |
-| **Restart Device** | Button | Restart the ESP32 |
+| **Restart Device** | Button | Restart the ESP32 - Clears all pairing information |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
 | **IP** | Text Sensor | Device IP address (diagnostic) |
 | **Uptime** | Sensor | Device uptime in hours (diagnostic) |
@@ -118,7 +119,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
    - In Home Assistant, open ESPHome and find your IRK Capture device
    - Power on your ESP32 board with the IRK Capture build
 
-2. **Open Bluetooth settings on your device:**
+2. **Open Bluetooth settings on your device**
 
 3. **Look for the advertised device:**
    - Default name: "IRK Capture" (or whatever you set as `ble_name`)
@@ -157,9 +158,9 @@ After flashing and connecting to Home Assistant, the following entities will be 
 This IRK capture component has been successfully tested with:
 
 - **Apple iOS 26 family:**
-  - iPhone (iOS 26)
-  - Apple Watch (watchOS 26)
-  - iPad (iPadOS 26)
+  - iPhone
+  - Apple Watch
+  - iPad
 
 - **Android devices:**
   - Jailbroken Amazon Echo Show 5 with LineageOS 18.1
