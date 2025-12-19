@@ -146,6 +146,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
    - After successfully capturing the IRK, go to your device's Bluetooth settings
    - Forget or unpair the "IRK Capture" device (or whatever name you used)
    - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
+   - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' between each capture to avoid potential issues.  
 
 ### Installing Private BLE Device Integration
 
@@ -193,12 +194,12 @@ This IRK capture component has been successfully tested with:
 - Press the **"Restart Device"** button on the ESPHome device page
 - Turn Bluetooth ON on your device
 - Try pairing again from scratch
-- Power cycle your device, restart the ESP32 device, and try pairing again
+- Power cycle your device, restart your ESP32, and try pairing again
 
 ### ESPHome Build Fails
 
 - Clean the build folder and retry
-- Ensure you're using ESPHome 2024.x or newer
+- Ensure you're using ESPHome 2024.x or newer (tested with ESPHome 2025.12)
 - Verify your `esp32_variant` and `esp32_board` substitutions match your hardware
 - Check that all required secrets are defined in `secrets.yaml`
 
