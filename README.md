@@ -16,7 +16,7 @@ Bluetooth uses an 'identity address' that is separate from the readily seen Blue
 
 ## Blog Post: Track Who's in Each Room with ESPHome + Bermuda BLE
 
-For a complete guide for room-level presence detection using Bermuda BLE Trilateration with Home Assistant, check out my post: https://www.derekseaman.com/2025/12/home-assistant-track-whos-in-each-room-with-esphome-bermuda-ble.html
+For a complete guide for room-level presence detection using Bermuda BLE Trilateration with Home Assistant, check out my post: [Track Who's in Each Room with ESPHome + Bermuda BLE](https://www.derekseaman.com/2025/12/home-assistant-track-whos-in-each-room-with-esphome-bermuda-ble.html)
 
 ## What This Package Does
 
