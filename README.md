@@ -1,6 +1,6 @@
 # IRK Capture for ESPHome
 
-This ESPHome package will capture Apple and Android Bluetooth Identity Resolving Keys (IRK) using an ESP32 running ESPHome. Use the captured IRKs with the [Private BLE Device](https://www.home-assistant.io/integrations/private_ble_device/) integration in Home Assistant for reliable room-level presence detection. I use the Bermuda BLE Trilateration integration with IRKs for room-level presence detection. 
+This ESPHome package will capture Apple and Android Bluetooth Identity Resolving Keys (IRK) using an ESP32 running ESPHome. Use the captured IRKs with the [Private BLE Device](https://www.home-assistant.io/integrations/private_ble_device/) integration in Home Assistant for reliable room-level presence detection. I use the [Bermuda BLE Trilateration](https://github.com/agittins/bermuda?tab=readme-ov-file) integration with IRKs for room-level presence detection.
 
 This package uses the ESP-IDE framework, for broad ESP32 board compatibility. This is in contrast with the Arduino framework which when used with ESPHome, has more limited board support. For example, the ESP32-C6 board is not supported when using the Arduino framework. 
 
@@ -12,7 +12,11 @@ The **Identity Resolving Key (IRK)** is a cryptographic key exchanged during BLE
 
 Capturing IRKs from devices can be very tricky, as the Bluetooth stack can very widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes. 
 
-Bluetooth uses an 'identity address' that is separate from the readily seen Bluetooth MAC address. The identity address is randomized each time the ESP32 device boots up. This means that even if you use the UI option to change the ESP32 BT MAC, your device may not see your ESP32 as new as the identity address is not changed. It is best to always restart your ESP32 to get a new random identity address and MAC. This should appear as an entirely new Bluetooth device to your phone or watch. 
+Bluetooth uses an 'identity address' that is separate from the readily seen Bluetooth MAC address. The identity address is randomized each time the ESP32 device boots up. This means that even if you use the UI option to change the ESP32 BT MAC, your device may not see your ESP32 as new as the identity address is not changed. It is best to always restart your ESP32 to get a new random identity address and MAC. This should appear as an entirely new Bluetooth device to your phone or watch.
+
+## Blog Post: Track Who's in Each Room with ESPHome + Bermuda BLE
+
+For a complete guide for room-level presence detection using Bermuda BLE Trilateration with Home Assistant, check out my post: https://www.derekseaman.com/2025/12/home-assistant-track-whos-in-each-room-with-esphome-bermuda-ble.html
 
 ## What This Package Does
 
