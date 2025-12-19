@@ -95,6 +95,15 @@ body:
     validations:
       required: true
 
+  - type: input
+    id: device_os
+    attributes:
+      label: Device Operating System
+      description: What OS version is running on your device?
+      placeholder: "e.g., iOS 18.2, watchOS 11.1, Android 14, Wear OS 4, LineageOS 18.1"
+    validations:
+      required: false
+
   - type: textarea
     id: logs
     attributes:
