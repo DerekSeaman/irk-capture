@@ -90,6 +90,7 @@ body:
         - Apple Watch
         - Android Phone
         - Android Tablet
+        - Android Watch
         - Other (specify in additional context)
     validations:
       required: true
