@@ -142,6 +142,11 @@ After flashing and connecting to Home Assistant, the following entities will be 
    - **Option 2:** View the "IRK" text sensor in Home Assistant (on your IRK Capture device page)
    - The IRK will be in format: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 
+6. **Forget the pairing (recommended):**
+   - After successfully capturing the IRK, go to your device's Bluetooth settings
+   - Forget or unpair the "IRK Capture" device (or whatever name you used)
+   - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
+
 ### Installing Private BLE Device Integration
 
 1. **Go to Home Assistant:**
