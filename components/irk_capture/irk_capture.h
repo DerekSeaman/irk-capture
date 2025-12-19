@@ -128,8 +128,8 @@ class IRKCaptureComponent : public Component {
     // Configuration/state
     std::string ble_name_{"IRK Capture"};
     bool start_on_boot_{true};
-    bool continuous_mode_{false};      // Phase 2.1: Keep advertising after captures
-    uint8_t max_captures_{1};          // Phase 2.1: Max captures (0=unlimited)
+    bool continuous_mode_{false};      // Keep advertising after captures
+    uint8_t max_captures_{1};          // Max captures (0=unlimited)
     text_sensor::TextSensor *irk_sensor_{nullptr};
     text_sensor::TextSensor *address_sensor_{nullptr};
     IRKCaptureSwitch *advertising_switch_{nullptr};
@@ -165,10 +165,10 @@ class IRKCaptureComponent : public Component {
         uint32_t last_seen_ms;
         uint8_t capture_count;
     };
-    std::vector<IRKCacheEntry> irk_cache_;     // Phase 2.2: Deduplication cache
-    uint8_t total_captures_{0};                 // Phase 2.1: Total IRKs captured this session
-    uint32_t last_publish_time_{0};             // Phase 2.2: Last IRK publish timestamp
-    uint32_t pairing_start_time_{0};            // Phase 1: Global pairing timeout
+    std::vector<IRKCacheEntry> irk_cache_;     // Deduplication cache
+    uint8_t total_captures_{0};                 //Total IRKs captured this session
+    uint32_t last_publish_time_{0};             // Last IRK publish timestamp
+    uint32_t pairing_start_time_{0};            // Global pairing timeout
 
     // Host state (ESPHome-managed host; this is a soft flag)
     bool host_synced_{false};
@@ -179,8 +179,10 @@ class IRKCaptureComponent : public Component {
         uint32_t late_enc_due_ms{0};
         ble_addr_t last_peer_id{};
         ble_addr_t enc_peer_id{};
-        // NOTE: ble_addr_t is multi-word. We snapshot into locals before use (see .cpp)
-        // to reduce chances of torn reads across tasks. If timing bugs occur, add a mutex.
+        // Best-effort torn-read mitigation for multi-word addresses (no locking):
+        // Writers do ver++ / write / ver++ ; readers retry once if ver changes.
+        uint32_t last_peer_id_ver{0};
+        uint32_t enc_peer_id_ver{0};
     } timers_{};
 
     // Internal helpers

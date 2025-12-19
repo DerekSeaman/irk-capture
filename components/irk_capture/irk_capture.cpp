@@ -15,17 +15,17 @@ namespace esphome {
 namespace irk_capture {
 
 static const char *const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.4.1";
+static constexpr char VERSION[] = "1.4.2";
 static constexpr char HEX[] = "0123456789abcdef";
 
 //======================== NAMING CONVENTIONS ========================
 /*
 This codebase follows ESPHome style guidelines:
--   Member variables: trailing underscore (conn_handle_, advertising_)
--   Local variables/parameters: snake_case (conn_handle, peer_id)
--   Functions: snake_case (try_get_irk, start_advertising)
--   Constants: UPPER_SNAKE_CASE or constexpr with descriptive names
--   Classes: PascalCase (IRKCaptureComponent)
+-    Member variables: trailing underscore (conn_handle_, advertising_)
+-    Local variables/parameters: snake_case (conn_handle, peer_id)
+-    Functions: snake_case (try_get_irk, start_advertising)
+-    Constants: UPPER_SNAKE_CASE or constexpr with descriptive names
+-    Classes: PascalCase (IRKCaptureComponent)
 */
 
 //======================== THREADING MODEL ========================
@@ -35,29 +35,32 @@ CRITICAL: This component runs in a multi-threaded environment:
 2. ESPHome main task: Executes loop(), setup(), and UI callbacks (switch, button, text)
 
 RACE CONDITION WARNINGS:
--   timers_ struct fields are accessed from BOTH tasks without mutex protection
--   Member variables like conn_handle_, advertising_, enc_ready_ can be read/written concurrently
--   This design relies on ESP32 atomic reads/writes for 32-bit aligned variables
--   Safe because operations are simple flag checks and assignments, not complex state machines
--   If timing bugs occur, add mutex protection around timers_ and critical state variables
+-    timers_ struct fields are accessed from BOTH tasks without mutex protection
+-    Member variables like conn_handle_, advertising_, enc_ready_ can be read/written concurrently
+-    This design relies on ESP32 atomic reads/writes for 32-bit aligned variables
+-    Safe because operations are simple flag checks and assignments, not complex state machines
+-    If timing bugs occur, add mutex protection around timers_ and critical state variables
 
 ESPHome component lifecycle guarantees:
--   setup() completes before loop() starts
--   All set_*() configuration calls complete before setup()
--   Parent pointers (IRKCaptureText, IRKCaptureSwitch, etc.) are always valid after setup()
+-    setup() completes before loop() starts
+-    All set_*() configuration calls complete before setup()
+-    Parent pointers (IRKCaptureText, IRKCaptureSwitch, etc.) are always valid after setup()
 
 NOTE: ble_addr_t is a multi-word struct. When copying timers_.last_peer_id / timers_.enc_peer_id
 across tasks, we snapshot into a local before use to reduce the chance of torn reads. This is
 best-effort diagnostics only; if timing bugs are observed, add a mutex around timers_.
+
+Lightweight torn-read mitigation is implemented below with a version counter (write++/write++).
+Readers retry the read once if a concurrent write is detected. This does not change behavior or timing.
 */
 
 //======================== ERROR HANDLING STRATEGY ========================
 /*
 Logging severity levels used throughout:
--   ESP_LOGE: Critical failures that prevent IRK capture (NimBLE init fails, store errors)
--   ESP_LOGW: Recoverable issues or unexpected states (pairing retry, IRK not yet available)
--   ESP_LOGI: Normal operational events (connection, disconnection, IRK captured)
--   ESP_LOGD: Detailed debugging (GAP events, state transitions, timer scheduling)
+-    ESP_LOGE: Critical failures that prevent IRK capture (NimBLE init fails, store errors)
+-    ESP_LOGW: Recoverable issues or unexpected states (pairing retry, IRK not yet available)
+-    ESP_LOGI: Normal operational events (connection, disconnection, IRK captured)
+-    ESP_LOGD: Detailed debugging (GAP events, state transitions, timer scheduling)
 
 Philosophy: Log enough to debug pairing issues remotely, but avoid spam during normal operation.
 */
@@ -87,12 +90,12 @@ Component operates as a state machine with these primary states:
    - Transitions back to ADVERTISING after suppression period expires
 
 Key flags:
--   advertising_: BLE stack is actively advertising
--   connected_: Peer is currently connected
--   enc_ready_: Encryption/pairing completed successfully
--   irk_gave_up_: Exceeded 45s timeout without capturing IRK
--   suppress_next_adv_: Prevent immediate re-advertising after successful IRK capture
--   sec_retry_done_: Already attempted one security retry after ENC failure
+-    advertising_: BLE stack is actively advertising
+-    connected_: Peer is currently connected
+-    enc_ready_: Encryption/pairing completed successfully
+-    irk_gave_up_: Exceeded 45s timeout without capturing IRK
+-    suppress_next_adv_: Prevent immediate re-advertising after successful IRK capture
+-    sec_retry_done_: Already attempted one security retry after ENC failure
 */
 
 // Timing configuration (all values in ms)
@@ -108,8 +111,8 @@ struct TimingConfig {
     static constexpr uint32_t SEC_RETRY_DELAY_MS = 2000;           // Delay before retrying security after encryption failure
     static constexpr uint32_t SEC_TIMEOUT_MS = 20000;              // Timeout for encryption to complete (assumes peer forgot pairing)
     static constexpr uint32_t ADV_SUPPRESS_DURATION_MS = 2000;     // How long to suppress advertising after IRK capture
-    static constexpr uint32_t PAIRING_TOTAL_TIMEOUT_MS = 90000;    // Phase 1: Global pairing timeout (90s max)
-    static constexpr uint32_t MIN_REPUBLISH_INTERVAL_MS = 60000;   // Phase 2.2: Min time between republishing same IRK (60s)
+    static constexpr uint32_t PAIRING_TOTAL_TIMEOUT_MS = 90000;    // Global pairing timeout (90s max)
+    static constexpr uint32_t MIN_REPUBLISH_INTERVAL_MS = 60000;   // Min time between republishing same IRK (60s)
 };
 
 // GATT service and characteristic UUIDs
@@ -133,7 +136,7 @@ DISCONNECT → immediate store read; schedule delayed read at +800ms; restart ad
 While connected (post ENC) → poll every 1s starting at +2s, up to 45s, then disconnect when IRK captured
 All address reporting uses the peer identity address; IRK hex is reversed for parity with Arduino output.
 
-Why this lifecycle: Maintains compatibility with v1.0 behavior (immediate disconnect after capture)
+Why this lifecycle: Maintains compatibility (immediate disconnect after capture)
 while adding robustness for timing variations across different BLE peer implementations.
 */
 
@@ -240,8 +243,10 @@ static void log_conn_desc(uint16_t conn_handle) {
         ESP_LOGI(TAG, "peer id =%s type=%d", addr_to_str(d.peer_id_addr).c_str(), d.peer_id_addr.type);
 
         // Connection parameters (helpful for Android watch debugging)
-        ESP_LOGD(TAG, "conn params: interval=%u latency=%u timeout=%u supervision_timeout=%u",
-                 d.conn_itvl, d.conn_latency, d.supervision_timeout, d.supervision_timeout);
+        // Note: NimBLE does not expose a separate connection timeout distinct from supervision_timeout here;
+        // we log supervision_timeout as provided.
+        ESP_LOGD(TAG, "conn params: interval=%u latency=%u supervision_timeout=%u",
+                 d.conn_itvl, d.conn_latency, d.supervision_timeout);
 
         // Role and features
         ESP_LOGD(TAG, "role=%s our_ota=%s",
@@ -293,7 +298,7 @@ static void log_banner(const char *context_tag) {
     ESP_LOGI(TAG, "*** IRK CAPTURED *** (%s)", (context_tag ? context_tag : "unknown"));
 }
 
-//======================== Phase 1: IRK Validation ========================
+//======================== IRK Validation ========================
 
 /**
  * @brief Validates that an IRK is not all-zero or all-FF (invalid/uninitialized)
@@ -330,7 +335,7 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
     return true;
 }
 
-//======================== Phase 2.2: IRK Deduplication ========================
+//======================== IRK Deduplication ========================
 
 /**
  * @brief Checks if IRK should be published (deduplication + rate limiting)
@@ -362,6 +367,7 @@ bool IRKCaptureComponent::should_publish_irk(const std::string &irk_hex, const s
 
     // New IRK - add to cache (max 10 entries, FIFO eviction)
     if (irk_cache_.size() >= 10) {
+        // Evict oldest (FIFO). Note: documented behavior; intentional to cap memory and keep UX predictable.
         irk_cache_.erase(irk_cache_.begin());
     }
     irk_cache_.push_back({irk_hex, addr, now, now, 1});
@@ -387,7 +393,7 @@ void publish_and_log_irk(IRKCaptureComponent *self,
                          const char *context_tag) {
     const std::string addr_str = addr_to_str(peer_id_addr);
 
-    // Phase 2.2: Check deduplication
+    // Check deduplication
     if (self && !self->should_publish_irk(irk_hex, addr_str)) {
         return;  // Skip publishing duplicate
     }
@@ -397,12 +403,12 @@ void publish_and_log_irk(IRKCaptureComponent *self,
     ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
     ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
 
-    // Phase 2.1: Continuous mode tracking
+    // Continuous mode tracking
     if (self) {
         self->total_captures_++;
         ESP_LOGI(TAG, "Total captures this session: %u", self->total_captures_);
 
-        // Phase 2.1: Check if max captures reached
+        // Check if max captures reached
         if (self->continuous_mode_ && self->max_captures_ > 0 &&
             self->total_captures_ >= self->max_captures_) {
             ESP_LOGI(TAG, "Max captures (%u) reached in continuous mode", self->max_captures_);
@@ -440,6 +446,9 @@ static struct ble_gatt_chr_def devinfo_chrs[] = {
     {
         .uuid = &UUID_CHR_MODEL.u,
         .access_cb = chr_read_devinfo,
+        // NOTE: This pointer is refreshed before advertising and whenever the name changes.
+        // Reads can occur concurrently; there is a small window where a stale pointer could be seen.
+        // This is acceptable in practice and does not affect pairing logic or timing.
         .arg = (void *)"IRK Capture", // refreshed to ble_name_.c_str() before advertising
         .flags = BLE_GATT_CHR_F_READ_ENC,
     },
@@ -495,7 +504,8 @@ static struct ble_gatt_svc_def gatt_svcs[] = {
 
 static int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt *ctxt, void *arg) {
     if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
-    // Debug visibility for potential pointer lifetime issues
+    // Debug visibility for potential pointer lifetime issues: arg points to current ble_name_.c_str()
+    // The pointer is refreshed on start_advertising() and update_ble_name(). Minor race is acceptable.
     const char *val = (const char *)arg;
     ESP_LOGD(TAG, "DevInfo read (ptr=%p) value='%s'", (void *)val, val ? val : "(null)");
     append_const_string_or_default(ctxt->om, val, "IRK Capture");
@@ -554,10 +564,10 @@ void IRKCaptureButton::press_action() {
 //======================== GAP event handlers (extracted) ========================
 /*
 GAP Event Handler Return Value Semantics:
--   Return 0: Event handled successfully, continue normal NimBLE processing
--   Return BLE_GAP_REPEAT_PAIRING_RETRY: Delete peer bond and retry pairing (only valid for REPEAT_PAIRING event)
--   Return BLE_GAP_REPEAT_PAIRING_IGNORE: Ignore repeat pairing request (only valid for REPEAT_PAIRING event)
--   Other non-zero values: Error occurred, but NimBLE will continue (logged but not fatal)
+-    Return 0: Event handled successfully, continue normal NimBLE processing
+-    Return BLE_GAP_REPEAT_PAIRING_RETRY: Delete peer bond and retry pairing (only valid for REPEAT_PAIRING event)
+-    Return BLE_GAP_REPEAT_PAIRING_IGNORE: Ignore repeat pairing request (only valid for REPEAT_PAIRING event)
+-    Other non-zero values: Error occurred, but NimBLE will continue (logged but not fatal)
 
 THREADING: These handlers run in NimBLE task context, NOT ESPHome main task.
 Avoid blocking operations and heavy computation in these functions.
@@ -600,8 +610,10 @@ int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     // Attempt post-disconnect IRK read using the peer identity address
     struct ble_gap_conn_desc d{};
     if (ble_gap_conn_find(ev->disconnect.conn.conn_handle, &d) == 0) {
-        // cache for delayed retry
+        // cache for delayed retry (torn-read mitigation: versioned write, best effort)
+        self->timers_.last_peer_id_ver++;
         self->timers_.last_peer_id = d.peer_id_addr;
+        self->timers_.last_peer_id_ver++;
 
         struct ble_store_value_sec bond{};
         struct ble_store_key_sec key{};
@@ -625,7 +637,7 @@ int handle_gap_disconnect(IRKCaptureComponent *self, struct ble_gap_event *ev) {
     // Schedule an extra delayed post-disconnect check (800 ms)
     self->schedule_post_disconnect_check(self->timers_.last_peer_id);
 
-    // Phase 2.1: Continuous mode - manage advertising based on mode and capture count
+    // Continuous mode - manage advertising based on mode and capture count
     self->advertising_ = false;
 
     // Check if we should stop advertising (max captures reached)
@@ -700,7 +712,10 @@ int handle_gap_enc_change(IRKCaptureComponent *self, struct ble_gap_event *ev) {
         // Immediate store read using identity address
         struct ble_gap_conn_desc d{};
         if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
+            // torn-write mitigation (best effort) for enc_peer_id
+            self->timers_.enc_peer_id_ver++;
             self->timers_.enc_peer_id = d.peer_id_addr;
+            self->timers_.enc_peer_id_ver++;
 
             struct ble_store_key_sec key{};
             key.peer_addr = d.peer_id_addr;
@@ -881,10 +896,10 @@ void IRKCaptureComponent::loop() {
         start_advertising();
     }
 
-    // Pairing robustness (1.0 single retry)
+    // Pairing robustness (single retry)
     retry_security_if_needed(now);
 
-    // Phase 1: Global pairing timeout (90s max)
+    // Global pairing timeout (90s max)
     if (connected_ && pairing_start_time_ != 0) {
         uint32_t elapsed = now - pairing_start_time_;
         if (elapsed > TimingConfig::PAIRING_TOTAL_TIMEOUT_MS) {
@@ -920,28 +935,41 @@ void IRKCaptureComponent::setup_ble() {
         nvs_flash_init();
     }
 
-    // Phase 1: NVS health check - verify storage actually works
+    // NVS health check - verify storage actually works
+    // NOTE: All errors are logged; cleanup is guarded to avoid handle leaks. This does not change behavior.
     nvs_handle_t nvs_test_handle;
     err = nvs_open("irk_test", NVS_READWRITE, &nvs_test_handle);
     if (err == ESP_OK) {
-        // Test write
         uint32_t test_val = 0xDEADBEEF;
-        err = nvs_set_u32(nvs_test_handle, "test", test_val);
-        if (err == ESP_OK) {
-            err = nvs_commit(nvs_test_handle);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "NVS commit failed (err=%d) - bond storage may not work!", err);
+        esp_err_t werr = nvs_set_u32(nvs_test_handle, "test", test_val);
+        if (werr == ESP_OK) {
+            esp_err_t cerr = nvs_commit(nvs_test_handle);
+            if (cerr != ESP_OK) {
+                ESP_LOGE(TAG, "NVS commit failed (err=%d) - bond storage may not work!", cerr);
             } else {
                 ESP_LOGI(TAG, "NVS health check passed");
             }
+        } else {
+            ESP_LOGE(TAG, "NVS set_u32 failed (err=%d) - continuing", werr);
         }
         nvs_close(nvs_test_handle);
 
-        // Clean up test namespace
-        nvs_open("irk_test", NVS_READWRITE, &nvs_test_handle);
-        nvs_erase_all(nvs_test_handle);
-        nvs_commit(nvs_test_handle);
-        nvs_close(nvs_test_handle);
+        // Clean up test namespace (best-effort, errors logged)
+        esp_err_t oerr = nvs_open("irk_test", NVS_READWRITE, &nvs_test_handle);
+        if (oerr == ESP_OK) {
+            esp_err_t eerr = nvs_erase_all(nvs_test_handle);
+            if (eerr != ESP_OK) {
+                ESP_LOGW(TAG, "NVS erase_all failed (err=%d) - continuing", eerr);
+            } else {
+                esp_err_t c2 = nvs_commit(nvs_test_handle);
+                if (c2 != ESP_OK) {
+                    ESP_LOGW(TAG, "NVS commit after erase failed (err=%d) - continuing", c2);
+                }
+            }
+            nvs_close(nvs_test_handle);
+        } else {
+            ESP_LOGW(TAG, "NVS reopen for cleanup failed (err=%d) - continuing", oerr);
+        }
     } else {
         ESP_LOGE(TAG, "NVS open failed (err=%d) - IRK capture will fail! Erasing and retrying...", err);
         nvs_flash_erase();
@@ -951,7 +979,7 @@ void IRKCaptureComponent::setup_ble() {
     // NimBLE host
     nimble_port_init();
 
-    // Security (1.0: set once here; no later re-asserts)
+    // Security (set once here; no later re-asserts)
     ble_hs_cfg.reset_cb = [](int reason) { ESP_LOGW(TAG, "NimBLE reset reason=%d", reason); };
     ble_hs_cfg.sync_cb = []() {
         ESP_LOGI(TAG, "NimBLE host synced");
@@ -1005,6 +1033,8 @@ void IRKCaptureComponent::setup_ble() {
 
 void IRKCaptureComponent::register_gatt_services() {
     // Point model string at current name for DevInfo
+    // NOTE: devinfo_chrs[1].arg = ble_name_.c_str() is refreshed here and before advertising.
+    // There is a small concurrency window if the name reallocates; acceptable for DevInfo reads.
     devinfo_chrs[1].arg = (void *)ble_name_.c_str();
 
     int rc = ble_gatts_count_cfg(gatt_svcs);
@@ -1028,6 +1058,7 @@ void IRKCaptureComponent::start_advertising() {
     }
 
     // Refresh DevInfo name pointer to ensure it's current (ble_name_ may have reallocated)
+    // NOTE: Possible concurrent read in DevInfo; acceptable and documented.
     devinfo_chrs[1].arg = (void *)ble_name_.c_str();
 
     ble_hs_adv_fields fields{};
@@ -1082,7 +1113,7 @@ void IRKCaptureComponent::stop_advertising() {
     ESP_LOGD(TAG, "Advertising stopped");
 }
 
-//======================== MAC refresh (blocking, v1.0 behavior) ========================
+//======================== MAC refresh (blocking) ========================
 
 void IRKCaptureComponent::refresh_mac() {
     // Stop adv and terminate connection if any
@@ -1183,6 +1214,7 @@ void IRKCaptureComponent::update_ble_name(const std::string &name) {
     ble_svc_gap_device_name_set(ble_name_.c_str());
 
     // Update DevInfo model read callback source
+    // NOTE: Pointer lifetime is refreshed here and before advertising; see chr_read_devinfo notes.
     devinfo_chrs[1].arg = (void *)ble_name_.c_str();
 
     // Rotate MAC (which stops adv, clears bonds, changes MAC, and restarts adv)
@@ -1204,7 +1236,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     irk_gave_up_ = false;
     irk_last_try_ms_ = 0;
 
-    // Phase 1: Start global pairing timeout
+    // Start global pairing timeout
     pairing_start_time_ = now_ms();
 
     // Compact summary to increase chance at least one key line survives under log pressure
@@ -1217,7 +1249,10 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     // Cache peer identity address for delayed post-disconnect checks
     struct ble_gap_conn_desc d;
     if (ble_gap_conn_find(conn_handle_, &d) == 0) {
+        // torn-write mitigation (best effort) for last_peer_id
+        timers_.last_peer_id_ver++;
         timers_.last_peer_id = d.peer_id_addr;
+        timers_.last_peer_id_ver++;
 
         // Check for bond state mismatch: peer thinks it's unbonded but we have bond data
         if (!d.sec_state.bonded) {
@@ -1264,8 +1299,8 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
         ESP_LOGW(TAG, "ble_gap_security_initiate rc=%d", rc);
     }
 
-    // Give the logger a tiny chance to flush this burst without impacting behavior
-    delayMicroseconds(500);  // 0.5 ms
+    // Note: Avoid busy-waits in callbacks; previously a 0.5 ms micro-delay was used as log-yield.
+    // We skip any delay here to keep strict callback hygiene without altering pairing behavior.
 }
 
 void IRKCaptureComponent::on_disconnect() {
@@ -1280,7 +1315,7 @@ void IRKCaptureComponent::on_disconnect() {
     irk_gave_up_ = false;
     irk_last_try_ms_ = 0;
 
-    // Phase 1: Clear pairing timeout
+    // Clear pairing timeout
     pairing_start_time_ = 0;
 
     ESP_LOGI(TAG, "Disconnected");
@@ -1333,7 +1368,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
         return false;
     }
 
-    // Phase 1: Validate IRK before accepting
+    // Validate IRK before accepting
     if (!is_valid_irk(bond.irk)) {
         ESP_LOGW(TAG, "IRK failed validation (all-zero or all-FF)");
         return false;
@@ -1348,12 +1383,20 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 //======================== Timer helpers ========================
 
 void IRKCaptureComponent::schedule_post_disconnect_check(const ble_addr_t &peer_id) {
+    // Versioned write (best-effort) to mitigate torn reads by loop()
+    timers_.last_peer_id_ver++;
     timers_.last_peer_id = peer_id;
+    timers_.last_peer_id_ver++;
+
     timers_.post_disc_due_ms = now_ms() + TimingConfig::POST_DISC_DELAY_MS;
 }
 
 void IRKCaptureComponent::schedule_late_enc_check(const ble_addr_t &peer_id) {
+    // Versioned write (best-effort) to mitigate torn reads by loop()
+    timers_.enc_peer_id_ver++;
     timers_.enc_peer_id = peer_id;
+    timers_.enc_peer_id_ver++;
+
     timers_.late_enc_due_ms = now_ms() + TimingConfig::ENC_LATE_READ_DELAY_MS;
 }
 
@@ -1361,8 +1404,17 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
     if (!timers_.post_disc_due_ms || now < timers_.post_disc_due_ms) return;
     timers_.post_disc_due_ms = 0;  // consume
 
-    // Snapshot peer id locally to minimize chance of torn reads across tasks
-    ble_addr_t peer_id = timers_.last_peer_id;
+    // Snapshot peer id locally with best-effort torn-read detection (single retry if needed)
+    ble_addr_t peer_id;
+    uint32_t v1 = timers_.last_peer_id_ver;
+    peer_id = timers_.last_peer_id;
+    uint32_t v2 = timers_.last_peer_id_ver;
+    if (v1 != v2) {
+        // One retry
+        v1 = timers_.last_peer_id_ver;
+        peer_id = timers_.last_peer_id;
+        v2 = timers_.last_peer_id_ver;
+    }
 
     if (addr_is_zero(peer_id)) {
         ESP_LOGD(TAG, "Post-disc timer fired but last_peer_id is zero (skipping)");
@@ -1389,8 +1441,17 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
     if (!timers_.late_enc_due_ms || now < timers_.late_enc_due_ms) return;
     timers_.late_enc_due_ms = 0;
 
-    // Snapshot peer id locally to minimize chance of torn reads across tasks
-    ble_addr_t peer_id = timers_.enc_peer_id;
+    // Snapshot peer id locally with best-effort torn-read detection (single retry if needed)
+    ble_addr_t peer_id;
+    uint32_t v1 = timers_.enc_peer_id_ver;
+    peer_id = timers_.enc_peer_id;
+    uint32_t v2 = timers_.enc_peer_id_ver;
+    if (v1 != v2) {
+        // One retry
+        v1 = timers_.enc_peer_id_ver;
+        peer_id = timers_.enc_peer_id;
+        v2 = timers_.enc_peer_id_ver;
+    }
 
     if (addr_is_zero(peer_id)) {
         ESP_LOGD(TAG, "Late ENC timer fired but enc_peer_id is zero (skipping)");
