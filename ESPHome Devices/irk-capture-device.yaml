@@ -1,0 +1,11 @@
+substitutions:
+  device_name: esphome-irk-capture
+  friendly_name: IRK Capture
+  api_key: "ZmFrZWFwaWtleWZha2VleGFtcGxlZmFrZWtleQ=="
+  ota_password: "ChangeMe!2025"
+  esp32_variant: esp32c3
+  esp32_board: seeed_xiao_esp32c3
+  ble_name: "IRK Capture"
+
+packages:
+  device: !include "common/irk-capture-base.yaml"  
