@@ -116,7 +116,7 @@ switch:
     advertising:
       id: ble_advertising
       name: "BLE Advertising"
-      restore_mode: ALWAYS_OFF
+      restore_mode: ALWAYS_ON
 
 # Buttons
 button:
