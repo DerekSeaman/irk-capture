@@ -15,7 +15,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char *const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.4.2";
+static constexpr char VERSION[] = "1.4.3";
 static constexpr char HEX[] = "0123456789abcdef";
 
 //======================== NAMING CONVENTIONS ========================
