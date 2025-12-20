@@ -1,8 +1,8 @@
----
 # Component configuration for irk_capture
-# This file declares external library dependencies
+# ESP-IDF native NimBLE - no external libraries needed
 
-libraries:
-  - name: h2zero/NimBLE-Arduino
-    version: 2.2.1
-
+dependencies:
+  - text_sensor
+  - switch
+  - button
+  - text
