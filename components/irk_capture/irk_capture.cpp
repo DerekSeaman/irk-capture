@@ -193,7 +193,7 @@ int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* e
 //======================== Small utilities (readability only) ========================
 
 static inline uint32_t now_ms() {
-  return (uint32_t)(esp_timer_get_time() / 1000ULL);
+  return (uint32_t) (esp_timer_get_time() / 1000ULL);
 }
 
 // Generic hex formatter for byte arrays
@@ -201,7 +201,7 @@ static std::string to_hex_str(const uint8_t* data, size_t len, bool reverse = fa
   std::string out;
   out.reserve(len * 2);
   if (reverse) {
-    for (int i = (int)len - 1; i >= 0; --i) {
+    for (int i = (int) len - 1; i >= 0; --i) {
       uint8_t c = data[i];
       out.push_back(HEX[(c >> 4) & 0xF]);
       out.push_back(HEX[c & 0xF]);
@@ -243,7 +243,7 @@ static bool is_encrypted(uint16_t conn_handle) {
 
 static void hr_measurement_sample(uint8_t* buf, size_t* len) {
   buf[0] = 0x00;  // flags: HR value format UINT8, no sensor contact, no energy expended
-  buf[1] = (uint8_t)(60 + (esp_random() % 40));  // 60-99 bpm
+  buf[1] = (uint8_t) (60 + (esp_random() % 40));  // 60-99 bpm
   *len = 2;
 }
 
@@ -275,9 +275,9 @@ static void log_sm_config() {
   ESP_LOGI(
       TAG,
       "SM config: bonding=%d mitm=%d sc=%d io_cap=%d our_key_dist=0x%02X their_key_dist=0x%02X",
-      (int)ble_hs_cfg.sm_bonding, (int)ble_hs_cfg.sm_mitm, (int)ble_hs_cfg.sm_sc,
-      (int)ble_hs_cfg.sm_io_cap, (unsigned)ble_hs_cfg.sm_our_key_dist,
-      (unsigned)ble_hs_cfg.sm_their_key_dist);
+      (int) ble_hs_cfg.sm_bonding, (int) ble_hs_cfg.sm_mitm, (int) ble_hs_cfg.sm_sc,
+      (int) ble_hs_cfg.sm_io_cap, (unsigned) ble_hs_cfg.sm_our_key_dist,
+      (unsigned) ble_hs_cfg.sm_their_key_dist);
 }
 
 static bool get_own_addr(uint8_t out_mac[6], uint8_t* out_type = nullptr) {
@@ -392,7 +392,7 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
     // predictable.
     irk_cache_.erase(irk_cache_.begin());
   }
-  irk_cache_.push_back({irk_hex, addr, now, now, 1});
+  irk_cache_.push_back({ irk_hex, addr, now, now, 1 });
   last_publish_time_ = now;
   return true;
 }
@@ -446,73 +446,75 @@ static uint16_t g_hr_handle;
 static uint16_t g_prot_handle;
 
 static struct ble_gatt_chr_def hr_chrs[] = {
-    {
-        .uuid = &UUID_CHR_HR_MEAS.u,
-        .access_cb = chr_read_hr,
-        .arg = nullptr,
-        // 1.0 behavior: read requires ENC, notify also present
-        .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_READ_ENC,
-        .val_handle = &g_hr_handle,
-    },
-    {0}};
+  {
+      .uuid = &UUID_CHR_HR_MEAS.u,
+      .access_cb = chr_read_hr,
+      .arg = nullptr,
+      // 1.0 behavior: read requires ENC, notify also present
+      .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_READ_ENC,
+      .val_handle = &g_hr_handle,
+  },
+  { 0 }
+};
 
 static struct ble_gatt_chr_def devinfo_chrs[] = {
-    {
-        .uuid = &UUID_CHR_MANUF.u,
-        .access_cb = chr_read_devinfo,
-        .arg = (void*)"ESPresense",
-        .flags = BLE_GATT_CHR_F_READ_ENC,
-    },
-    {
-        .uuid = &UUID_CHR_MODEL.u,
-        .access_cb = chr_read_devinfo,
-        // NOTE: This pointer is refreshed before advertising and whenever the name changes.
-        // Reads can occur concurrently; there is a small window where a stale pointer could be
-        // seen. This is acceptable in practice and does not affect pairing logic or timing.
-        .arg = (void*)"IRK Capture",  // refreshed to ble_name_.c_str() before advertising
-        .flags = BLE_GATT_CHR_F_READ_ENC,
-    },
-    {0}};
+  {
+      .uuid = &UUID_CHR_MANUF.u,
+      .access_cb = chr_read_devinfo,
+      .arg = (void*) "ESPresense",
+      .flags = BLE_GATT_CHR_F_READ_ENC,
+  },
+  {
+      .uuid = &UUID_CHR_MODEL.u,
+      .access_cb = chr_read_devinfo,
+      // NOTE: This pointer is refreshed before advertising and whenever the name changes.
+      // Reads can occur concurrently; there is a small window where a stale pointer could be
+      // seen. This is acceptable in practice and does not affect pairing logic or timing.
+      .arg = (void*) "IRK Capture",  // refreshed to ble_name_.c_str() before advertising
+      .flags = BLE_GATT_CHR_F_READ_ENC,
+  },
+  { 0 }
+};
 
-static struct ble_gatt_chr_def batt_chrs[] = {
-    {
-        .uuid = &UUID_CHR_BATT_LVL.u,
-        .access_cb = chr_read_batt,
-        .arg = nullptr,
-        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-    },
-    {0}};
+static struct ble_gatt_chr_def batt_chrs[] = { {
+                                                   .uuid = &UUID_CHR_BATT_LVL.u,
+                                                   .access_cb = chr_read_batt,
+                                                   .arg = nullptr,
+                                                   .flags =
+                                                       BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                                               },
+                                               { 0 } };
 
-static struct ble_gatt_chr_def prot_chrs[] = {{
-                                                  .uuid = &UUID_CHR_PROT.u,
-                                                  .access_cb = chr_read_protected,
-                                                  .arg = (void*)"Protected Info",
-                                                  .flags = BLE_GATT_CHR_F_READ_ENC,
-                                                  .val_handle = &g_prot_handle,
-                                              },
-                                              {0}};
+static struct ble_gatt_chr_def prot_chrs[] = { {
+                                                   .uuid = &UUID_CHR_PROT.u,
+                                                   .access_cb = chr_read_protected,
+                                                   .arg = (void*) "Protected Info",
+                                                   .flags = BLE_GATT_CHR_F_READ_ENC,
+                                                   .val_handle = &g_prot_handle,
+                                               },
+                                               { 0 } };
 
-static struct ble_gatt_svc_def gatt_svcs[] = {{
-                                                  .type = BLE_GATT_SVC_TYPE_PRIMARY,
-                                                  .uuid = &UUID_SVC_HR.u,
-                                                  .characteristics = hr_chrs,
-                                              },
-                                              {
-                                                  .type = BLE_GATT_SVC_TYPE_PRIMARY,
-                                                  .uuid = &UUID_SVC_DEVINFO.u,
-                                                  .characteristics = devinfo_chrs,
-                                              },
-                                              {
-                                                  .type = BLE_GATT_SVC_TYPE_PRIMARY,
-                                                  .uuid = &UUID_SVC_BAS.u,
-                                                  .characteristics = batt_chrs,
-                                              },
-                                              {
-                                                  .type = BLE_GATT_SVC_TYPE_PRIMARY,
-                                                  .uuid = &UUID_SVC_PROT.u,
-                                                  .characteristics = prot_chrs,
-                                              },
-                                              {0}};
+static struct ble_gatt_svc_def gatt_svcs[] = { {
+                                                   .type = BLE_GATT_SVC_TYPE_PRIMARY,
+                                                   .uuid = &UUID_SVC_HR.u,
+                                                   .characteristics = hr_chrs,
+                                               },
+                                               {
+                                                   .type = BLE_GATT_SVC_TYPE_PRIMARY,
+                                                   .uuid = &UUID_SVC_DEVINFO.u,
+                                                   .characteristics = devinfo_chrs,
+                                               },
+                                               {
+                                                   .type = BLE_GATT_SVC_TYPE_PRIMARY,
+                                                   .uuid = &UUID_SVC_BAS.u,
+                                                   .characteristics = batt_chrs,
+                                               },
+                                               {
+                                                   .type = BLE_GATT_SVC_TYPE_PRIMARY,
+                                                   .uuid = &UUID_SVC_PROT.u,
+                                                   .characteristics = prot_chrs,
+                                               },
+                                               { 0 } };
 
 //======================== Access callbacks ========================
 
@@ -522,8 +524,8 @@ static int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_acce
   // Debug visibility for potential pointer lifetime issues: arg points to current ble_name_.c_str()
   // The pointer is refreshed on start_advertising() and update_ble_name(). Minor race is
   // acceptable.
-  const char* val = (const char*)arg;
-  ESP_LOGD(TAG, "DevInfo read (ptr=%p) value='%s'", (void*)val, val ? val : "(null)");
+  const char* val = (const char*) arg;
+  ESP_LOGD(TAG, "DevInfo read (ptr=%p) value='%s'", (void*) val, val ? val : "(null)");
   append_const_string_or_default(ctxt->om, val, "IRK Capture");
   return 0;
 }
@@ -543,7 +545,7 @@ static int chr_read_hr(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ct
 static int chr_read_protected(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt,
                               void* arg) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
-  append_const_string_or_default(ctxt->om, (const char*)arg, "Protected Info");
+  append_const_string_or_default(ctxt->om, (const char*) arg, "Protected Info");
   return 0;
 }
 
@@ -875,7 +877,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
       // Log passkey if we're supposed to display it (shouldn't happen with NO_INPUT_OUTPUT)
       if (ev->passkey.params.action == BLE_SM_IOACT_DISP) {
         ESP_LOGW(TAG, "UNEXPECTED: Peer requested passkey display (passkey=%06lu)",
-                 (unsigned long)ev->passkey.params.numcmp);
+                 (unsigned long) ev->passkey.params.numcmp);
       }
 
       // Just log and return - main branch behavior
@@ -1049,9 +1051,9 @@ void IRKCaptureComponent::setup_ble() {
     ESP_LOGI(TAG,
              "SM config (on sync): bonding=%d mitm=%d sc=%d io_cap=%d our_key_dist=0x%02X "
              "their_key_dist=0x%02X",
-             (int)ble_hs_cfg.sm_bonding, (int)ble_hs_cfg.sm_mitm, (int)ble_hs_cfg.sm_sc,
-             (int)ble_hs_cfg.sm_io_cap, (unsigned)ble_hs_cfg.sm_our_key_dist,
-             (unsigned)ble_hs_cfg.sm_their_key_dist);
+             (int) ble_hs_cfg.sm_bonding, (int) ble_hs_cfg.sm_mitm, (int) ble_hs_cfg.sm_sc,
+             (int) ble_hs_cfg.sm_io_cap, (unsigned) ble_hs_cfg.sm_our_key_dist,
+             (unsigned) ble_hs_cfg.sm_their_key_dist);
   };
 
   ble_hs_cfg.sm_bonding = 1;
@@ -1100,7 +1102,7 @@ void IRKCaptureComponent::register_gatt_services() {
   // Point model string at current name for DevInfo
   // NOTE: devinfo_chrs[1].arg = ble_name_.c_str() is refreshed here and before advertising.
   // There is a small concurrency window if the name reallocates; acceptable for DevInfo reads.
-  devinfo_chrs[1].arg = (void*)ble_name_.c_str();
+  devinfo_chrs[1].arg = (void*) ble_name_.c_str();
 
   int rc = ble_gatts_count_cfg(gatt_svcs);
   if (rc == 0) rc = ble_gatts_add_svcs(gatt_svcs);
@@ -1124,12 +1126,12 @@ void IRKCaptureComponent::start_advertising() {
 
   // Refresh DevInfo name pointer to ensure it's current (ble_name_ may have reallocated)
   // NOTE: Possible concurrent read in DevInfo; acceptable and documented.
-  devinfo_chrs[1].arg = (void*)ble_name_.c_str();
+  devinfo_chrs[1].arg = (void*) ble_name_.c_str();
 
   ble_hs_adv_fields fields{};
   fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-  fields.name = (uint8_t*)ble_name_.c_str();
-  fields.name_len = (uint8_t)ble_name_.size();
+  fields.name = (uint8_t*) ble_name_.c_str();
+  fields.name_len = (uint8_t) ble_name_.size();
   fields.name_is_complete = 1;
 
   // Appearance: Heart Rate Sensor
@@ -1137,9 +1139,9 @@ void IRKCaptureComponent::start_advertising() {
   fields.appearance_is_present = 1;
 
   // Include standard services in adv
-  uint16_t svc16[] = {UUID_SVC_HEART_RATE, UUID_SVC_BATTERY, UUID_SVC_DEVICE_INFO};
-  ble_uuid16_t uu16[3] = {BLE_UUID16_INIT(svc16[0]), BLE_UUID16_INIT(svc16[1]),
-                          BLE_UUID16_INIT(svc16[2])};
+  uint16_t svc16[] = { UUID_SVC_HEART_RATE, UUID_SVC_BATTERY, UUID_SVC_DEVICE_INFO };
+  ble_uuid16_t uu16[3] = { BLE_UUID16_INIT(svc16[0]), BLE_UUID16_INIT(svc16[1]),
+                           BLE_UUID16_INIT(svc16[2]) };
   fields.uuids16 = uu16;
   fields.num_uuids16 = 3;
   fields.uuids16_is_complete = 1;
@@ -1260,11 +1262,11 @@ void IRKCaptureComponent::refresh_mac() {
       // Documented transient: host may not be ready to accept new RANDOM identity yet
       ESP_LOGW(TAG,
                "ble_hs_id_set_rnd EINVAL (try %d): %02X:%02X:%02X:%02X:%02X:%02X; adv=%d conn=%d",
-               tries + 1, mac[5], mac[4], mac[3], mac[2], mac[1], mac[0], (int)advertising_,
+               tries + 1, mac[5], mac[4], mac[3], mac[2], mac[1], mac[0], (int) advertising_,
                (conn_handle_ != BLE_HS_CONN_HANDLE_NONE));
 
       uint8_t own_addr_type;
-      (void)ble_hs_id_infer_auto(0, &own_addr_type);
+      (void) ble_hs_id_infer_auto(0, &own_addr_type);
       ESP_LOGD(TAG, "Current own_addr_type=%u; will retry set_rnd", own_addr_type);
 
       // Mild backoff to improve reliability without altering semantics
@@ -1287,7 +1289,7 @@ void IRKCaptureComponent::update_ble_name(const std::string& name) {
 
   // Update DevInfo model read callback source
   // NOTE: Pointer lifetime is refreshed here and before advertising; see chr_read_devinfo notes.
-  devinfo_chrs[1].arg = (void*)ble_name_.c_str();
+  devinfo_chrs[1].arg = (void*) ble_name_.c_str();
 
   // Rotate MAC (which stops adv, clears bonds, changes MAC, and restarts adv)
   // This handles the advertising restart automatically with the new name
@@ -1312,8 +1314,8 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   pairing_start_time_ = now_ms();
 
   // Compact summary to increase chance at least one key line survives under log pressure
-  ESP_LOGI(TAG, "Conn start: handle=%u enc_ready=%d adv=%d", conn_handle_, (int)enc_ready_,
-           (int)advertising_);
+  ESP_LOGI(TAG, "Conn start: handle=%u enc_ready=%d adv=%d", conn_handle_, (int) enc_ready_,
+           (int) advertising_);
 
   ESP_LOGI(TAG, "Connected; handle=%u, initiating security", conn_handle_);
   log_conn_desc(conn_handle_);
@@ -1431,10 +1433,10 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 
   // Detailed bond information for debugging
   ESP_LOGD(TAG, "Bond found: ediv=%u rand=%llu irk_present=%d ltk_present=%d csrk_present=%d",
-           (unsigned)bond.ediv, (unsigned long long)bond.rand_num, (int)bond.irk_present,
-           (int)bond.ltk_present, (int)bond.csrk_present);
+           (unsigned) bond.ediv, (unsigned long long) bond.rand_num, (int) bond.irk_present,
+           (int) bond.ltk_present, (int) bond.csrk_present);
 
-  ESP_LOGD(TAG, "Bond security: authenticated=%d sc=%d", (int)bond.authenticated, (int)bond.sc);
+  ESP_LOGD(TAG, "Bond security: authenticated=%d sc=%d", (int) bond.authenticated, (int) bond.sc);
 
   // Defensive bounds check: Ensure IRK is present before copying
   if (!bond.irk_present) {
