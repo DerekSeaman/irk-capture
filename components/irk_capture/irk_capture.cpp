@@ -362,6 +362,12 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
 
 /**
  * @brief Checks if IRK should be published (deduplication + rate limiting)
+ *
+ * MEMORY SAFETY: This function prevents duplicate entries in irk_cache_ by checking
+ * if the IRK already exists before adding. Even if the same device reconnects 100 times,
+ * it will only have ONE entry in the cache (updated in-place). Hard cap at 10 entries
+ * prevents unbounded memory growth on ESP32-C3.
+ *
  * @param irk_hex IRK in hex string format
  * @param addr MAC address string
  * @return true if should publish, false if duplicate/rate-limited
@@ -369,18 +375,20 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
 bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const std::string& addr) {
   uint32_t now = now_ms();
 
-  // Check cache for duplicate
+  // Check cache for duplicate - prevents memory bloat from repeated connections
+  // SAFETY: If found, we update the existing entry in-place (no new allocation)
   for (auto& entry : irk_cache_) {
     if (entry.irk_hex == irk_hex && entry.mac_addr == addr) {
-      // Same device reconnecting - rate limit republishing
-      if ((now - last_publish_time_) < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
-        ESP_LOGI(TAG, "Suppressing duplicate IRK (published %u ms ago)", now - last_publish_time_);
-        entry.last_seen_ms = now;
-        entry.capture_count++;
-        return false;
-      }
+      // Same device reconnecting - update existing entry, don't create new one
       entry.last_seen_ms = now;
       entry.capture_count++;
+
+      // Rate limit republishing to Home Assistant
+      if ((now - last_publish_time_) < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
+        ESP_LOGI(TAG, "Suppressing duplicate IRK (published %u ms ago)", now - last_publish_time_);
+        return false;
+      }
+
       ESP_LOGI(TAG, "Re-publishing IRK (capture #%u)", entry.capture_count);
       last_publish_time_ = now;
       return true;
@@ -388,13 +396,16 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
   }
 
   // New IRK - add to cache (max 10 entries, FIFO eviction)
+  // SAFETY: Hard cap at 10 entries prevents unbounded memory growth on ESP32-C3
   if (irk_cache_.size() >= 10) {
     // Evict oldest (FIFO). Note: documented behavior; intentional to cap memory and keep UX
     // predictable.
+    ESP_LOGD(TAG, "IRK cache full (10 entries), evicting oldest entry");
     irk_cache_.erase(irk_cache_.begin());
   }
   irk_cache_.push_back({ irk_hex, addr, now, now, 1 });
   last_publish_time_ = now;
+  ESP_LOGD(TAG, "New IRK added to cache (total: %zu/10)", irk_cache_.size());
   return true;
 }
 
@@ -927,6 +938,12 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 
 void IRKCaptureComponent::setup() {
   ESP_LOGI(TAG, "IRK Capture v%s ready", VERSION);
+
+  // Clear in-memory IRK cache for fresh session (complements ble_store_clear() in setup_ble())
+  irk_cache_.clear();
+  total_captures_ = 0;
+  last_publish_time_ = 0;
+
   this->setup_ble();
 
   if (start_on_boot_) {
