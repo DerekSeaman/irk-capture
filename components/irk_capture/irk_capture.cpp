@@ -1127,12 +1127,19 @@ void IRKCaptureComponent::loop() {
 
   if (should_timeout) {
     ESP_LOGW(TAG, "Pairing timeout after 90+ seconds - resetting connection");
-    // Force disconnect and clear bonds
+    // Zombie protection: Only terminate if connection still exists
     struct ble_gap_conn_desc d {};
     if (ble_gap_conn_find(timeout_conn_handle, &d) == 0) {
+      // Connection still alive - clean up bond and terminate
       ble_store_util_delete_peer(&d.peer_id_addr);
+      ble_gap_terminate(timeout_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    } else {
+      // Connection already dead (zombie) - just reset local state
+      ESP_LOGD(TAG, "Connection already terminated, cleaning up local state");
+      MutexGuard lock(state_mutex_);
+      connected_ = false;
+      conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
     }
-    ble_gap_terminate(timeout_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
   }
 
   if (!connected_ || conn_handle_ == BLE_HS_CONN_HANDLE_NONE) return;
