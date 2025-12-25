@@ -11,12 +11,13 @@
 
 // Some ESP-IDF 5.x package variants omit this prototype from headers; declare it explicitly
 extern "C" int ble_store_config_init(void);
+extern "C" int ble_store_clear(void);
 
 namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.4.3";
+static constexpr char VERSION[] = "1.5.0";
 static constexpr char HEX[] = "0123456789abcdef";
 
 //======================== NAMING CONVENTIONS ========================
@@ -1066,6 +1067,11 @@ void IRKCaptureComponent::setup_ble() {
 
   // Key-value store for bonding/keys
   ble_store_config_init();
+
+  // Clear all bonds on boot for a "clean slate" - prevents bond table from filling up
+  // and ensures privacy (no old IRKs persist across reboots or device ownership changes)
+  ble_store_clear();
+  ESP_LOGI(TAG, "Bond table cleared on boot - fresh pairing session guaranteed");
 
   // GAP/GATT and name
   ble_svc_gap_init();
