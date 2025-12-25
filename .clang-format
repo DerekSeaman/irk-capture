@@ -1,8 +1,33 @@
 ---
+# DerekSeaman/irk-capture - Final Standardized Style
+# Compatible with Clang-Format 15, 18 (GitHub), and 21 (macOS)
+
 BasedOnStyle: Google
+
+# Core Alignment
 IndentWidth: 2
 ColumnLimit: 100
-AllowShortFunctionsOnASingleLine: Empty
+Standard: Latest
+
+# FIX: Remove spaces after casts like (uint32_t) var
+# Prevents: (uint32_t) (x) -> Wants: (uint32_t)(x)
+SpaceAfterCStyleCast: false
+
+# FIX: Force space before empty braces: struct d {};
+# This satisfies the "code should be clang-formatted" error for structs
+Cpp11BracedListStyle: false
+SpaceBeforeCpp11BracedList: true
+
+# Pointer/Reference Alignment (char* tag)
 DerivePointerAlignment: false
 PointerAlignment: Left
+
+# ESP-IDF / Home Assistant Compatibility
+SortIncludes: false # Prevents breaking ESP-IDF header dependencies
+AllowShortFunctionsOnASingleLine: Empty
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# Spacing Rules
+SpaceBeforeParens: ControlStatements
+SpacesInContainerLiterals: true
 ---
