@@ -81,6 +81,35 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
      device: !include common/irk-capture-base.yaml
    ```
 
+### Optional Configuration Parameters
+
+You can add these optional parameters to your device YAML configuration to control multi-device capture behavior:
+
+```yaml
+irk_capture:
+  id: irk
+  ble_name: "IRK Capture"
+  start_on_boot: true
+  continuous_mode: false  # Optional: Keep advertising after IRK capture (default: false)
+  max_captures: 1         # Optional: Maximum IRKs to capture before auto-stop (default: 1, 0=unlimited)
+```
+
+**Configuration Options:**
+
+- **`continuous_mode`** (default: `false`):
+  - `false`: Stops advertising after capturing one IRK (single-device mode)
+  - `true`: Keeps advertising after IRK capture to allow multiple device pairing
+
+- **`max_captures`** (default: `1`):
+  - `1`: Capture one IRK and stop (recommended for most users)
+  - `2-255`: Capture multiple IRKs before auto-stopping
+  - `0`: Unlimited captures (not recommended for production)
+
+**Important Notes:**
+- If `continuous_mode: false` and `max_captures > 1`, ESPHome will reject the configuration (conflict)
+- For multi-device capture, set `continuous_mode: true` and `max_captures` to your desired limit
+- After capturing multiple IRKs, restart the device between captures to avoid pairing conflicts
+
 4. **Secrets File** (managed by ESPHome device builder):
    ```yaml
    wifi_ssid: "Your WiFi Network"
