@@ -16,15 +16,55 @@ CONF_MAX_CAPTURES = "max_captures"
 irk_capture_ns = cg.esphome_ns.namespace("irk_capture")
 IRKCaptureComponent = irk_capture_ns.class_("IRKCaptureComponent", cg.Component)
 
-CONFIG_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(): cv.declare_id(IRKCaptureComponent),
-        cv.Optional(CONF_BLE_NAME, default="IRK Capture"): cv.string,
-        cv.Optional(CONF_START_ON_BOOT, default=True): cv.boolean,
-        cv.Optional(CONF_CONTINUOUS_MODE, default=False): cv.boolean,
-        cv.Optional(CONF_MAX_CAPTURES, default=1): cv.int_range(min=0, max=255),
-    }
-).extend(cv.COMPONENT_SCHEMA)
+
+def validate_ble_name(value):
+    """Validate BLE name length (BLE spec: max 29 bytes for advertising packet)"""
+    value = cv.string(value)
+    if len(value.encode("utf-8")) > 29:
+        raise cv.Invalid(
+            f"BLE name too long ({len(value.encode('utf-8'))} bytes). "
+            f"Maximum 29 bytes for BLE advertising packet. Shorten your name."
+        )
+    return value
+
+
+def validate_continuous_mode_config(config):
+    """Validate continuous_mode and max_captures interaction"""
+    continuous_mode = config.get(CONF_CONTINUOUS_MODE, False)
+    max_captures = config.get(CONF_MAX_CAPTURES, 1)
+
+    # Configuration conflict: continuous_mode=false with max_captures>1
+    if not continuous_mode and max_captures > 1:
+        raise cv.Invalid(
+            f"Configuration conflict: continuous_mode=false with max_captures={max_captures}. "
+            f"To capture multiple devices, set continuous_mode=true. "
+            f"For single capture, set max_captures=1."
+        )
+
+    # Warning for unlimited mode
+    if max_captures == 0:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "max_captures=0 enables unlimited capture mode (no auto-stop). "
+            "This is not recommended for production. Set a specific limit (e.g., max_captures=5)."
+        )
+
+    return config
+
+
+CONFIG_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(IRKCaptureComponent),
+            cv.Optional(CONF_BLE_NAME, default="IRK Capture"): validate_ble_name,
+            cv.Optional(CONF_START_ON_BOOT, default=True): cv.boolean,
+            cv.Optional(CONF_CONTINUOUS_MODE, default=False): cv.boolean,
+            cv.Optional(CONF_MAX_CAPTURES, default=1): cv.int_range(min=0, max=255),
+        }
+    ).extend(cv.COMPONENT_SCHEMA),
+    validate_continuous_mode_config,  # Cross-field validation
+)
 
 
 async def to_code(config):

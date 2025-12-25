@@ -211,7 +211,7 @@ class IRKCaptureComponent : public Component {
   } timers_ {};
 
   // FreeRTOS mutex for thread-safe access to shared state
-  // Protects: timers_, conn_handle_, advertising_, pairing_start_time_
+  // Protects: timers_, conn_handle_, advertising_, pairing_start_time_, ble_name_
   SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Internal helpers

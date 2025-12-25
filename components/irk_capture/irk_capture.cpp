@@ -474,13 +474,31 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
       entry.last_seen_ms = now;
       entry.capture_count++;
 
-      // Rate limit republishing to Home Assistant
+      // SESSION LIMIT: Prevent unbounded memory growth from background reconnections
+      // iOS devices reconnect every 15min → 96 times/day → heap fragmentation
+      if (entry.capture_count > 5) {
+        ESP_LOGW(TAG,
+                 "IRK republish limit reached (%u captures). Device keeps reconnecting - "
+                 "unpair from Bluetooth settings to stop.",
+                 entry.capture_count);
+
+        // Auto-stop advertising to break reconnection loop
+        if (advertising_) {
+          stop_advertising();
+          ESP_LOGI(TAG,
+                   "Auto-stopped advertising due to repeated reconnections. "
+                   "Toggle 'BLE Advertising' switch to resume.");
+        }
+        return false;  // Don't republish - prevents heap fragmentation
+      }
+
+      // Rate limit republishing to Home Assistant (60s minimum)
       if ((now - last_publish_time_) < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
-        ESP_LOGI(TAG, "Suppressing duplicate IRK (published %u ms ago)", now - last_publish_time_);
+        ESP_LOGD(TAG, "Suppressing duplicate IRK (published %u ms ago)", now - last_publish_time_);
         return false;
       }
 
-      ESP_LOGI(TAG, "Re-publishing IRK (capture #%u)", entry.capture_count);
+      ESP_LOGI(TAG, "Re-publishing IRK (capture #%u/5)", entry.capture_count);
       last_publish_time_ = now;
       return true;
     }
@@ -630,12 +648,18 @@ static struct ble_gatt_svc_def gatt_svcs[] = { {
 static int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt,
                             void* arg) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
-  // Debug visibility for potential pointer lifetime issues: arg points to
-  // current ble_name_.c_str() The pointer is refreshed on start_advertising()
-  // and update_ble_name(). Minor race is acceptable.
-  const char* val = (const char*) arg;
-  ESP_LOGD(TAG, "DevInfo read (ptr=%p) value='%s'", (void*) val, val ? val : "(null)");
-  append_const_string_or_default(ctxt->om, val, "IRK Capture");
+
+  // THREAD-SAFE FIX: arg now points to IRKCaptureComponent instance, not raw string pointer
+  // Copy ble_name_ to local buffer while holding mutex to prevent use-after-free
+  auto* self = static_cast<IRKCaptureComponent*>(arg);
+  std::string name_copy;
+  {
+    MutexGuard lock(self->state_mutex_);
+    name_copy = self->ble_name_;  // Thread-safe copy
+  }
+
+  ESP_LOGD(TAG, "DevInfo read: value='%s'", name_copy.c_str());
+  append_const_string_or_default(ctxt->om, name_copy.c_str(), "IRK Capture");
   return 0;
 }
 static int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
@@ -1280,11 +1304,9 @@ void IRKCaptureComponent::setup_ble() {
 }
 
 void IRKCaptureComponent::register_gatt_services() {
-  // Point model string at current name for DevInfo
-  // NOTE: devinfo_chrs[1].arg = ble_name_.c_str() is refreshed here and before
-  // advertising. There is a small concurrency window if the name reallocates;
-  // acceptable for DevInfo reads.
-  devinfo_chrs[1].arg = (void*) ble_name_.c_str();
+  // THREAD-SAFE: Pass 'this' pointer to GATT callback instead of raw string pointer
+  // The callback will copy ble_name_ while holding mutex to prevent use-after-free
+  devinfo_chrs[1].arg = (void*) this;
 
   int rc = ble_gatts_count_cfg(gatt_svcs);
   if (rc == 0) rc = ble_gatts_add_svcs(gatt_svcs);
@@ -1306,10 +1328,8 @@ void IRKCaptureComponent::start_advertising() {
     return;
   }
 
-  // Refresh DevInfo name pointer to ensure it's current (ble_name_ may have
-  // reallocated) NOTE: Possible concurrent read in DevInfo; acceptable and
-  // documented.
-  devinfo_chrs[1].arg = (void*) ble_name_.c_str();
+  // NOTE: devinfo_chrs[1].arg already points to 'this' (set in register_gatt_services)
+  // No need to refresh - callback will read ble_name_ with mutex protection
 
   ble_hs_adv_fields fields {};
   fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
@@ -1470,14 +1490,17 @@ void IRKCaptureComponent::refresh_mac() {
 //======================== BLE name update ========================
 
 void IRKCaptureComponent::update_ble_name(const std::string& name) {
-  // Update name in GAP
-  ble_name_ = name;
-  ble_svc_gap_device_name_set(ble_name_.c_str());
+  // THREAD-SAFE: Update name with mutex protection since GATT callback may read it
+  {
+    MutexGuard lock(state_mutex_);
+    ble_name_ = name;
+  }
 
-  // Update DevInfo model read callback source
-  // NOTE: Pointer lifetime is refreshed here and before advertising; see
-  // chr_read_devinfo notes.
-  devinfo_chrs[1].arg = (void*) ble_name_.c_str();
+  // Update GAP device name
+  ble_svc_gap_device_name_set(name.c_str());
+
+  // NOTE: devinfo_chrs[1].arg already points to 'this' (set in register_gatt_services)
+  // GATT callback will read updated ble_name_ with mutex protection
 
   // Rotate MAC (which stops adv, clears bonds, changes MAC, and restarts adv)
   // This handles the advertising restart automatically with the new name
