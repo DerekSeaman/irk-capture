@@ -1,9 +1,11 @@
 """Text sensor platform for IRK Capture component."""
+
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import text_sensor
 from esphome.const import CONF_ID
-from . import irk_capture_ns, CONF_IRK_CAPTURE_ID, IRKCaptureComponent
+
+from . import CONF_IRK_CAPTURE_ID, IRKCaptureComponent, irk_capture_ns
 
 CONF_LAST_IRK = "last_irk"
 CONF_LAST_ADDRESS = "last_address"
@@ -12,11 +14,13 @@ IRKCaptureTextSensor = irk_capture_ns.class_(
     "IRKCaptureTextSensor", text_sensor.TextSensor, cg.Component
 )
 
-CONFIG_SCHEMA = cv.Schema({
-    cv.GenerateID(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
-    cv.Optional(CONF_LAST_IRK): text_sensor.text_sensor_schema(IRKCaptureTextSensor),
-    cv.Optional(CONF_LAST_ADDRESS): text_sensor.text_sensor_schema(IRKCaptureTextSensor),
-})
+CONFIG_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
+        cv.Optional(CONF_LAST_IRK): text_sensor.text_sensor_schema(IRKCaptureTextSensor),
+        cv.Optional(CONF_LAST_ADDRESS): text_sensor.text_sensor_schema(IRKCaptureTextSensor),
+    }
+)
 
 
 async def to_code(config):
