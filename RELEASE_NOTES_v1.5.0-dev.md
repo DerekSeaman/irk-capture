@@ -218,7 +218,6 @@ timers_.last_peer_id_ver++;
 
 **Known Limitations:**
 - Dev branch only - **not recommended for production yet**
-- Enhanced IRK validation not yet implemented
 
 ---
 
@@ -330,7 +329,7 @@ This release addresses **7 of 10** critical findings from professional code revi
 | **1** | Race conditions (no mutex) | ✅ **FIXED** | FreeRTOS mutex with RAII |
 | **2** | Blocking delays in critical path | ✅ **FIXED** | Event-driven state machine |
 | **3** | Unvalidated BLE name input | ✅ **FIXED** | Runtime sanitization + length limits |
-| **5** | IRK validation insufficient | 🚧 **Planned** | Entropy checks |
+| **5** | IRK validation insufficient | ⏸️ **Accepted** | Basic validation sufficient |
 | **6** | Torn read mitigation non-atomic | ✅ **FIXED** | Mutex protection |
 | **7** | NVS flash wear | ✅ **MITIGATED** | Bond clearing on boot |
 | **8** | No connection rate limiting | ⏸️ **Deferred** | Low priority |
@@ -468,11 +467,6 @@ CONFIG_BT_NIMBLE_SM_SC: y
 - ~~Runtime validation when changed via Home Assistant~~
 - **Status:** Implemented in v1.5.0-dev
 - **Benefit:** Prevents buffer overflows and advertisement corruption
-
-### Enhanced IRK Validation (Planned)
-- Entropy checks (min 4 unique bytes)
-- Repeating pattern detection
-- **Benefit:** Catches invalid IRKs from buggy implementations
 
 ---
 
