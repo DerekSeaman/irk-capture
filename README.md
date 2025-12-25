@@ -6,7 +6,7 @@ This ESPHome package will capture Apple and Android Bluetooth Identity Resolving
 
 > **⚠️ IMPORTANT:** This package **requires the ESP-IDF framework** and does **NOT** support the Arduino framework. The example YAML configurations include the required `framework: type: esp-idf` setting.
 
-This package uses the ESP-IDF framework for broad ESP32 board compatibility. The ESP-IDF framework is required for ESP32-C2, ESP32-C5, ESP32-C6, ESP32-C61, ESP32-H2, and ESP32-P4 variants, as these newer ESP32 variants are not supported by the Arduino framework. 
+This package uses the ESP-IDF framework for broad ESP32 board compatibility. The ESP-IDF framework is required for ESP32-C2, ESP32-C5, ESP32-C6, ESP32-C61, ESP32-H2, and ESP32-P4 variants, as these newer ESP32 variants are not supported by the Arduino framework.
 
 ## What is a BLE IRK and Why Is It Needed?
 
@@ -14,7 +14,7 @@ Modern Apple and Android devices use **BLE privacy features** that randomize the
 
 The **Identity Resolving Key (IRK)** is a cryptographic key exchanged during BLE pairing that allows authorized devices to resolve these random MAC addresses back to the original device. By capturing a device's IRK, you can reliably track it for presence detection even as it randomizes its MAC address.
 
-Capturing IRKs from devices can be very tricky, as the Bluetooth stack can very widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes. 
+Capturing IRKs from devices can be very tricky, as the Bluetooth stack can very widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes.
 
 Bluetooth uses an 'identity address' that is separate from the readily seen Bluetooth MAC address. The identity address is randomized each time the ESP32 device boots up. This means that even if you use the UI option to change the ESP32 BT MAC, your device may not see your ESP32 as new as the identity address is not changed. It is best to always restart your ESP32 to get a new random identity address and MAC. This should appear as an entirely new Bluetooth device to your phone or watch.
 
@@ -72,7 +72,7 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
      device_name: esphome-irk-capture          # Change: Unique name for your device (lowercase, hyphens only)
      friendly_name: IRK Capture                # Change: Human-readable name shown in Home Assistant
      api_key: "ZmFrZWFwaWtleWZha2VleGFtcGxlZmFrZWtleQ=="  # Change: Generated with ESPHome new device wizard
-     ota_password: "ChangeMe!2025"             # Change: Generated with the ESPHome new device wizard 
+     ota_password: "ChangeMe!2025"             # Change: Generated with the ESPHome new device wizard
      esp32_variant: esp32c3                    # Change: Your ESP32 variant (esp32, esp32c3, esp32c6, esp32s3, etc.)
      esp32_board: seeed_xiao_esp32c3           # Change: Your board type (see ESPHome board list)
      ble_name: "IRK Capture"                   # Change: BLE advertising name (shown in Bluetooth settings)
@@ -140,7 +140,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 4. **Tap on the device name to pair:**
    - If prompted, tap "Pair" or "Connect"
    - No PIN is required for this pairing
-   - Depending on the device/OS, pairing may not complete or show as not connected. This can be normal. 
+   - Depending on the device/OS, pairing may not complete or show as not connected. This can be normal.
 
 5. **View the captured IRK:**
    - **Option 1:** Check the ESP32 logs in ESPHome Device Builder
@@ -151,7 +151,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
    - After successfully capturing the IRK, go to your device's Bluetooth settings
    - Forget or unpair the "IRK Capture" device (or whatever name you used)
    - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
-   - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' between each capture to avoid potential issues.  
+   - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' between each capture to avoid potential issues
 
 ### Installing Private BLE Device Integration
 
