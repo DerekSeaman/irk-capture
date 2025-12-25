@@ -46,3 +46,8 @@ async def to_code(config):
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SECURITY_ENABLE", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SM_LEGACY", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SM_SC", True)
+
+    # Increase NimBLE host stack size for stability with ESP_LOG calls
+    # Default: 4096 bytes. Increased to 5120 for safety margin with debug logging.
+    # Stack overflow risk: ESP_LOG calls in gap_event callbacks are stack-heavy
+    esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_TASK_STACK_SIZE", 5120)
