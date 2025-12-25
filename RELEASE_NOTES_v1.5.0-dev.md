@@ -484,7 +484,7 @@ This is a **development preview branch**. Feedback welcome!
 3. Include full logs (set `level: DEBUG` in ESPHome)
 
 **Known Good Configurations:**
-- ESP32-C3 + ESPHome 2024.11.0 + ESP-IDF framework
+- ESP32-C3 + ESPHome 2025.12.2 + ESP-IDF framework
 - iPhone 15 Pro (iOS 18.2)
 - Apple Watch Series 9 (watchOS 11.2)
 
