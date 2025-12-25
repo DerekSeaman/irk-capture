@@ -4,7 +4,9 @@
 
 This ESPHome package will capture Apple and Android Bluetooth Identity Resolving Keys (IRK) using an ESP32 running ESPHome. Use the captured IRKs with the [Private BLE Device](https://www.home-assistant.io/integrations/private_ble_device/) integration in Home Assistant for reliable room-level presence detection. I use the [Bermuda BLE Trilateration](https://github.com/agittins/bermuda?tab=readme-ov-file) integration with IRKs for room-level presence detection.
 
-This package uses the ESP-IDF framework, for broad ESP32 board compatibility. This is in contrast with the Arduino framework which when used with ESPHome, has more limited board support. ESP-IDF framework is required for ESP32-C2, ESP32-C5, ESP32-C6, ESP32-C61, ESP32-H2, and ESP32-P4 variants, as these are not supported by the Arduino framework. 
+> **⚠️ IMPORTANT:** This package **requires the ESP-IDF framework** and does **NOT** support the Arduino framework. The example YAML configurations include the required `framework: type: esp-idf` setting.
+
+This package uses the ESP-IDF framework for broad ESP32 board compatibility. The ESP-IDF framework is required for ESP32-C2, ESP32-C5, ESP32-C6, ESP32-C61, ESP32-H2, and ESP32-P4 variants, as these newer ESP32 variants are not supported by the Arduino framework. 
 
 ## What is a BLE IRK and Why Is It Needed?
 
@@ -37,6 +39,7 @@ This IRK capture component turns your ESP32 into a BLE peripheral that **adverti
 ## Requirements
 
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
+- **ESP-IDF framework** (required - this component does NOT support Arduino framework)
 - **ESPHome** 2024.x or newer
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
 - **ESPHome Device Builder** (Optional, but makes managing ESPHome devices in Home Assistant easier)
