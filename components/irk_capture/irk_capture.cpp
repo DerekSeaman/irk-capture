@@ -695,12 +695,60 @@ static int read_peer_bond_by_conn(uint16_t conn_handle, struct ble_store_value_s
   return ble_store_read_peer_sec(&key_sec, out_bond);
 }
 
+//======================== BLE name sanitization ========================
+
+std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
+  // Validate and sanitize BLE name for runtime changes from Home Assistant
+  std::string sanitized;
+  sanitized.reserve(29);  // BLE advertising packet limit
+
+  // Check for empty string
+  if (name.empty()) {
+    ESP_LOGW(TAG, "BLE name cannot be empty, using default 'IRK Capture'");
+    return "IRK Capture";
+  }
+
+  // Sanitize: allow only safe characters (alphanumeric, space, hyphen, underscore)
+  for (char c : name) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' ||
+        c == '-' || c == '_') {
+      sanitized += c;
+    } else {
+      // Log rejected character
+      ESP_LOGW(TAG, "Rejected invalid character in BLE name: 0x%02X ('%c')", (uint8_t) c,
+               (c >= 32 && c <= 126) ? c : '?');
+    }
+
+    // Enforce 29-byte limit (BLE advertising packet constraint)
+    if (sanitized.length() >= 29) {
+      ESP_LOGW(TAG, "BLE name truncated to 29 bytes (advertising packet limit)");
+      break;
+    }
+  }
+
+  // Final validation: ensure we have at least one character
+  if (sanitized.empty()) {
+    ESP_LOGW(TAG, "BLE name contained only invalid characters, using default 'IRK Capture'");
+    return "IRK Capture";
+  }
+
+  // Log if sanitization changed the input
+  if (sanitized != name) {
+    ESP_LOGI(TAG, "BLE name sanitized: '%s' -> '%s'", name.c_str(), sanitized.c_str());
+  }
+
+  return sanitized;
+}
+
 //======================== Entity impls ========================
 
 void IRKCaptureText::control(const std::string& value) {
-  ESP_LOGI(TAG, "BLE name changed to: %s", value.c_str());
-  publish_state(value);
-  parent_->update_ble_name(value);
+  // Sanitize and validate user input from Home Assistant
+  std::string sanitized = parent_->sanitize_ble_name(value);
+
+  ESP_LOGI(TAG, "BLE name changed to: %s", sanitized.c_str());
+  publish_state(sanitized);
+  parent_->update_ble_name(sanitized);
 }
 
 void IRKCaptureSwitch::write_state(bool state) {

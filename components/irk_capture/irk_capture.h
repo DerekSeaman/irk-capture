@@ -228,6 +228,7 @@ class IRKCaptureComponent : public Component {
   bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out);
   void setup_ble();
   void register_gatt_services();
+  std::string sanitize_ble_name(const std::string& name);
 
   // Phase 1 & 2 helpers
   bool is_valid_irk(const uint8_t irk[16]);

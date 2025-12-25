@@ -100,7 +100,37 @@ for (auto& entry : irk_cache_) {
 - [irk_capture.cpp:1067](components/irk_capture/irk_capture.cpp#L1067) - Cache clearing on boot
 - [irk_capture.cpp:440-450](components/irk_capture/irk_capture.cpp#L440-L450) - FIFO eviction logic
 
-### 4. **NimBLE Task Stack Size Increase**
+### 4. **BLE Name Input Validation & Sanitization**
+
+**Problem Solved:** Unvalidated user input from Home Assistant text fields could cause BLE advertisement corruption or buffer overflows.
+
+**Implementation:**
+- Runtime validation in `IRKCaptureText::control()` callback
+- Character sanitization (alphanumeric, space, hyphen, underscore only)
+- 29-byte length limit enforcement (BLE advertising packet constraint)
+- Automatic fallback to "IRK Capture" for invalid/empty input
+- Config-time validation via ESPHome schema
+
+**Validation Rules:**
+```cpp
+// Safe characters: A-Z, a-z, 0-9, space, hyphen, underscore
+// Max length: 29 bytes (BLE advertising packet limit)
+// Empty input → "IRK Capture" (default)
+// All invalid chars → "IRK Capture" (fallback)
+```
+
+**User Experience:**
+- Invalid characters silently removed with warning log
+- Names truncated at 29 bytes with warning log
+- Sanitized value reflected back to Home Assistant UI
+- No crashes or advertisement corruption from special characters
+
+**Files Changed:**
+- [irk_capture.h:231](components/irk_capture/irk_capture.h#L231) - `sanitize_ble_name()` declaration
+- [irk_capture.cpp:698-752](components/irk_capture/irk_capture.cpp#L698-L752) - Validation implementation
+- [\_\_init\_\_.py:20-28](components/irk_capture/__init__.py#L20-L28) - Config-time validation
+
+### 5. **NimBLE Task Stack Size Increase**
 
 **Problem Solved:** Stack overflow risk when ESP_LOG calls in GAP event callbacks exceed default 4096 byte stack.
 
@@ -188,7 +218,6 @@ timers_.last_peer_id_ver++;
 
 **Known Limitations:**
 - Dev branch only - **not recommended for production yet**
-- Input validation not yet implemented
 - Enhanced IRK validation not yet implemented
 
 ---
@@ -294,13 +323,13 @@ All changes are **backward compatible**. Existing YAML configurations work witho
 
 ## 📚 Code Review Findings Addressed
 
-This release addresses **6 of 10** critical findings from professional code review:
+This release addresses **7 of 10** critical findings from professional code review:
 
 | Rank | Issue | Status | Implementation |
 |------|-------|--------|----------------|
 | **1** | Race conditions (no mutex) | ✅ **FIXED** | FreeRTOS mutex with RAII |
 | **2** | Blocking delays in critical path | ✅ **FIXED** | Event-driven state machine |
-| **3** | Unvalidated BLE name input | 🚧 **Planned** | Sanitization + limits |
+| **3** | Unvalidated BLE name input | ✅ **FIXED** | Runtime sanitization + length limits |
 | **5** | IRK validation insufficient | 🚧 **Planned** | Entropy checks |
 | **6** | Torn read mitigation non-atomic | ✅ **FIXED** | Mutex protection |
 | **7** | NVS flash wear | ✅ **MITIGATED** | Bond clearing on boot |
@@ -433,8 +462,11 @@ CONFIG_BT_NIMBLE_SM_SC: y
 - **Status:** Implemented in v1.5.0-dev
 - **Benefit:** Prevents watchdog timeouts, eliminates dirty reads
 
-### Input Validation (Planned)
-- BLE name sanitization (31 char limit, safe characters only)
+### BLE Name Input Validation ✅ **COMPLETED**
+- ~~BLE name sanitization (safe characters only)~~
+- ~~29-byte length limit enforcement~~
+- ~~Runtime validation when changed via Home Assistant~~
+- **Status:** Implemented in v1.5.0-dev
 - **Benefit:** Prevents buffer overflows and advertisement corruption
 
 ### Enhanced IRK Validation (Planned)
