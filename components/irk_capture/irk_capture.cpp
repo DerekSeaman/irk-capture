@@ -764,6 +764,26 @@ void IRKCaptureButton::press_action() {
   parent_->refresh_mac();
 }
 
+//======================== Entity dump_config ========================
+
+void IRKCaptureText::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture BLE Name Text:");
+  ESP_LOGCONFIG(TAG, "  Value: '%s'", state.c_str());
+}
+
+void IRKCaptureSwitch::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture Advertising Switch:");
+  ESP_LOGCONFIG(TAG, "  State: %s", state ? "ON" : "OFF");
+}
+
+void IRKCaptureButton::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture New MAC Button");
+}
+
+void IRKCaptureTextSensor::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture Text Sensor");
+}
+
 //======================== GAP event handlers (extracted)
 //========================
 /*
@@ -1133,6 +1153,9 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 
 void IRKCaptureComponent::setup() {
   ESP_LOGI(TAG, "IRK Capture v%s ready", VERSION);
+
+  // Sanitize initial name from YAML
+  ble_name_ = sanitize_ble_name(ble_name_);
 
   // Initialize mutex for thread-safe access to shared state
   state_mutex_ = xSemaphoreCreateMutex();

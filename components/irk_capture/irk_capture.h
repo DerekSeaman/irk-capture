@@ -34,6 +34,7 @@ class IRKCaptureText : public text::Text, public Component {
     parent_ = parent;
   }
   void control(const std::string& value) override;
+  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
@@ -43,7 +44,7 @@ class IRKCaptureText : public text::Text, public Component {
 class IRKCaptureTextSensor : public text_sensor::TextSensor, public Component {
  public:
   void setup() override {}
-  void dump_config() override {}
+  void dump_config() override;
 };
 
 // Switch for advertising control
@@ -53,6 +54,7 @@ class IRKCaptureSwitch : public switch_::Switch, public Component {
     parent_ = parent;
   }
   void write_state(bool state) override;
+  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
@@ -65,6 +67,7 @@ class IRKCaptureButton : public button::Button, public Component {
     parent_ = parent;
   }
   void press_action() override;
+  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
