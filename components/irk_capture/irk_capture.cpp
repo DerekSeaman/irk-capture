@@ -269,11 +269,39 @@ Protected state:
 - advertising_ (advertising state)
 - pairing_start_time_ (timeout tracking)
 
-Usage:
+CRITICAL PERFORMANCE OPTIMIZATION:
+Always minimize mutex hold time by copying data out before releasing the lock,
+then performing slow operations (logging, NVS access) AFTER the lock is
+released.
+
+BAD (blocks NimBLE task during slow UART logging):
   {
     MutexGuard lock(state_mutex_);
-    // Access protected state here
+    peer_id = timers_.last_peer_id;
+    ESP_LOGD(TAG, "Peer: %s", addr_to_str(peer_id).c_str()); // SLOW - UART
+bottleneck!
+  }
+
+GOOD (minimal lock hold time):
+  ble_addr_t peer_id_copy;
+  {
+    MutexGuard lock(state_mutex_);
+    peer_id_copy = timers_.last_peer_id;  // Fast memory copy
+  }  // Lock released immediately
+  ESP_LOGD(TAG, "Peer: %s", addr_to_str(peer_id_copy).c_str());  // Safe - no
+lock held
+
+Why: On ESP32-C3 (single core), holding a mutex during logging can cause the
+NimBLE task to miss critical timing windows (e.g., supervision timeout), leading
+to dropped connections.
+
+Usage pattern:
+  {
+    MutexGuard lock(state_mutex_);
+    // ONLY fast memory operations here (reads, writes, simple arithmetic)
   }  // Mutex automatically released
+  // Logging, NVS access, string formatting happen here (outside critical
+section)
 */
 class MutexGuard {
  public:
