@@ -84,7 +84,8 @@ class IRKCaptureComponent : public Component {
     return -200.0f;
   }
 
-  // Friend functions for GAP event handlers and helpers (access private members)
+  // Friend functions for GAP event handlers and helpers (access private
+  // members)
   friend int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -202,11 +203,11 @@ class IRKCaptureComponent : public Component {
     uint32_t late_enc_due_ms { 0 };
     ble_addr_t last_peer_id {};
     ble_addr_t enc_peer_id {};
-    // Best-effort torn-read mitigation for multi-word addresses (no locking):
-    // Writers do ver++ / write / ver++ ; readers retry once if ver changes.
-    uint32_t last_peer_id_ver { 0 };
-    uint32_t enc_peer_id_ver { 0 };
   } timers_ {};
+
+  // FreeRTOS mutex for thread-safe access to shared state
+  // Protects: timers_, conn_handle_, advertising_, pairing_start_time_
+  SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Internal helpers
   bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out);
