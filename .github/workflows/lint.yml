@@ -1,6 +1,6 @@
 name: Professional Linting
 
-on:
+"on":
   push:
     branches: [main]
   pull_request:
@@ -21,7 +21,7 @@ jobs:
       - name: YAML Lint
         uses: ibiqlik/action-yamllint@v3
         with:
-          file_or_dir: "." # Start by checking everything
+          file_or_dir: "."  # Start by checking everything
           config_data: |
             extends: default
             rules:
@@ -35,5 +35,5 @@ jobs:
           clang-format-version: "15"
           check-path: "components"
           fallback-style: "Google"
-        continue-on-error: true # This prevents the 255 from stopping the whole show
+        continue-on-error: true  # This prevents the 255 from stopping the whole show
 
