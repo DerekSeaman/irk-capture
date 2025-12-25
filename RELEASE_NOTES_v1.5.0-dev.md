@@ -485,8 +485,8 @@ This is a **development preview branch**. Feedback welcome!
 
 **Known Good Configurations:**
 - ESP32-C3 + ESPHome 2025.12.2 + ESP-IDF framework
-- iPhone 15 Pro (iOS 18.2)
-- Apple Watch Series 9 (watchOS 11.2)
+- iPhone 17 Pro (iOS 26)
+- Apple Watch Ultra 3 (watchOS 26)
 
 ---
 
