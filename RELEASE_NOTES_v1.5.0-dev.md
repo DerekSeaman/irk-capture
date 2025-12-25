@@ -488,6 +488,7 @@ This is a **development preview branch**. Feedback welcome!
 - iPhone 17 Pro (iOS 26)
 - Apple Watch Ultra 3 (watchOS 26)
 - iPad Pro M4 (iPadOS 26)
+- Amazon Echo Show 5 & 8 Gen 1 (LineageOS 18.1)
 
 ---
 
