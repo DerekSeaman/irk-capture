@@ -17,12 +17,8 @@ IRKCaptureTextSensor = irk_capture_ns.class_(
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
-        cv.Optional(CONF_LAST_IRK): text_sensor.text_sensor_schema(
-            IRKCaptureTextSensor
-        ),
-        cv.Optional(CONF_LAST_ADDRESS): text_sensor.text_sensor_schema(
-            IRKCaptureTextSensor
-        ),
+        cv.Optional(CONF_LAST_IRK): text_sensor.text_sensor_schema(IRKCaptureTextSensor),
+        cv.Optional(CONF_LAST_ADDRESS): text_sensor.text_sensor_schema(IRKCaptureTextSensor),
     }
 )
 

@@ -9,9 +9,7 @@ from . import CONF_IRK_CAPTURE_ID, IRKCaptureComponent, irk_capture_ns
 
 CONF_ADVERTISING = "advertising"
 
-IRKCaptureSwitch = irk_capture_ns.class_(
-    "IRKCaptureSwitch", switch.Switch, cg.Component
-)
+IRKCaptureSwitch = irk_capture_ns.class_("IRKCaptureSwitch", switch.Switch, cg.Component)
 
 CONFIG_SCHEMA = cv.Schema(
     {
