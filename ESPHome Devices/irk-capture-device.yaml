@@ -8,4 +8,4 @@ substitutions:
   ble_name: "IRK Capture"
 
 packages:
-  device: !include "common/irk-capture-base.yaml"  
+  device: !include "common/irk-capture-base.yaml"
