@@ -36,3 +36,4 @@ jobs:
           check-path: "components"
           fallback-style: "Google"
         continue-on-error: true # This prevents the 255 from stopping the whole show
+
