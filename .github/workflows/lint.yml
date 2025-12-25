@@ -1,5 +1,6 @@
 name: Professional Linting
 
+# We quote "on" to prevent the 'truthy' warning
 "on":
   push:
     branches: [main]
@@ -8,11 +9,15 @@ name: Professional Linting
 
 jobs:
   lint:
+    name: Code Quality Check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      # 1. YAML Linter: Configured for ESPHome & GHA specific rules
       - name: YAML Lint
         uses: ibiqlik/action-yamllint@v3
         with:
@@ -23,11 +28,22 @@ jobs:
               line-length: disable
               truthy:
                 allowed-values: ["true", "false", "on"]
+              document-start: disable
+              comments:
+                min-spaces-from-content: 2
 
+      # 2. C++ Format Check: Matches your local logic to the cloud
       - name: C++ Format Check
         uses: jidicula/clang-format-action@v4.11.0
-        continue-on-error: true  # <--- THIS IS THE KEY
         with:
-          clang-format-version: '15'
+          # Using 18 as the highest available to match your local v21 better
+          clang-format-version: '18'
           check-path: 'components'
           fallback-style: 'Google'
+
+      # 3. Python Lint: Ensures the ESPHome component bridge is clean
+      - name: Python Lint
+        uses: psf/black@stable
+        with:
+          options: "--check --verbose"
+          src: "./components"
