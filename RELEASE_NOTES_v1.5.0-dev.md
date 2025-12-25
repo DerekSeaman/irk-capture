@@ -295,12 +295,12 @@ All changes are **backward compatible**. Existing YAML configurations work witho
 
 ## 📚 Code Review Findings Addressed
 
-This release addresses **5 of 10** critical findings from professional code review:
+This release addresses **6 of 10** critical findings from professional code review:
 
 | Rank | Issue | Status | Implementation |
 |------|-------|--------|----------------|
 | **1** | Race conditions (no mutex) | ✅ **FIXED** | FreeRTOS mutex with RAII |
-| **2** | Blocking delays in critical path | 🚧 **Planned Phase 2** | Async state machine |
+| **2** | Blocking delays in critical path | ✅ **FIXED** | Event-driven state machine (Issue #4) |
 | **3** | Unvalidated BLE name input | 🚧 **Planned Phase 3** | Sanitization + limits |
 | **5** | IRK validation insufficient | 🚧 **Planned Phase 4** | Entropy checks |
 | **6** | Torn read mitigation non-atomic | ✅ **FIXED** | Mutex protection |
@@ -311,12 +311,128 @@ This release addresses **5 of 10** critical findings from professional code revi
 
 ---
 
+## 🏗️ Technical Architecture Summary
+
+### Overview
+
+v1.5.0-dev represents a fundamental architectural shift from synchronous blocking operations to a fully event-driven, non-blocking state machine model. This architecture enables reliable operation across all ESP32 variants while maintaining strict thread safety guarantees.
+
+### 1. Non-Blocking MAC Rotation State Machine (Issue #4) ✅ **IMPLEMENTED**
+
+The component has transitioned from a synchronous "blocking" model to a deferred, event-driven state machine for MAC address rotation and identity management.
+
+**State Machine Flow:**
+
+| State | Trigger | Action |
+|-------|---------|--------|
+| **IDLE** | System boot / Normal operation | Standard advertising or standby mode |
+| **REQUESTED** | `refresh_mac()` called | Stores target MAC in `pending_mac_[6]`, stops advertising, terminates active connections |
+| **READY_TO_ROTATE** | `on_disconnect()` callback | Signals that NimBLE host is idle and safe for identity changes |
+| **ROTATION_COMPLETE** | `loop()` iteration after successful rotation | Restarts advertising with new MAC, returns to IDLE |
+
+**Key Benefits:**
+- ✅ **Zero blocking calls:** Eliminates all `delay()`, `while()` loops, and watchdog feeds
+- ✅ **Single button press:** User action returns immediately, state machine handles the rest
+- ✅ **Race-condition free:** MAC rotation only occurs when radio is guaranteed idle
+- ✅ **Automatic retry:** Handles transient `BLE_HS_EINVAL` errors gracefully
+
+**Implementation Details:**
+```cpp
+// REQUEST PHASE: refresh_mac()
+mac_rotation_state_ = MacRotationState::REQUESTED;
+esp_fill_random(pending_mac_, 6);  // Pre-generate MAC
+stop_advertising();                 // Non-blocking
+ble_gap_terminate(conn_handle_);   // Initiate disconnect
+
+// TRIGGER PHASE: on_disconnect()
+if (mac_rotation_state_ == MacRotationState::REQUESTED) {
+  mac_rotation_state_ = MacRotationState::READY_TO_ROTATE;
+}
+
+// COMPLETION PHASE: loop()
+if (mac_rotation_state_ == MacRotationState::READY_TO_ROTATE) {
+  ble_store_clear();                // Clear bonds
+  ble_hs_id_set_rnd(pending_mac_);  // Set new MAC (radio is idle!)
+  mac_rotation_state_ = MacRotationState::ROTATION_COMPLETE;
+}
+```
+
+**Files Changed:**
+- [irk_capture.h:189-197](components/irk_capture/irk_capture.h#L189-L197) - State machine enum and variables
+- [irk_capture.cpp:1388-1435](components/irk_capture/irk_capture.cpp#L1388-L1435) - Non-blocking `refresh_mac()` implementation
+- [irk_capture.cpp:1625-1631](components/irk_capture/irk_capture.cpp#L1625-L1631) - Trigger logic in `on_disconnect()`
+- [irk_capture.cpp:1129-1194](components/irk_capture/irk_capture.cpp#L1129-L1194) - Completion logic in `loop()`
+
+### 2. Concurrency & Memory Safety Model
+
+To support multi-core chips (ESP32-S3) and prevent crashes during high-frequency interactions, the following protections are enforced:
+
+**Atomic State Protection:**
+- All shared variables (`conn_handle_`, `ble_name_`, `mac_rotation_state_`) are accessed via `std::lock_guard<std::mutex>` using a central `state_mutex_`
+- RAII pattern ensures exception-safe locking even during early returns or errors
+
+**GATT Thread Safety:**
+- Device Information Service (DIS) callback copies `ble_name_` to a local buffer under lock before serving to NimBLE host task
+- Prevents "Use-After-Free" crashes during concurrent name updates and GATT reads
+
+**Session Lifecycle Management:**
+
+| Protection | Implementation | Purpose |
+|------------|----------------|---------|
+| **Pairing Timeout** | 90-second hardware timer | Resets stack if bonding hangs indefinitely |
+| **Identity Cooldown** | 5-second post-disconnect delay | Allows radio clearing, prevents connection "snapping" |
+| **Heap Protection** | 5-capture session limit | Prevents iOS background reconnections from fragmenting heap |
+| **IRK Cache Cap** | Hard limit of 10 entries (FIFO) | Prevents unbounded memory growth on ESP32-C3 |
+
+**Critical Section Optimization:**
+```cpp
+// CORRECT: Minimize mutex hold time
+ble_addr_t peer_id_copy;
+{
+  MutexGuard lock(state_mutex_);
+  peer_id_copy = timers_.last_peer_id;  // Fast copy (32 bytes)
+}  // Lock released before slow operations
+ESP_LOGI(TAG, "Peer: %s", addr_to_str(peer_id_copy).c_str());  // UART logging
+```
+
+**Why This Matters:**
+- On single-core ESP32-C3, holding mutex during UART logging can cause NimBLE task to miss supervision timeout
+- Fast copy + immediate release prevents BLE disconnections under heavy logging
+
+### 3. ESP-IDF Framework Integration
+
+Compatibility is **locked to ESP-IDF framework** (v4.4+ or v5.x). This allows direct interface with:
+
+**Low-Level NimBLE APIs:**
+- `ble_store_util_delete_peer()` - Surgical bond removal (single peer)
+- `ble_store_clear()` - Full bond table clearing (boot-time hygiene)
+- `ble_hs_id_set_rnd()` - Static random MAC address rotation
+
+**SDKConfig Overrides:**
+```python
+# Stack size optimization for debug logging
+CONFIG_BT_NIMBLE_TASK_STACK_SIZE: 5120  # +25% safety margin
+
+# Security features (bonding + LESC)
+CONFIG_BT_NIMBLE_SM_LEGACY: y
+CONFIG_BT_NIMBLE_SM_SC: y
+```
+
+**Why ESP-IDF (not Arduino):**
+- ✅ Direct access to NimBLE internals
+- ✅ Smaller binary size (~200KB savings)
+- ✅ Predictable memory layout
+- ✅ Better debugging support (GDB integration)
+
+---
+
 ## 🔮 Roadmap (Future Phases)
 
-### Phase 2: Async MAC Refresh (Planned)
-- Replace blocking `refresh_mac()` with async state machine
-- Eliminate 600ms blocking window
-- **Benefit:** Prevents watchdog timeouts under slow NimBLE conditions
+### Phase 2: Async MAC Refresh ✅ **COMPLETED**
+- ~~Replace blocking `refresh_mac()` with async state machine~~
+- ~~Eliminate 600ms blocking window~~
+- **Status:** Implemented in v1.5.0-dev (Issue #4)
+- **Benefit:** Prevents watchdog timeouts, eliminates dirty reads
 
 ### Phase 3: Input Validation (Planned)
 - BLE name sanitization (31 char limit, safe characters only)
@@ -333,16 +449,20 @@ This release addresses **5 of 10** critical findings from professional code revi
 
 ```
 components/irk_capture/
-├── irk_capture.h          (+13 lines)  // Added state_mutex_ member
-├── irk_capture.cpp        (+123 -70)   // Mutex protection + docs
+├── irk_capture.h          (+23 lines)  // State mutex + MAC rotation state machine
+├── irk_capture.cpp        (+245 -159)  // Mutex protection, event-driven MAC rotation
 ├── __init__.py            (+4 lines)   // Stack size config
 └── [Python platform files unchanged]
 ```
 
 **Total Code Changes:**
-- **+140 lines** (thread safety infrastructure)
-- **-70 lines** (removed version counter logic)
-- **Net: +70 lines**
+- **+268 lines** (thread safety + state machine infrastructure)
+- **-159 lines** (removed version counter + blocking refresh_mac())
+- **Net: +109 lines**
+
+**Major Refactorings:**
+- ✅ Thread safety (Issues #1-#3): +140 lines, -70 lines
+- ✅ Non-blocking MAC rotation (Issue #4): +122 lines, -89 lines
 
 ---
 
