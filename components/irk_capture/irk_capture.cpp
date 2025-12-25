@@ -1126,6 +1126,73 @@ void IRKCaptureComponent::loop() {
   handle_post_disconnect_timer(now);
   handle_late_enc_timer(now);
 
+  // COMPLETION PHASE: MAC rotation state machine
+  // Handle MAC rotation when radio is idle (no active connection)
+  if (mac_rotation_state_ == MacRotationState::READY_TO_ROTATE) {
+    // Double-check we're truly idle (paranoid safety check)
+    if (conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
+      ESP_LOGW(TAG, "MAC rotation: connection still active (handle=%u), waiting...", conn_handle_);
+      return;  // Wait for disconnect callback to advance state
+    }
+
+    ESP_LOGI(TAG, "MAC rotation: radio idle, performing MAC change");
+
+    // Clear all bonds since MAC change invalidates them
+    ESP_LOGI(TAG, "Clearing all bond data before MAC refresh");
+    ble_store_clear();
+
+    // Reset suppression flags since we're starting fresh with new MAC
+    suppress_next_adv_ = false;
+    adv_restart_time_ = 0;
+
+    // Log previous MAC before change
+    log_mac("Previous");
+
+    // Attempt to set the pre-generated MAC address
+    int rc = ble_hs_id_set_rnd(pending_mac_);
+    if (rc == 0) {
+      ESP_LOGI(TAG, "New MAC (set_rnd): %02X:%02X:%02X:%02X:%02X:%02X", pending_mac_[5],
+               pending_mac_[4], pending_mac_[3], pending_mac_[2], pending_mac_[1], pending_mac_[0]);
+
+      // Re-infer own address type for next adv start
+      uint8_t own_addr_type;
+      int rc2 = ble_hs_id_infer_auto(0, &own_addr_type);
+      ESP_LOGI(TAG, "Own address type after set_rnd: %u (0=PUBLIC,1=RANDOM)", own_addr_type);
+      if (rc2 != 0) {
+        ESP_LOGW(TAG, "ble_hs_id_infer_auto rc=%d after set_rnd", rc2);
+      }
+
+      log_mac("Effective");
+
+      // Reset pairing state for next session
+      enc_ready_ = false;
+      enc_time_ = 0;
+
+      // Advance to completion state
+      mac_rotation_state_ = MacRotationState::ROTATION_COMPLETE;
+      ESP_LOGI(TAG, "MAC rotation complete, will restart advertising");
+
+    } else if (rc == BLE_HS_EINVAL) {
+      // Host not ready yet - retry on next loop iteration
+      ESP_LOGW(TAG, "ble_hs_id_set_rnd EINVAL - host not ready, will retry");
+      // Stay in READY_TO_ROTATE state to retry next loop
+    } else {
+      ESP_LOGE(TAG, "ble_hs_id_set_rnd failed rc=%d - aborting MAC rotation", rc);
+      mac_rotation_state_ = MacRotationState::IDLE;
+      // Restart advertising with old MAC
+      start_advertising();
+    }
+    return;  // Skip rest of loop processing this iteration
+  }
+
+  // Restart advertising after successful MAC rotation
+  if (mac_rotation_state_ == MacRotationState::ROTATION_COMPLETE) {
+    mac_rotation_state_ = MacRotationState::IDLE;
+    ESP_LOGI(TAG, "Restarting advertising with new MAC");
+    start_advertising();
+    return;  // Skip rest of loop processing this iteration
+  }
+
   // Auto-restart advertising if suppressed and timer expired
   if (!advertising_ && adv_restart_time_ != 0 && now >= adv_restart_time_) {
     adv_restart_time_ = 0;
@@ -1385,106 +1452,53 @@ void IRKCaptureComponent::stop_advertising() {
   ESP_LOGD(TAG, "Advertising stopped");
 }
 
-//======================== MAC refresh (blocking) ========================
+//======================== MAC refresh (event-driven, non-blocking) ========================
 
 void IRKCaptureComponent::refresh_mac() {
-  // Stop adv and terminate connection if any
-  if (advertising_) this->stop_advertising();
-  if (conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
-    ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
-  }
+  ESP_LOGI(TAG, "MAC rotation requested (non-blocking event-driven)");
 
-  // Give NimBLE time to actually stop advertising and close connections
-  // Our advertising_ flag is set immediately, but the stack needs time
-  delay(100);
+  // REQUEST PHASE: Set flag and initiate disconnect sequence
+  mac_rotation_state_ = MacRotationState::REQUESTED;
 
-  // Ensure idle before changing address (up to 500 ms additional wait if
-  // needed)
-  const uint32_t t0 = now_ms();
-  while (conn_handle_ != BLE_HS_CONN_HANDLE_NONE && (now_ms() - t0) < 500) {
-    delay(10);
-    App.feed_wdt();  // Watchdog safety: prevent timeout during blocking wait
-  }
-
-  // Check if connection actually closed
-  if (conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
-    ESP_LOGW(TAG, "Connection still active after 500ms wait (conn_handle=%u)", conn_handle_);
-  } else {
-    ESP_LOGD(TAG, "System idle confirmed (no connection)");
-  }
-
-  // Clear all bonds since MAC change invalidates them
-  ESP_LOGI(TAG, "Clearing all bond data before MAC refresh");
-  ble_store_clear();
-
-  // Reset suppression flags since we're starting fresh with new MAC
-  suppress_next_adv_ = false;
-  adv_restart_time_ = 0;
-
-  // Log previous MAC before change
-  log_mac("Previous");
-
-  // Try to set a new static-random address; retries will succeed once host
-  // accepts RANDOM identity
-  uint8_t mac[6];
-  for (int tries = 0; tries < 6; ++tries) {
-    esp_fill_random(mac, sizeof(mac));
+  // Pre-generate the new MAC address while we're still in user context
+  // This ensures we have a valid MAC ready when the radio becomes idle
+  for (int tries = 0; tries < 10; ++tries) {
+    esp_fill_random(pending_mac_, sizeof(pending_mac_));
     // Force static-random: top two bits 11, LSB bit0 = 0 (unicast)
-    mac[0] |= 0xC0;
-    mac[0] &= 0xFE;
+    pending_mac_[0] |= 0xC0;
+    pending_mac_[0] &= 0xFE;
 
+    // Validate: reject all-zero MAC
     bool all_zero = true;
-    for (int i = 0; i < 6; ++i)
-      if (mac[i] != 0x00) {
+    for (int i = 0; i < 6; ++i) {
+      if (pending_mac_[i] != 0x00) {
         all_zero = false;
         break;
       }
-    if (all_zero) continue;
-
-    int rc = ble_hs_id_set_rnd(mac);
-    if (rc == 0) {
-      ESP_LOGI(TAG, "New MAC (set_rnd): %02X:%02X:%02X:%02X:%02X:%02X", mac[5], mac[4], mac[3],
-               mac[2], mac[1], mac[0]);
-
-      // Re-infer own address type for next adv start
-      uint8_t own_addr_type;
-      int rc2 = ble_hs_id_infer_auto(0, &own_addr_type);
-      ESP_LOGI(TAG, "Own address type after set_rnd: %u (0=PUBLIC,1=RANDOM)", own_addr_type);
-      if (rc2 != 0) {
-        ESP_LOGW(TAG, "ble_hs_id_infer_auto rc=%d after set_rnd", rc2);
-      }
-
-      log_mac("Effective");
-
-      // Reset pairing state for next session and restart advertising
-      enc_ready_ = false;
-      enc_time_ = 0;
-
-      delay(100);
-      this->start_advertising();
-      return;
-    } else if (rc == BLE_HS_EINVAL) {
-      // Documented transient: host may not be ready to accept new RANDOM
-      // identity yet
-      ESP_LOGW(TAG,
-               "ble_hs_id_set_rnd EINVAL (try %d): "
-               "%02X:%02X:%02X:%02X:%02X:%02X; adv=%d conn=%d",
-               tries + 1, mac[5], mac[4], mac[3], mac[2], mac[1], mac[0], (int) advertising_,
-               (conn_handle_ != BLE_HS_CONN_HANDLE_NONE));
-
-      uint8_t own_addr_type;
-      (void) ble_hs_id_infer_auto(0, &own_addr_type);
-      ESP_LOGD(TAG, "Current own_addr_type=%u; will retry set_rnd", own_addr_type);
-
-      // Mild backoff to improve reliability without altering semantics
-      delay(50 + (tries * 20));
-    } else {
-      ESP_LOGE(TAG, "ble_hs_id_set_rnd rc=%d (try %d)", rc, tries + 1);
-      delay(20);
+    }
+    if (!all_zero) {
+      ESP_LOGD(TAG, "Pre-generated MAC: %02X:%02X:%02X:%02X:%02X:%02X", pending_mac_[5],
+               pending_mac_[4], pending_mac_[3], pending_mac_[2], pending_mac_[1], pending_mac_[0]);
+      break;
     }
   }
 
-  ESP_LOGE(TAG, "Failed to set a new static random MAC after retries");
+  // Stop advertising (non-blocking)
+  if (advertising_) {
+    stop_advertising();
+  }
+
+  // Terminate any active connection (non-blocking)
+  if (conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
+    ESP_LOGI(TAG, "Terminating connection for MAC rotation");
+    ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
+    // on_disconnect() will advance the state machine to READY_TO_ROTATE
+  } else {
+    // No connection - safe to rotate immediately
+    ESP_LOGD(TAG, "No active connection, ready to rotate MAC");
+    mac_rotation_state_ = MacRotationState::READY_TO_ROTATE;
+    // loop() will handle the actual rotation
+  }
 }
 
 //======================== BLE name update ========================
@@ -1502,8 +1516,9 @@ void IRKCaptureComponent::update_ble_name(const std::string& name) {
   // NOTE: devinfo_chrs[1].arg already points to 'this' (set in register_gatt_services)
   // GATT callback will read updated ble_name_ with mutex protection
 
-  // Rotate MAC (which stops adv, clears bonds, changes MAC, and restarts adv)
-  // This handles the advertising restart automatically with the new name
+  // Initiate non-blocking MAC rotation (event-driven state machine)
+  // Sequence: refresh_mac() → on_disconnect() → loop() → start_advertising()
+  // The advertising will restart automatically with the new name after MAC rotation completes
   this->refresh_mac();
 }
 
@@ -1621,6 +1636,14 @@ void IRKCaptureComponent::on_disconnect() {
   irk_last_try_ms_ = 0;
 
   ESP_LOGI(TAG, "Disconnected");
+
+  // TRIGGER PHASE: Check if MAC rotation is pending
+  // Now that we're disconnected, the radio is idle and safe to rotate
+  if (mac_rotation_state_ == MacRotationState::REQUESTED) {
+    ESP_LOGD(TAG, "MAC rotation: connection closed, advancing to READY_TO_ROTATE");
+    mac_rotation_state_ = MacRotationState::READY_TO_ROTATE;
+    // loop() will perform the actual MAC rotation on next iteration
+  }
 }
 
 void IRKCaptureComponent::on_auth_complete(bool) {

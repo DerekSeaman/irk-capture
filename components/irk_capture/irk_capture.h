@@ -186,6 +186,16 @@ class IRKCaptureComponent : public Component {
   bool irk_gave_up_ { false };
   uint32_t irk_last_try_ms_ { 0 };
 
+  // MAC rotation state machine (Issue #4: non-blocking refresh_mac)
+  enum class MacRotationState {
+    IDLE,              // No MAC rotation pending
+    REQUESTED,         // refresh_mac() called, waiting for disconnect
+    READY_TO_ROTATE,   // Disconnected, ready to perform rotation in loop()
+    ROTATION_COMPLETE  // Rotation done, ready to restart advertising
+  };
+  MacRotationState mac_rotation_state_ { MacRotationState::IDLE };
+  uint8_t pending_mac_[6] { 0 };  // Pre-generated MAC for rotation
+
   // Phase 1 & 2: IRK capture tracking
   struct IRKCacheEntry {
     std::string irk_hex;
