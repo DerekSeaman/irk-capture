@@ -9,7 +9,9 @@ from . import CONF_IRK_CAPTURE_ID, IRKCaptureComponent, irk_capture_ns
 
 CONF_NEW_MAC = "new_mac"
 
-IRKCaptureButton = irk_capture_ns.class_("IRKCaptureButton", button.Button, cg.Component)
+IRKCaptureButton = irk_capture_ns.class_(
+    "IRKCaptureButton", button.Button, cg.Component
+)
 
 CONFIG_SCHEMA = cv.Schema(
     {

@@ -16,13 +16,16 @@ CONF_MAX_CAPTURES = "max_captures"
 irk_capture_ns = cg.esphome_ns.namespace("irk_capture")
 IRKCaptureComponent = irk_capture_ns.class_("IRKCaptureComponent", cg.Component)
 
-CONFIG_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.declare_id(IRKCaptureComponent),
-    cv.Optional(CONF_BLE_NAME, default="IRK Capture"): cv.string,
-    cv.Optional(CONF_START_ON_BOOT, default=True): cv.boolean,
-    cv.Optional(CONF_CONTINUOUS_MODE, default=False): cv.boolean,
-    cv.Optional(CONF_MAX_CAPTURES, default=1): cv.int_range(min=0, max=255),
-}).extend(cv.COMPONENT_SCHEMA)
+CONFIG_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(): cv.declare_id(IRKCaptureComponent),
+        cv.Optional(CONF_BLE_NAME, default="IRK Capture"): cv.string,
+        cv.Optional(CONF_START_ON_BOOT, default=True): cv.boolean,
+        cv.Optional(CONF_CONTINUOUS_MODE, default=False): cv.boolean,
+        cv.Optional(CONF_MAX_CAPTURES, default=1): cv.int_range(min=0, max=255),
+    }
+).extend(cv.COMPONENT_SCHEMA)
+
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
