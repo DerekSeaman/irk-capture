@@ -487,7 +487,7 @@ This is a **development preview branch**. Feedback welcome!
 - ESP32-C3 + ESPHome 2025.12.2 + ESP-IDF framework
 - iPhone 17 Pro (iOS 26)
 - Apple Watch Ultra 3 (watchOS 26)
-- iPad (iPadOS 26)
+- iPad Pro M4 (iPadOS 26)
 
 ---
 
