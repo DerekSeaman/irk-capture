@@ -16,7 +16,7 @@ v1.5.0-dev focuses on **production-grade thread safety** and **memory robustness
 
 ## ✨ Major Features
 
-### 1. **Thread-Safe Concurrency Protection** (Phase 1 Complete)
+### 1. **Thread-Safe Concurrency Protection**
 
 **Problem Solved:** Race conditions between NimBLE task and ESPHome main task causing non-deterministic "heisenbugs" on ESP32-C3 single-core devices.
 
@@ -188,9 +188,8 @@ timers_.last_peer_id_ver++;
 
 **Known Limitations:**
 - Dev branch only - **not recommended for production yet**
-- Phase 2 (Async MAC Refresh) not yet implemented
-- Phase 3 (Input Validation) not yet implemented
-- Phase 4 (Enhanced IRK Validation) not yet implemented
+- Input validation not yet implemented
+- Enhanced IRK validation not yet implemented
 
 ---
 
@@ -265,12 +264,12 @@ All changes are **backward compatible**. Existing YAML configurations work witho
 
 ### Critical
 
-- **Fixed race condition in timer handlers** ([#1](https://github.com/DerekSeaman/irk-capture/issues))
+- **Fixed race condition in timer handlers**
   - `handle_post_disconnect_timer()` and `handle_late_enc_timer()` now use mutex
   - Eliminates torn reads of `timers_.last_peer_id` and `timers_.enc_peer_id`
   - **Impact:** Prevents crashes from accessing invalid BLE addresses
 
-- **Fixed race condition in connection state** ([#1](https://github.com/DerekSeaman/irk-capture/issues))
+- **Fixed race condition in connection state**
   - `on_connect()` and `on_disconnect()` now protect state changes with mutex
   - Eliminates inconsistent state between `conn_handle_`, `connected_`, and `pairing_start_time_`
   - **Impact:** Prevents supervision timeouts from state mismatch
@@ -300,9 +299,9 @@ This release addresses **6 of 10** critical findings from professional code revi
 | Rank | Issue | Status | Implementation |
 |------|-------|--------|----------------|
 | **1** | Race conditions (no mutex) | ✅ **FIXED** | FreeRTOS mutex with RAII |
-| **2** | Blocking delays in critical path | ✅ **FIXED** | Event-driven state machine (Issue #4) |
-| **3** | Unvalidated BLE name input | 🚧 **Planned Phase 3** | Sanitization + limits |
-| **5** | IRK validation insufficient | 🚧 **Planned Phase 4** | Entropy checks |
+| **2** | Blocking delays in critical path | ✅ **FIXED** | Event-driven state machine |
+| **3** | Unvalidated BLE name input | 🚧 **Planned** | Sanitization + limits |
+| **5** | IRK validation insufficient | 🚧 **Planned** | Entropy checks |
 | **6** | Torn read mitigation non-atomic | ✅ **FIXED** | Mutex protection |
 | **7** | NVS flash wear | ✅ **MITIGATED** | Bond clearing on boot |
 | **8** | No connection rate limiting | ⏸️ **Deferred** | Low priority |
@@ -317,7 +316,7 @@ This release addresses **6 of 10** critical findings from professional code revi
 
 v1.5.0-dev represents a fundamental architectural shift from synchronous blocking operations to a fully event-driven, non-blocking state machine model. This architecture enables reliable operation across all ESP32 variants while maintaining strict thread safety guarantees.
 
-### 1. Non-Blocking MAC Rotation State Machine (Issue #4) ✅ **IMPLEMENTED**
+### 1. Non-Blocking MAC Rotation State Machine ✅ **IMPLEMENTED**
 
 The component has transitioned from a synchronous "blocking" model to a deferred, event-driven state machine for MAC address rotation and identity management.
 
@@ -426,19 +425,19 @@ CONFIG_BT_NIMBLE_SM_SC: y
 
 ---
 
-## 🔮 Roadmap (Future Phases)
+## 🔮 Roadmap (Future Enhancements)
 
-### Phase 2: Async MAC Refresh ✅ **COMPLETED**
+### Async MAC Refresh ✅ **COMPLETED**
 - ~~Replace blocking `refresh_mac()` with async state machine~~
 - ~~Eliminate 600ms blocking window~~
-- **Status:** Implemented in v1.5.0-dev (Issue #4)
+- **Status:** Implemented in v1.5.0-dev
 - **Benefit:** Prevents watchdog timeouts, eliminates dirty reads
 
-### Phase 3: Input Validation (Planned)
+### Input Validation (Planned)
 - BLE name sanitization (31 char limit, safe characters only)
 - **Benefit:** Prevents buffer overflows and advertisement corruption
 
-### Phase 4: Enhanced IRK Validation (Planned)
+### Enhanced IRK Validation (Planned)
 - Entropy checks (min 4 unique bytes)
 - Repeating pattern detection
 - **Benefit:** Catches invalid IRKs from buggy implementations
@@ -461,8 +460,8 @@ components/irk_capture/
 - **Net: +109 lines**
 
 **Major Refactorings:**
-- ✅ Thread safety (Issues #1-#3): +140 lines, -70 lines
-- ✅ Non-blocking MAC rotation (Issue #4): +122 lines, -89 lines
+- ✅ Thread safety: +140 lines, -70 lines
+- ✅ Non-blocking MAC rotation: +122 lines, -89 lines
 
 ---
 
