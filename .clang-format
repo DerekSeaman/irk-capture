@@ -7,3 +7,4 @@ AllowShortFunctionsOnASingleLine: Empty
 DerivePointerAlignment: false
 PointerAlignment: Left
 ---
+

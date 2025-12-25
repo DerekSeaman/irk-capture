@@ -32,7 +32,7 @@ jobs:
       - name: C++ Format Check
         uses: jidicula/clang-format-action@v4.11.0
         with:
-          clang-format-version: '15'
-          check-path: 'components'
-          fallback-style: 'Google'
+          clang-format-version: "15"
+          check-path: "components"
+          fallback-style: "Google"
         continue-on-error: true # This prevents the 255 from stopping the whole show
