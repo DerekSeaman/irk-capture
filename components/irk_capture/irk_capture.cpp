@@ -138,6 +138,8 @@ struct TimingConfig {
   static constexpr uint32_t ADV_SUPPRESS_DURATION_MS =
       2000;  // How long to suppress advertising after IRK capture
   static constexpr uint32_t PAIRING_TOTAL_TIMEOUT_MS = 90000;  // Global pairing timeout (90s max)
+  static constexpr uint32_t TIMEOUT_COOLDOWN_MS =
+      5000;  // Cooldown after pairing timeout before re-advertising (prevents rapid-fire loop)
   static constexpr uint32_t MIN_REPUBLISH_INTERVAL_MS =
       60000;  // Min time between republishing same IRK (60s)
 };
@@ -1140,6 +1142,12 @@ void IRKCaptureComponent::loop() {
       connected_ = false;
       conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
     }
+
+    // Cooldown timer: Prevent rapid-fire reconnection loop from failing device
+    // Gives "bad" device time to move away or stop attempting connection
+    adv_restart_time_ = now + TimingConfig::TIMEOUT_COOLDOWN_MS;
+    ESP_LOGI(TAG, "Cooldown: advertising will restart in %u seconds",
+             TimingConfig::TIMEOUT_COOLDOWN_MS / 1000);
   }
 
   if (!connected_ || conn_handle_ == BLE_HS_CONN_HANDLE_NONE) return;
