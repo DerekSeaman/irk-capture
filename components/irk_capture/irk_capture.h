@@ -31,7 +31,7 @@ class IRKCaptureText : public text::Text, public Component {
   void control(const std::string& value) override;
 
  protected:
-  IRKCaptureComponent* parent_{nullptr};
+  IRKCaptureComponent* parent_ { nullptr };
 };
 
 // Text sensor for IRK/Address output
@@ -50,7 +50,7 @@ class IRKCaptureSwitch : public switch_::Switch, public Component {
   void write_state(bool state) override;
 
  protected:
-  IRKCaptureComponent* parent_{nullptr};
+  IRKCaptureComponent* parent_ { nullptr };
 };
 
 // Button for new MAC
@@ -62,7 +62,7 @@ class IRKCaptureButton : public button::Button, public Component {
   void press_action() override;
 
  protected:
-  IRKCaptureComponent* parent_{nullptr};
+  IRKCaptureComponent* parent_ { nullptr };
 };
 
 // Free-function helpers (external linkage). Definitions live in the .cpp.
@@ -149,36 +149,36 @@ class IRKCaptureComponent : public Component {
 
  protected:
   // Configuration/state
-  std::string ble_name_{"IRK Capture"};
-  bool start_on_boot_{true};
-  bool continuous_mode_{false};  // Keep advertising after captures
-  uint8_t max_captures_{1};      // Max captures (0=unlimited)
-  text_sensor::TextSensor* irk_sensor_{nullptr};
-  text_sensor::TextSensor* address_sensor_{nullptr};
-  IRKCaptureSwitch* advertising_switch_{nullptr};
-  IRKCaptureButton* new_mac_button_{nullptr};
-  IRKCaptureText* ble_name_text_{nullptr};
+  std::string ble_name_ { "IRK Capture" };
+  bool start_on_boot_ { true };
+  bool continuous_mode_ { false };  // Keep advertising after captures
+  uint8_t max_captures_ { 1 };      // Max captures (0=unlimited)
+  text_sensor::TextSensor* irk_sensor_ { nullptr };
+  text_sensor::TextSensor* address_sensor_ { nullptr };
+  IRKCaptureSwitch* advertising_switch_ { nullptr };
+  IRKCaptureButton* new_mac_button_ { nullptr };
+  IRKCaptureText* ble_name_text_ { nullptr };
 
   // Connection state
-  uint16_t conn_handle_{BLE_HS_CONN_HANDLE_NONE};
-  uint16_t hr_char_handle_{0};
-  uint16_t prot_char_handle_{0};
-  bool advertising_{false};
-  uint32_t last_loop_{0};
-  uint32_t last_notify_{0};
-  bool connected_{false};
+  uint16_t conn_handle_ { BLE_HS_CONN_HANDLE_NONE };
+  uint16_t hr_char_handle_ { 0 };
+  uint16_t prot_char_handle_ { 0 };
+  bool advertising_ { false };
+  uint32_t last_loop_ { 0 };
+  uint32_t last_notify_ { 0 };
+  bool connected_ { false };
 
   // Security/pairing state
-  bool enc_ready_{false};
-  uint32_t enc_time_{0};
-  bool sec_retry_done_{false};
-  uint32_t sec_init_time_ms_{0};
-  bool suppress_next_adv_{false};  // Prevent immediate re-advertising after IRK re-publish
-  uint32_t adv_restart_time_{0};   // Time to auto-restart advertising after suppression
+  bool enc_ready_ { false };
+  uint32_t enc_time_ { 0 };
+  bool sec_retry_done_ { false };
+  uint32_t sec_init_time_ms_ { 0 };
+  bool suppress_next_adv_ { false };  // Prevent immediate re-advertising after IRK re-publish
+  uint32_t adv_restart_time_ { 0 };   // Time to auto-restart advertising after suppression
 
   // IRK polling state
-  bool irk_gave_up_{false};
-  uint32_t irk_last_try_ms_{0};
+  bool irk_gave_up_ { false };
+  uint32_t irk_last_try_ms_ { 0 };
 
   // Phase 1 & 2: IRK capture tracking
   struct IRKCacheEntry {
@@ -189,24 +189,24 @@ class IRKCaptureComponent : public Component {
     uint8_t capture_count;
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
-  uint8_t total_captures_{0};             // Total IRKs captured this session
-  uint32_t last_publish_time_{0};         // Last IRK publish timestamp
-  uint32_t pairing_start_time_{0};        // Global pairing timeout
+  uint8_t total_captures_ { 0 };          // Total IRKs captured this session
+  uint32_t last_publish_time_ { 0 };      // Last IRK publish timestamp
+  uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
 
   // Host state (ESPHome-managed host; this is a soft flag)
-  bool host_synced_{false};
+  bool host_synced_ { false };
 
   // Timer targets and cached peer ids
   struct Timers {
-    uint32_t post_disc_due_ms{0};
-    uint32_t late_enc_due_ms{0};
-    ble_addr_t last_peer_id{};
-    ble_addr_t enc_peer_id{};
+    uint32_t post_disc_due_ms { 0 };
+    uint32_t late_enc_due_ms { 0 };
+    ble_addr_t last_peer_id {};
+    ble_addr_t enc_peer_id {};
     // Best-effort torn-read mitigation for multi-word addresses (no locking):
     // Writers do ver++ / write / ver++ ; readers retry once if ver changes.
-    uint32_t last_peer_id_ver{0};
-    uint32_t enc_peer_id_ver{0};
-  } timers_{};
+    uint32_t last_peer_id_ver { 0 };
+    uint32_t enc_peer_id_ver { 0 };
+  } timers_ {};
 
   // Internal helpers
   bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out);

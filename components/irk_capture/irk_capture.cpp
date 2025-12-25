@@ -285,7 +285,7 @@ static bool get_own_addr(uint8_t out_mac[6], uint8_t* out_type = nullptr) {
   int rc = ble_hs_id_infer_auto(0, &own_addr_type);
   if (rc != 0) return false;
 
-  ble_addr_t addr{};
+  ble_addr_t addr {};
   rc = ble_hs_id_copy_addr(own_addr_type, addr.val, nullptr);
   if (rc != 0) return false;
 
@@ -298,7 +298,7 @@ static void log_mac(const char* prefix) {
   uint8_t mac[6];
   uint8_t type;
   if (get_own_addr(mac, &type)) {
-    ble_addr_t addr{};
+    ble_addr_t addr {};
     for (int i = 0; i < 6; ++i) addr.val[i] = mac[i];
     ESP_LOGI(TAG, "%s MAC: %s (type=%u)", prefix, addr_to_str(addr).c_str(), type);
   } else {
@@ -556,7 +556,7 @@ static int read_peer_bond_by_conn(uint16_t conn_handle, struct ble_store_value_s
   int rc = ble_gap_conn_find(conn_handle, &desc);
   if (rc != 0) return rc;
 
-  struct ble_store_key_sec key_sec{};
+  struct ble_store_key_sec key_sec {};
   key_sec.peer_addr = desc.peer_id_addr;
 
   return ble_store_read_peer_sec(&key_sec, out_bond);
@@ -632,15 +632,15 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   self->on_disconnect();
 
   // Attempt post-disconnect IRK read using the peer identity address
-  struct ble_gap_conn_desc d{};
+  struct ble_gap_conn_desc d {};
   if (ble_gap_conn_find(ev->disconnect.conn.conn_handle, &d) == 0) {
     // cache for delayed retry (torn-read mitigation: versioned write, best effort)
     self->timers_.last_peer_id_ver++;
     self->timers_.last_peer_id = d.peer_id_addr;
     self->timers_.last_peer_id_ver++;
 
-    struct ble_store_value_sec bond{};
-    struct ble_store_key_sec key{};
+    struct ble_store_value_sec bond {};
+    struct ble_store_key_sec key {};
     key.peer_addr = d.peer_id_addr;
     int rc = ble_store_read_peer_sec(&key, &bond);
     if (rc == BLE_HS_ENOENT) {
@@ -764,16 +764,16 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     self->on_auth_complete(true);
 
     // Immediate store read using identity address
-    struct ble_gap_conn_desc d{};
+    struct ble_gap_conn_desc d {};
     if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
       // torn-write mitigation (best effort) for enc_peer_id
       self->timers_.enc_peer_id_ver++;
       self->timers_.enc_peer_id = d.peer_id_addr;
       self->timers_.enc_peer_id_ver++;
 
-      struct ble_store_key_sec key{};
+      struct ble_store_key_sec key {};
       key.peer_addr = d.peer_id_addr;
-      struct ble_store_value_sec bond{};
+      struct ble_store_value_sec bond {};
       int rc = ble_store_read_peer_sec(&key, &bond);
       if (rc == BLE_HS_ENOENT) {
         ESP_LOGD(TAG, "No bond for peer yet (ENOENT); scheduling late check");
@@ -818,7 +818,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
  */
 int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   // Portable: get the current connection descriptor from the handle
-  struct ble_gap_conn_desc d{};
+  struct ble_gap_conn_desc d {};
   int rc = ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d);
   if (rc == 0) {
     const ble_addr_t* peer = &d.peer_id_addr;
@@ -970,7 +970,7 @@ void IRKCaptureComponent::loop() {
       ESP_LOGW(TAG, "Pairing timeout after %u seconds - resetting connection", elapsed / 1000);
 
       // Force disconnect and clear bonds
-      struct ble_gap_conn_desc d{};
+      struct ble_gap_conn_desc d {};
       if (ble_gap_conn_find(conn_handle_, &d) == 0) {
         ble_store_util_delete_peer(&d.peer_id_addr);
       }
@@ -1128,7 +1128,7 @@ void IRKCaptureComponent::start_advertising() {
   // NOTE: Possible concurrent read in DevInfo; acceptable and documented.
   devinfo_chrs[1].arg = (void*) ble_name_.c_str();
 
-  ble_hs_adv_fields fields{};
+  ble_hs_adv_fields fields {};
   fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
   fields.name = (uint8_t*) ble_name_.c_str();
   fields.name_len = (uint8_t) ble_name_.size();
@@ -1152,7 +1152,7 @@ void IRKCaptureComponent::start_advertising() {
     return;
   }
 
-  ble_gap_adv_params advp{};
+  ble_gap_adv_params advp {};
   advp.conn_mode = BLE_GAP_CONN_MODE_UND;
   advp.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
@@ -1331,9 +1331,9 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
 
     // Check for bond state mismatch: peer thinks it's unbonded but we have bond data
     if (!d.sec_state.bonded) {
-      struct ble_store_key_sec key{};
+      struct ble_store_key_sec key {};
       key.peer_addr = d.peer_id_addr;
-      struct ble_store_value_sec bond{};
+      struct ble_store_value_sec bond {};
       int rc = ble_store_read_peer_sec(&key, &bond);
       if (rc == BLE_HS_ENOENT) {
         ESP_LOGD(TAG, "Peer unbonded and no cached bond (ENOENT) - will pair fresh");
@@ -1406,8 +1406,8 @@ void IRKCaptureComponent::on_auth_complete(bool) {
 
 bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
                                       ble_addr_t& peer_id_out) {
-  struct ble_store_value_sec bond{};
-  struct ble_gap_conn_desc desc{};
+  struct ble_store_value_sec bond {};
+  struct ble_gap_conn_desc desc {};
 
   int rc = ble_gap_conn_find(conn_handle, &desc);
   if (rc != 0) {
@@ -1416,7 +1416,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
   }
 
   // Build store key from the peer identity address (stable)
-  struct ble_store_key_sec key_sec{};
+  struct ble_store_key_sec key_sec {};
   key_sec.peer_addr = desc.peer_id_addr;
 
   ESP_LOGD(TAG, "Reading bond for peer: %s", addr_to_str(desc.peer_id_addr).c_str());
@@ -1498,8 +1498,8 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
     return;
   }
 
-  struct ble_store_value_sec bond{};
-  struct ble_store_key_sec key{};
+  struct ble_store_value_sec bond {};
+  struct ble_store_key_sec key {};
   key.peer_addr = peer_id;
   int rc = ble_store_read_peer_sec(&key, &bond);
   if (rc == BLE_HS_ENOENT) {
@@ -1535,9 +1535,9 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
     return;
   }
 
-  struct ble_store_key_sec key{};
+  struct ble_store_key_sec key {};
   key.peer_addr = peer_id;
-  struct ble_store_value_sec bond{};
+  struct ble_store_value_sec bond {};
   int rc = ble_store_read_peer_sec(&key, &bond);
   if (rc == BLE_HS_ENOENT) {
     ESP_LOGD(TAG, "No bond for peer (ENOENT) - late ENC check");
@@ -1575,7 +1575,7 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     // If encryption still hasn't completed after timeout, assume peer forgot pairing
     // Delete our bond and disconnect to force fresh pairing on reconnect
     if ((now - sec_init_time_ms_) > TimingConfig::SEC_TIMEOUT_MS) {
-      struct ble_gap_conn_desc d{};
+      struct ble_gap_conn_desc d {};
       if (ble_gap_conn_find(conn_handle_, &d) == 0) {
         ESP_LOGW(TAG,
                  "Encryption timeout after %u ms; clearing bond for %s to force fresh pairing.",
