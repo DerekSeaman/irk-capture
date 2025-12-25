@@ -1,5 +1,4 @@
 ---
-# DerekSeaman/irk-capture C++ Style Guide
 BasedOnStyle: Google
 IndentWidth: 2
 ColumnLimit: 100
@@ -7,4 +6,3 @@ AllowShortFunctionsOnASingleLine: Empty
 DerivePointerAlignment: false
 PointerAlignment: Left
 ---
-
