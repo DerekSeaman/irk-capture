@@ -6,7 +6,8 @@
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/core/component.h"
 
-// Use ESP-IDF NimBLE directly instead of Arduino wrapper
+// ESP32-only component - requires Bluetooth hardware
+#ifdef USE_ESP32
 #include <host/ble_gap.h>
 #include <host/ble_gatt.h>
 #include <host/ble_hs.h>
@@ -16,6 +17,10 @@
 #include <nimble/nimble_port_freertos.h>
 #include <services/gap/ble_svc_gap.h>
 #include <services/gatt/ble_svc_gatt.h>
+#else
+#error \
+    "IRK Capture component requires ESP32 platform with Bluetooth support (ESP32/ESP32-C3/ESP32-S3/ESP32-C6)"
+#endif
 
 namespace esphome {
 namespace irk_capture {

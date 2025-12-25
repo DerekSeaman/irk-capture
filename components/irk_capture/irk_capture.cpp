@@ -1,5 +1,8 @@
 #include "irk_capture.h"
 
+// ESP32-only implementation - requires Bluetooth hardware
+#ifdef USE_ESP32
+
 #include <esp_random.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -1815,3 +1818,5 @@ void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex, con
 
 }  // namespace irk_capture
 }  // namespace esphome
+
+#endif  // USE_ESP32
