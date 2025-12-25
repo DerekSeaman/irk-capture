@@ -453,23 +453,6 @@ CONFIG_BT_NIMBLE_SM_SC: y
 
 ---
 
-## 🔮 Roadmap (Future Enhancements)
-
-### Async MAC Refresh ✅ **COMPLETED**
-- ~~Replace blocking `refresh_mac()` with async state machine~~
-- ~~Eliminate 600ms blocking window~~
-- **Status:** Implemented in v1.5.0-dev
-- **Benefit:** Prevents watchdog timeouts, eliminates dirty reads
-
-### BLE Name Input Validation ✅ **COMPLETED**
-- ~~BLE name sanitization (safe characters only)~~
-- ~~29-byte length limit enforcement~~
-- ~~Runtime validation when changed via Home Assistant~~
-- **Status:** Implemented in v1.5.0-dev
-- **Benefit:** Prevents buffer overflows and advertisement corruption
-
----
-
 ## 📦 Files Changed
 
 ```
