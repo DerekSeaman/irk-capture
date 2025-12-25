@@ -1,0 +1,29 @@
+name: Professional Linting
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 1. Check YAML for ESPHome compatibility
+      - name: YAML Lint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          file_or_dir: "ESPHome Devices/*.yaml"
+          config_file: .yamllint
+
+      # 2. Check C++ formatting
+      - name: C++ Format Check
+        uses: jidicula/clang-format-action@v4.11.0
+        with:
+          clang-format-version: '15'
+          check-path: 'components'
+          fallback-style: 'Google'
