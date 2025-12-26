@@ -1,6 +1,5 @@
 name: Professional Linting
 
-# We quote "on" to prevent the 'truthy' warning
 "on":
   push:
     branches: [main]
@@ -17,7 +16,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 1. YAML Linter: Configured for ESPHome & GHA specific rules
+      # 1. YAML Linter
       - name: YAML Lint
         uses: ibiqlik/action-yamllint@v3
         with:
@@ -32,18 +31,26 @@ jobs:
               comments:
                 min-spaces-from-content: 2
 
-      # 2. C++ Format Check: Matches your local logic to the cloud
+      # 2. C++ Format Check
       - name: C++ Format Check
         uses: jidicula/clang-format-action@v4.11.0
         with:
-          # Using 18 as the highest available to match your local v21 better
           clang-format-version: '18'
           check-path: 'components'
           fallback-style: 'Google'
 
-      # 3. Python Lint: Ensures the ESPHome component bridge is clean
+      # 3. Python Lint
       - name: Python Lint
         uses: psf/black@stable
         with:
           options: "--check --verbose"
           src: "./components"
+
+      # 4. NEW: Markdown Lint
+      - name: Markdown Lint
+        uses: DavidAnson/markdownlint-cli2-action@v19
+        with:
+          # Lints all .md files in the repo
+          globs: "**/*.md"
+          # Optional: can auto-fix simple issues like trailing spaces
+          fix: true
