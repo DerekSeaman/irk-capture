@@ -111,7 +111,8 @@ irk_capture:
 - If `continuous_mode: false` and `max_captures > 1`, ESPHome will reject the configuration (conflict)
 - For multi-device capture, set `continuous_mode: true` and `max_captures` to your desired limit
 - After capturing multiple IRKs, restart the device between captures to avoid pairing conflicts
-1. **Secrets File** (managed by ESPHome device builder):
+
+4. **Secrets File** (managed by ESPHome device builder):
 
    ```yaml
    wifi_ssid: "Your WiFi Network"
@@ -119,7 +120,6 @@ irk_capture:
    wifi_captive: "fallback_password"
    ```
 
-2
 5. **Flash to your ESP32:**
    - In ESPHome Device Builder, click "Install" and choose your connection method
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize both the BLE MAC address and identity address.
@@ -141,8 +141,8 @@ If you prefer a single-file configuration without packages:
 
 After flashing and connecting to Home Assistant, the following entities will be available:
 
+| Entity | Type | Description |
 | :--- | :--- | :--- |
-|--------|------|-------------|
 | **IRK** | Text Sensor | The captured IRK in format `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
 | **BLE Advertising** | Switch | Turn Bluetooth advertising on/off (starts ON by default) |
