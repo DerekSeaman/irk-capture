@@ -51,7 +51,8 @@ This IRK capture component turns your ESP32 into a BLE peripheral that **adverti
 If you're using the ESPHome Device Builder add-on in Home Assistant, follow these steps:
 
 1. **Create the 'common' directory, if not already present:**
-   ```
+
+   ```text
    /config/esphome/
    ├── common/
    │   └── irk-capture-base.yaml
@@ -106,17 +107,19 @@ irk_capture:
   - `0`: Unlimited captures (not recommended for production)
 
 **Important Notes:**
+
 - If `continuous_mode: false` and `max_captures > 1`, ESPHome will reject the configuration (conflict)
 - For multi-device capture, set `continuous_mode: true` and `max_captures` to your desired limit
 - After capturing multiple IRKs, restart the device between captures to avoid pairing conflicts
+1. **Secrets File** (managed by ESPHome device builder):
 
-4. **Secrets File** (managed by ESPHome device builder):
    ```yaml
    wifi_ssid: "Your WiFi Network"
    wifi_password: "your_wifi_password"
    wifi_captive: "fallback_password"
    ```
 
+2
 5. **Flash to your ESP32:**
    - In ESPHome Device Builder, click "Install" and choose your connection method
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize both the BLE MAC address and identity address.
@@ -138,7 +141,7 @@ If you prefer a single-file configuration without packages:
 
 After flashing and connecting to Home Assistant, the following entities will be available:
 
-| Entity | Type | Description |
+| :--- | :--- | :--- |
 |--------|------|-------------|
 | **IRK** | Text Sensor | The captured IRK in format `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
