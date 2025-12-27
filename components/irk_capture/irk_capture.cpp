@@ -1236,6 +1236,8 @@ void IRKCaptureComponent::setup() {
   // Clear in-memory IRK cache for fresh session (complements ble_store_clear()
   // in setup_ble())
   irk_cache_.clear();
+  irk_cache_.reserve(
+      10);  // Pre-allocate capacity to prevent runtime reallocations/heap fragmentation
   total_captures_ = 0;
   last_publish_time_ = 0;
 
@@ -2090,7 +2092,19 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
                  TimingConfig::SEC_TIMEOUT_MS);
       }
       // Disconnect to trigger fresh pairing on next connection
-      ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+      // CRITICAL: If termination fails, the NimBLE stack may be wedged - force local cleanup
+      // to prevent "zombie connection" state where UI shows connected but no data flows
+      int rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+      if (rc != 0) {
+        ESP_LOGE(TAG,
+                 "CRITICAL: ble_gap_terminate failed (rc=%d) - NimBLE stack may be wedged. "
+                 "Forcing local state reset to prevent zombie connection.",
+                 rc);
+        // Force local cleanup so we don't stay stuck in CONNECTED state forever
+        MutexGuard lock(state_mutex_);
+        connected_ = false;
+        conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
+      }
     }
   } else if (!is_connected) {
     sec_retry_done_ = false;
