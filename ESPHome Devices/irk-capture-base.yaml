@@ -72,7 +72,7 @@ external_components:
       url: https://github.com/DerekSeaman/irk-capture
       ref: main
     components: [irk_capture]
-    refresh: 1min
+    refresh: always
 
 # Configure the custom IRK capture component
 irk_capture:
