@@ -1429,7 +1429,6 @@ void IRKCaptureComponent::loop() {
 
   // THREAD-SAFE: Check connection state before proceeding with connection-specific work
   bool is_connected;
-  uint16_t conn_handle_copy;
   {
     MutexGuard lock(state_mutex_);
     is_connected = connected_;

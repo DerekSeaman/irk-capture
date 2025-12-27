@@ -92,14 +92,28 @@ class IRKCaptureComponent : public Component {
     return -200.0f;
   }
 
-  // Friend functions for GAP event handlers and helpers (access private
-  // members)
+  // Friend classes for UI components (access protected members)
+  friend class IRKCaptureText;
+  friend class IRKCaptureSwitch;
+  friend class IRKCaptureButton;
+
+  // Friend functions for GAP event handlers and helpers (access private members)
   friend int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                                   const std::string& irk_hex, const char* context_tag);
+
+  // Friend declarations for GATT callback functions (access protected members)
+  friend int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle,
+                              struct ble_gatt_access_ctxt* ctxt, void* arg);
+  friend int chr_read_batt(uint16_t conn_handle, uint16_t attr_handle,
+                           struct ble_gatt_access_ctxt* ctxt, void* arg);
+  friend int chr_read_hr(uint16_t conn_handle, uint16_t attr_handle,
+                         struct ble_gatt_access_ctxt* ctxt, void* arg);
+  friend int chr_read_protected(uint16_t conn_handle, uint16_t attr_handle,
+                                struct ble_gatt_access_ctxt* ctxt, void* arg);
 
   // Configuration setters
   void set_ble_name(const std::string& name) {
