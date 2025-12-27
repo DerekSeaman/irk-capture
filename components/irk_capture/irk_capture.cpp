@@ -687,8 +687,7 @@ static struct ble_gatt_svc_def gatt_svcs[] = { {
 
 //======================== Access callbacks ========================
 
-static int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt,
-                            void* arg) {
+int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt, void* arg) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
 
   // THREAD-SAFE: arg points to IRKCaptureComponent instance for both characteristics
@@ -711,12 +710,12 @@ static int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_acce
                                  is_manufacturer ? "ESPresense" : "IRK Capture");
   return 0;
 }
-static int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
+int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
   uint8_t lvl = 100;  // Placeholder static battery level
   os_mbuf_append(ctxt->om, &lvl, 1);
   return 0;
 }
-static int chr_read_hr(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
+int chr_read_hr(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
   uint8_t buf[2];
   size_t len;
@@ -724,8 +723,8 @@ static int chr_read_hr(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ct
   os_mbuf_append(ctxt->om, buf, len);
   return 0;
 }
-static int chr_read_protected(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt,
-                              void* arg) {
+int chr_read_protected(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt,
+                       void* arg) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
   append_const_string_or_default(ctxt->om, (const char*) arg, "Protected Info");
   return 0;
