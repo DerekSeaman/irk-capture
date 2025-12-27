@@ -141,9 +141,7 @@ class IRKCaptureComponent : public Component {
   void start_advertising();
   void stop_advertising();
   void refresh_mac();
-  bool is_advertising() {
-    return advertising_;
-  }
+  bool is_advertising();  // Thread-safe check of advertising state
 
   // GAP events
   void on_connect(uint16_t conn_handle);
@@ -159,6 +157,7 @@ class IRKCaptureComponent : public Component {
  protected:
   // Configuration/state
   std::string ble_name_ { "IRK Capture" };
+  std::string manufacturer_name_ { "ESPresense" };  // BLE Device Info manufacturer
   bool start_on_boot_ { true };
   bool continuous_mode_ { false };  // Keep advertising after captures
   uint8_t max_captures_ { 1 };      // Max captures (0=unlimited)

@@ -44,17 +44,26 @@ enc_change, etc.)
 2. ESPHome main task: Executes loop(), setup(), and UI callbacks (switch,
 button, text)
 
-THREAD SAFETY:
+THREAD SAFETY RULES:
+-    ALL reads/writes to shared state MUST use state_mutex_
 -    Protected by state_mutex_ (FreeRTOS mutex):
      * timers_.last_peer_id / timers_.enc_peer_id (ble_addr_t multi-word
 structs)
      * timers_.post_disc_due_ms / timers_.late_enc_due_ms (timer targets)
      * conn_handle_ (connection handle)
      * connected_ (connection state flag)
+     * advertising_ (advertising state flag)
      * pairing_start_time_ (pairing timeout tracking)
+     * ble_name_, manufacturer_name_ (device names)
 -    RAII MutexGuard class ensures exception-safe lock/unlock
--    Other member variables use simple atomic reads/writes (ESP32 guaranteed for
-aligned 32-bit)
+-    Mutex MUST be released before calling BLE stack APIs (prevents deadlock)
+-    UI updates (publish_state) are safe outside mutex (internally thread-safe)
+
+IMPORTANT: Do NOT rely on "aligned writes are atomic" - always use mutex for
+shared state to ensure:
+  1. Memory barriers (visibility across cores)
+  2. Compiler optimization safety (prevents register caching)
+  3. Consistent threading model (easier maintenance)
 
 ESPHome component lifecycle guarantees:
 -    setup() completes before loop() starts
@@ -483,7 +492,12 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
                  entry.capture_count);
 
         // Auto-stop advertising to break reconnection loop
-        if (advertising_) {
+        bool should_stop_adv;
+        {
+          MutexGuard lock(state_mutex_);
+          should_stop_adv = advertising_;
+        }
+        if (should_stop_adv) {
           stop_advertising();
           ESP_LOGI(TAG,
                    "Auto-stopped advertising due to repeated reconnections. "
@@ -586,18 +600,13 @@ static struct ble_gatt_chr_def devinfo_chrs[] = {
   {
       .uuid = &UUID_CHR_MANUF.u,
       .access_cb = chr_read_devinfo,
-      .arg = (void*) "ESPresense",
+      .arg = nullptr,  // Will be set to 'this' in register_gatt_services()
       .flags = BLE_GATT_CHR_F_READ_ENC,
   },
   {
       .uuid = &UUID_CHR_MODEL.u,
       .access_cb = chr_read_devinfo,
-      // NOTE: This pointer is refreshed before advertising and whenever the
-      // name changes. Reads can occur concurrently; there is a small window
-      // where a stale pointer could be seen. This is acceptable in practice
-      // and does not affect pairing logic or timing.
-      .arg = (void*) "IRK Capture",  // refreshed to ble_name_.c_str() before
-                                     // advertising
+      .arg = nullptr,  // Will be set to 'this' in register_gatt_services()
       .flags = BLE_GATT_CHR_F_READ_ENC,
   },
   { 0 }
@@ -649,17 +658,24 @@ static int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_acce
                             void* arg) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
 
-  // THREAD-SAFE FIX: arg now points to IRKCaptureComponent instance, not raw string pointer
-  // Copy ble_name_ to local buffer while holding mutex to prevent use-after-free
+  // THREAD-SAFE: arg points to IRKCaptureComponent instance for both characteristics
+  // We determine which characteristic by UUID comparison
   auto* self = static_cast<IRKCaptureComponent*>(arg);
-  std::string name_copy;
+
+  // Determine which characteristic is being read
+  const ble_uuid_t* char_uuid = ctxt->chr->uuid;
+  bool is_manufacturer = ble_uuid_cmp(char_uuid, &UUID_CHR_MANUF.u) == 0;
+
+  std::string value_copy;
   {
     MutexGuard lock(self->state_mutex_);
-    name_copy = self->ble_name_;  // Thread-safe copy
+    value_copy = is_manufacturer ? self->manufacturer_name_ : self->ble_name_;
   }
 
-  ESP_LOGD(TAG, "DevInfo read: value='%s'", name_copy.c_str());
-  append_const_string_or_default(ctxt->om, name_copy.c_str(), "IRK Capture");
+  ESP_LOGD(TAG, "DevInfo read (%s): value='%s'", is_manufacturer ? "Manufacturer" : "Model",
+           value_copy.c_str());
+  append_const_string_or_default(ctxt->om, value_copy.c_str(),
+                                 is_manufacturer ? "ESPresense" : "IRK Capture");
   return 0;
 }
 static int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
@@ -816,7 +832,14 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     self->on_connect(ev->connect.conn_handle);
   } else {
     ESP_LOGW(TAG, "Connection failed: status=%d (0x%02X)", ev->connect.status, ev->connect.status);
-    self->advertising_ = false;
+
+    // Thread-safe advertising state reset
+    {
+      MutexGuard lock(self->state_mutex_);
+      self->advertising_ = false;
+    }
+
+    // Restart advertising (will set flag with mutex internally)
     self->start_advertising();
   }
   return 0;
@@ -869,8 +892,11 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     ESP_LOGD(TAG, "Disconnect: conn desc not found; cleared last_peer_id");
   }
 
-  // Continuous mode - manage advertising based on mode and capture count
-  self->advertising_ = false;
+  // Thread-safe advertising state update
+  {
+    MutexGuard lock(self->state_mutex_);
+    self->advertising_ = false;
+  }
 
   // Check if we should stop advertising (max captures reached)
   bool should_stop_adv = false;
@@ -885,7 +911,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     // Don't restart - max captures reached
     if (self->advertising_switch_) self->advertising_switch_->publish_state(false);
   } else if (!self->suppress_next_adv_) {
-    // Normal case: restart advertising
+    // Normal case: restart advertising (will set flag with mutex internally)
     if (self->continuous_mode_) {
       ESP_LOGI(TAG, "Continuous mode: restarting advertising for next device");
     }
@@ -1265,8 +1291,15 @@ void IRKCaptureComponent::loop() {
   }
 
   // Auto-restart advertising if suppressed and timer expired
-  if (!advertising_ && adv_restart_time_ != 0 && now >= adv_restart_time_) {
-    adv_restart_time_ = 0;
+  bool should_restart_adv = false;
+  {
+    MutexGuard lock(state_mutex_);
+    if (!advertising_ && adv_restart_time_ != 0 && now >= adv_restart_time_) {
+      adv_restart_time_ = 0;
+      should_restart_adv = true;
+    }
+  }
+  if (should_restart_adv) {
     ESP_LOGI(TAG, "Auto-restarting advertising after suppression timeout");
     start_advertising();
   }
@@ -1442,9 +1475,10 @@ void IRKCaptureComponent::setup_ble() {
 }
 
 void IRKCaptureComponent::register_gatt_services() {
-  // THREAD-SAFE: Pass 'this' pointer to GATT callback instead of raw string pointer
-  // The callback will copy ble_name_ while holding mutex to prevent use-after-free
-  devinfo_chrs[1].arg = (void*) this;
+  // THREAD-SAFE: Pass 'this' pointer to BOTH DevInfo characteristics
+  // Callback will determine which field to read based on UUID
+  devinfo_chrs[0].arg = (void*) this;  // Manufacturer Name
+  devinfo_chrs[1].arg = (void*) this;  // Model Number
 
   int rc = ble_gatts_count_cfg(gatt_svcs);
   if (rc == 0) rc = ble_gatts_add_svcs(gatt_svcs);
@@ -1465,9 +1499,6 @@ void IRKCaptureComponent::start_advertising() {
     ESP_LOGW(TAG, "Host not synced; cannot advertise");
     return;
   }
-
-  // NOTE: devinfo_chrs[1].arg already points to 'this' (set in register_gatt_services)
-  // No need to refresh - callback will read ble_name_ with mutex protection
 
   ble_hs_adv_fields fields {};
   fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
@@ -1506,11 +1537,19 @@ void IRKCaptureComponent::start_advertising() {
 
   rc = ble_gap_adv_start(own_addr_type, nullptr, BLE_HS_FOREVER, &advp,
                          IRKCaptureComponent::gap_event_handler, this);
+
+  // Thread-safe state update (mutex released before BLE stack call above)
+  bool adv_success;
+  {
+    MutexGuard lock(state_mutex_);
+    advertising_ = (rc == 0);
+    adv_success = advertising_;
+  }
+
   if (rc != 0) {
     ESP_LOGE(TAG, "ble_gap_adv_start rc=%d", rc);
-    advertising_ = false;
   } else {
-    advertising_ = true;
+    // UI update outside lock (publish_state is internally thread-safe)
     if (advertising_switch_) advertising_switch_->publish_state(true);
     ESP_LOGD(TAG, "Advertising as '%s' (Heart Rate Sensor)", ble_name_.c_str());
   }
@@ -1518,9 +1557,21 @@ void IRKCaptureComponent::start_advertising() {
 
 void IRKCaptureComponent::stop_advertising() {
   ble_gap_adv_stop();
-  advertising_ = false;
+
+  // Thread-safe state update (after BLE stack call)
+  {
+    MutexGuard lock(state_mutex_);
+    advertising_ = false;
+  }
+
+  // UI update outside lock (publish_state is internally thread-safe)
   if (advertising_switch_) advertising_switch_->publish_state(false);
   ESP_LOGD(TAG, "Advertising stopped");
+}
+
+bool IRKCaptureComponent::is_advertising() {
+  MutexGuard lock(state_mutex_);
+  return advertising_;
 }
 
 //======================== MAC refresh (event-driven, non-blocking) ========================
@@ -1555,7 +1606,12 @@ void IRKCaptureComponent::refresh_mac() {
   }
 
   // Stop advertising (non-blocking)
-  if (advertising_) {
+  bool should_stop_adv;
+  {
+    MutexGuard lock(state_mutex_);
+    should_stop_adv = advertising_;
+  }
+  if (should_stop_adv) {
     stop_advertising();
   }
 
