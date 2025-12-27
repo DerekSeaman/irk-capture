@@ -75,7 +75,7 @@ ESPHome component lifecycle guarantees:
 -    setup() completes before loop() starts
 -    All set_*() configuration calls complete before setup()
 -    Parent pointers (IRKCaptureText, IRKCaptureSwitch, etc.) are always valid
-after setup()
+     after setup() IF those optional components are configured in YAML
 */
 
 //======================== ERROR HANDLING STRATEGY ========================
@@ -175,7 +175,7 @@ static constexpr uint16_t APPEARANCE_HEART_RATE_SENSOR = 0x0340;
 /*
 Connect → Initiate security
 ENC_CHANGE → immediate IRK read from store; if available: publish & disconnect
-(1.0 behavior). If ENC fails (status != 0), delete that peer's keys and retry
+(tested working behavior). If ENC fails (status != 0), delete that peer's keys and retry
 security once (self-heal). DISCONNECT → immediate store read; schedule delayed
 read at +800ms; restart advertising While connected (post ENC) → poll every 1s
 starting at +2s, up to 45s, then disconnect when IRK captured All address
@@ -346,8 +346,8 @@ class MutexGuard {
 };
 
 static void hr_measurement_sample(uint8_t* buf, size_t* len) {
-  buf[0] = 0x00;  // flags: HR value format UINT8, no sensor contact, no energy
-                  // expended
+  buf[0] = 0x00;  // Flags byte: bit0=0 (UINT8 format), bit1-2=0 (sensor contact not supported),
+                  //             bit3=0 (no energy expended), bit4=0 (RR interval not present)
   buf[1] = (uint8_t) (60 + (esp_random() % 40));  // 60-99 bpm
   *len = 2;
 }
@@ -365,8 +365,7 @@ static void log_conn_desc(uint16_t conn_handle) {
     ESP_LOGI(TAG, "peer id =%s type=%d", addr_to_str(d.peer_id_addr).c_str(), d.peer_id_addr.type);
 
     // Connection parameters (helpful for Android watch debugging)
-    // Note: NimBLE does not expose a separate connection timeout distinct from
-    // supervision_timeout here; we log supervision_timeout as provided.
+    // supervision_timeout is the link supervision timeout per BLE spec
     ESP_LOGD(TAG, "conn params: interval=%u latency=%u supervision_timeout=%u", d.conn_itvl,
              d.conn_latency, d.supervision_timeout);
 
@@ -414,7 +413,7 @@ static void log_mac(const char* prefix) {
 // Helper to safely append const string or default value
 static int append_const_string_or_default(struct os_mbuf* om, const char* str,
                                           const char* default_str) {
-  // Fix: Treat nullptr OR an empty string as a reason to use the fallback
+  // Safely append string to mbuf, using default if str is nullptr or empty
   const char* val = (str && str[0] != '\0') ? str : default_str;
   return os_mbuf_append(om, val, strlen(val));
 }
@@ -623,7 +622,7 @@ static struct ble_gatt_chr_def hr_chrs[] = {
       .uuid = &UUID_CHR_HR_MEAS.u,
       .access_cb = chr_read_hr,
       .arg = nullptr,
-      // 1.0 behavior: read requires ENC, notify also present
+      // Heart rate characteristic: read requires encryption, notifications supported
       .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_READ_ENC,
       .val_handle = &g_hr_handle,
   },
@@ -1068,8 +1067,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       } else if (bond.irk_present) {
         std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
         publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
-        // 1.0 behavior: terminate immediately after successful ENC + IRK
-        // capture
+        // Tested working behavior: terminate immediately after successful ENC + IRK capture
         ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
       } else {
         ESP_LOGD(TAG, "Bond present but no IRK yet; scheduling late check");
@@ -1234,7 +1232,7 @@ void IRKCaptureComponent::setup() {
   }
 
   // Clear in-memory IRK cache for fresh session (complements ble_store_clear()
-  // in setup_ble())
+  // which is called later during BLE stack initialization)
   irk_cache_.clear();
   irk_cache_.reserve(
       10);  // Pre-allocate capacity to prevent runtime reallocations/heap fragmentation
@@ -1457,8 +1455,7 @@ void IRKCaptureComponent::setup_ble() {
   }
 
   // NVS health check - verify storage actually works
-  // NOTE: All errors are logged; cleanup is guarded to avoid handle leaks. This
-  // does not change behavior.
+  // All errors are logged; cleanup is guarded to avoid handle leaks
   nvs_handle_t nvs_test_handle;
   err = nvs_open("irk_test", NVS_READWRITE, &nvs_test_handle);
   if (err == ESP_OK) {
@@ -1776,7 +1773,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   enc_ready_ = false;
   enc_time_ = 0;
 
-  // Reset loop-helper state (1.0 single retry model)
+  // Reset loop-helper state (single retry model)
   sec_retry_done_ = false;
   sec_init_time_ms_ = 0;
   irk_gave_up_ = false;
@@ -1834,7 +1831,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
           suppress_next_adv_ = true;
         }
         // Disconnect since we already have what we need
-        // THREAD-SAFE: Use function parameter (already set under mutex at line 1702)
+        // THREAD-SAFE: Use function parameter (already set under mutex at line 1771)
         ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         return;  // Don't initiate security, we're done
       } else {
@@ -1854,7 +1851,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   }
 
   // Proactively initiate pairing; peer should show pairing dialog now
-  // THREAD-SAFE: Use function parameter (already set under mutex at line 1702)
+  // THREAD-SAFE: Use function parameter (already set under mutex at line 1771)
   int rc = ble_gap_security_initiate(conn_handle);
   if (rc == BLE_HS_EBUSY) {
     // Peer is already initiating security - skip our retry to avoid conflicts
@@ -2032,7 +2029,7 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
     std::string irk_hex = bytes_to_hex_rev(bond.irk, sizeof(bond.irk));
     publish_and_log_irk(this, peer_id, irk_hex, "ENC_LATE");
 
-    // 1.0 compatible: terminate after late capture if still connected
+    // Tested working behavior: terminate after late capture if still connected
     // THREAD-SAFE: Check connection state before terminating
     bool is_connected;
     uint16_t conn_handle_copy;
@@ -2061,7 +2058,7 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     conn_handle_copy = conn_handle_;
   }
 
-  // 1.0 behavior: single retry after SEC_RETRY_DELAY_MS from initial initiate
+  // Tested working behavior: single retry after SEC_RETRY_DELAY_MS from initial initiate
   if (is_connected && !enc_ready_) {
     if (sec_init_time_ms_ == 0) sec_init_time_ms_ = now;
 
