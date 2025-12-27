@@ -237,7 +237,8 @@ class IRKCaptureComponent : public Component {
 
   // Phase 1 & 2 helpers
   bool is_valid_irk(const uint8_t irk[16]);
-  bool should_publish_irk(const std::string& irk_hex, const std::string& addr);
+  bool should_publish_irk(const std::string& irk_hex, const std::string& addr,
+                          bool& out_should_stop_adv);
 
   // Timer handlers
   void schedule_post_disconnect_check(const ble_addr_t& peer_id);

@@ -469,6 +469,9 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
 /**
  * @brief Checks if IRK should be published (deduplication + rate limiting)
  *
+ * CRITICAL: Caller MUST hold state_mutex_ before calling this function.
+ * This function modifies irk_cache_, last_publish_time_, and reads advertising_.
+ *
  * MEMORY SAFETY: This function prevents duplicate entries in irk_cache_ by
  * checking if the IRK already exists before adding. Even if the same device
  * reconnects 100 times, it will only have ONE entry in the cache (updated
@@ -477,9 +480,13 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
  *
  * @param irk_hex IRK in hex string format
  * @param addr MAC address string
+ * @param out_should_stop_adv [out] Set to true if caller should stop advertising (limit reached)
  * @return true if should publish, false if duplicate/rate-limited
  */
-bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const std::string& addr) {
+bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const std::string& addr,
+                                             bool& out_should_stop_adv) {
+  // PRECONDITION: Caller holds state_mutex_
+  out_should_stop_adv = false;  // Default: don't stop advertising
   uint32_t now = now_ms();
 
   // Check cache for duplicate - prevents memory bloat from repeated connections
@@ -498,18 +505,9 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
                  "unpair from Bluetooth settings to stop.",
                  entry.capture_count);
 
-        // Auto-stop advertising to break reconnection loop
-        bool should_stop_adv;
-        {
-          MutexGuard lock(state_mutex_);
-          should_stop_adv = advertising_;
-        }
-        if (should_stop_adv) {
-          stop_advertising();
-          ESP_LOGI(TAG,
-                   "Auto-stopped advertising due to repeated reconnections. "
-                   "Toggle 'BLE Advertising' switch to resume.");
-        }
+        // Signal caller to stop advertising (break reconnection loop)
+        // THREAD-SAFE: We already hold state_mutex_, so we can read advertising_ directly
+        out_should_stop_adv = advertising_;
         return false;  // Don't republish - prevents heap fragmentation
       }
 
@@ -563,17 +561,18 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   const std::string addr_str = addr_to_str(peer_id_addr);
 
   // THREAD-SAFE: Check deduplication AND increment counter under mutex
-  // CRITICAL: should_publish_irk() mutates irk_cache_ (vector operations) and last_publish_time_
-  // Calling it without the mutex causes data races when invoked from both NimBLE task and ESPHome
-  // task
+  // CRITICAL: should_publish_irk() assumes caller holds mutex (non-recursive mutex!)
+  // All irk_cache_ operations, counter increments, and advertising checks happen atomically
   uint8_t current_captures;
   bool max_reached = false;
   bool should_publish;
+  bool should_stop_adv = false;  // Output from deduplication check
   {
     MutexGuard lock(self->state_mutex_);
 
     // Deduplication check (modifies irk_cache_ and last_publish_time_)
-    should_publish = self->should_publish_irk(irk_hex, addr_str);
+    // PRECONDITION: We hold state_mutex_ - safe to call should_publish_irk()
+    should_publish = self->should_publish_irk(irk_hex, addr_str, should_stop_adv);
 
     if (should_publish) {
       // Increment counter (read-modify-write race without mutex)
@@ -587,6 +586,14 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
       }
     }
   }  // Release mutex before slow logging/publishing operations
+
+  // Handle auto-stop advertising (outside mutex to avoid deadlock)
+  if (should_stop_adv) {
+    self->stop_advertising();
+    ESP_LOGI(TAG,
+             "Auto-stopped advertising due to repeated reconnections. "
+             "Toggle 'BLE Advertising' switch to resume.");
+  }
 
   // Skip publishing duplicate (deduplication happened under mutex)
   if (!should_publish) {
