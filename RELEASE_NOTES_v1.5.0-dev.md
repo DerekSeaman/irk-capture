@@ -1,5 +1,7 @@
 # IRK Capture v1.5.0-dev (Development Branch)
 
+## Warning: Development Preview
+
 **⚠️ DEVELOPMENT PREVIEW - NOT FOR PRODUCTION USE**
 
 This release represents a major stability and robustness overhaul of the IRK Capture component, addressing critical concurrency issues and memory safety concerns identified through professional code review.
@@ -16,17 +18,19 @@ v1.5.0-dev focuses on **production-grade thread safety** and **memory robustness
 
 ## ✨ Major Features
 
-### 1. **Thread-Safe Concurrency Protection**
+### 1. Thread-Safe Concurrency Protection
 
 **Problem Solved:** Race conditions between NimBLE task and ESPHome main task causing non-deterministic "heisenbugs" on ESP32-C3 single-core devices.
 
 **Implementation:**
+
 - Added FreeRTOS mutex (`state_mutex_`) protecting all shared state
 - RAII `MutexGuard` class ensures exception-safe lock/unlock
 - Eliminated torn reads of multi-word structs (ble_addr_t)
 - Removed 50+ lines of fragile version counter code
 
 **Protected State Variables:**
+
 ```cpp
 - timers_.last_peer_id / timers_.enc_peer_id  // Multi-word BLE addresses
 - timers_.post_disc_due_ms / timers_.late_enc_due_ms  // Timer targets
@@ -36,7 +40,9 @@ v1.5.0-dev focuses on **production-grade thread safety** and **memory robustness
 ```
 
 **Performance Optimization:**
+
 All mutex-protected code follows the "copy-release-log" pattern:
+
 ```cpp
 ble_addr_t peer_id_copy;
 {
@@ -47,43 +53,50 @@ ESP_LOGD(TAG, "Peer: %s", addr_to_str(peer_id_copy).c_str());  // No lock held
 ```
 
 **Why This Matters:**
+
 - Eliminates supervision timeouts caused by mutex blocking during slow UART logging
 - Prevents missed BLE timing windows on single-core ESP32-C3
 - Ensures deterministic behavior under heavy logging load
 
 **Files Changed:**
+
 - [irk_capture.h:207-209](components/irk_capture/irk_capture.h#L207-L209) - Added `state_mutex_` member
 - [irk_capture.cpp:259-305](components/irk_capture/irk_capture.cpp#L259-L305) - `MutexGuard` RAII class with optimization docs
 - [irk_capture.cpp:1057-1063](components/irk_capture/irk_capture.cpp#L1057-L1063) - Mutex initialization in `setup()`
 
-### 2. **Bond Table Management** (Clean Slate on Boot)
+### 2. Bond Table Management (Clean Slate on Boot)
 
 **Problem Solved:** Bond table filling up over time, causing pairing failures and privacy concerns from stale IRKs persisting across device ownership changes.
 
 **Implementation:**
+
 - `ble_store_clear()` called on every boot in `setup_ble()`
 - Guarantees fresh pairing session for every device power cycle
 - Prevents NVS flash wear from repeated failed pairing attempts
 
 **Benefits:**
+
 - ✅ No bond table capacity issues
 - ✅ Privacy: Old IRKs don't persist across reboots
 - ✅ Clean slate for device ownership transfers
 - ✅ Eliminates bond state mismatch debugging complexity
 
 **Files Changed:**
+
 - [irk_capture.cpp:1230-1235](components/irk_capture/irk_capture.cpp#L1230-L1235) - Bond clearing logic
 
-### 3. **Memory Safety Enhancements**
+### 3. Memory Safety Enhancements
 
 **Problem Solved:** Potential IRK cache memory bloat from repeated device connections.
 
 **Implementation:**
+
 - Explicit `irk_cache_.clear()` on boot (complements bond clearing)
 - Hard cap of 10 entries with FIFO eviction prevents unbounded growth
 - In-place updates for duplicate IRKs (no new allocations)
 
 **Safety Guarantees:**
+
 ```cpp
 // If the same device reconnects 100 times, it only has ONE cache entry
 // Updated in-place - no memory allocation
@@ -97,14 +110,16 @@ for (auto& entry : irk_cache_) {
 ```
 
 **Files Changed:**
+
 - [irk_capture.cpp:1067](components/irk_capture/irk_capture.cpp#L1067) - Cache clearing on boot
 - [irk_capture.cpp:440-450](components/irk_capture/irk_capture.cpp#L440-L450) - FIFO eviction logic
 
-### 4. **BLE Name Input Validation & Sanitization**
+### 4. BLE Name Input Validation & Sanitization
 
 **Problem Solved:** Unvalidated user input from Home Assistant text fields could cause BLE advertisement corruption or buffer overflows.
 
 **Implementation:**
+
 - Runtime validation in `IRKCaptureText::control()` callback
 - Character sanitization (alphanumeric, space, hyphen, underscore only)
 - 29-byte length limit enforcement (BLE advertising packet constraint)
@@ -112,6 +127,7 @@ for (auto& entry : irk_cache_) {
 - Config-time validation via ESPHome schema
 
 **Validation Rules:**
+
 ```cpp
 // Safe characters: A-Z, a-z, 0-9, space, hyphen, underscore
 // Max length: 29 bytes (BLE advertising packet limit)
@@ -120,32 +136,37 @@ for (auto& entry : irk_cache_) {
 ```
 
 **User Experience:**
+
 - Invalid characters silently removed with warning log
 - Names truncated at 29 bytes with warning log
 - Sanitized value reflected back to Home Assistant UI
 - No crashes or advertisement corruption from special characters
 
 **Files Changed:**
+
 - [irk_capture.h:231](components/irk_capture/irk_capture.h#L231) - `sanitize_ble_name()` declaration
 - [irk_capture.cpp:698-752](components/irk_capture/irk_capture.cpp#L698-L752) - Validation implementation
 - [\_\_init\_\_.py:20-28](components/irk_capture/__init__.py#L20-L28) - Config-time validation
 
-### 5. **NimBLE Task Stack Size Increase**
+### 5. NimBLE Task Stack Size Increase
 
 **Problem Solved:** Stack overflow risk when ESP_LOG calls in GAP event callbacks exceed default 4096 byte stack.
 
 **Implementation:**
+
 - Increased `CONFIG_BT_NIMBLE_TASK_STACK_SIZE` from 4096 to 5120 bytes
 - 25% safety margin for debug logging during development
 - Configured via ESP-IDF sdkconfig option
 
 **Why 5120 bytes:**
+
 - Default: 4096 bytes
 - ESP_LOG overhead: ~512-1024 bytes per call (string formatting + UART buffer)
 - Safety margin: 1024 bytes for edge cases
 - Total: 5120 bytes (fits within ESP32-C3 SRAM constraints)
 
 **Files Changed:**
+
 - [\_\_init\_\_.py:50-53](components/irk_capture/__init__.py#L50-L53) - Stack size configuration
 
 ---
@@ -155,6 +176,7 @@ for (auto& entry : irk_cache_) {
 ### Threading Model Updates
 
 **Before (v1.4.x):**
+
 ```cpp
 // UNSAFE: Version counter "best effort" torn-read mitigation
 timers_.last_peer_id_ver++;
@@ -163,6 +185,7 @@ timers_.last_peer_id_ver++;
 ```
 
 **After (v1.5.0-dev):**
+
 ```cpp
 // SAFE: Atomic copy protected by FreeRTOS mutex
 {
@@ -174,12 +197,14 @@ timers_.last_peer_id_ver++;
 ### Architecture Decisions
 
 **Why FreeRTOS Mutex (not std::mutex):**
+
 - ✅ Native ESP-IDF integration
 - ✅ Priority inheritance support
 - ✅ Works in ISR context (if needed)
 - ✅ Lower overhead than std::mutex on embedded systems
 
 **Why RAII Pattern:**
+
 - ✅ Exception-safe (automatic unlock on scope exit)
 - ✅ Prevents mutex leaks from early returns
 - ✅ Self-documenting critical sections
@@ -189,14 +214,17 @@ timers_.last_peer_id_ver++;
 ## 📊 Performance Impact
 
 **Mutex Overhead:**
+
 - Lock/unlock: ~2-5 microseconds (negligible)
 - Total added latency per connection: <100 microseconds
 
 **Memory Overhead:**
+
 - Mutex handle: 88 bytes (FreeRTOS semaphore structure)
 - No runtime heap allocation (static member)
 
 **NimBLE Stack:**
+
 - Increased from 4KB to 5KB (+1024 bytes)
 - ESP32-C3 has 400KB SRAM total - negligible impact
 
@@ -205,10 +233,12 @@ timers_.last_peer_id_ver++;
 ## 🧪 Testing Status
 
 **Tested Platforms:**
+
 - ✅ ESP32-C3 (primary target)
 - ⚠️ ESP32/S3/C6 (should work, not explicitly tested)
 
 **Tested Scenarios:**
+
 - ✅ iPhone pairing (iOS 18+)
 - ✅ Apple Watch pairing
 - ✅ Android pairing (LineageOS 18.1)
@@ -217,6 +247,7 @@ timers_.last_peer_id_ver++;
 - ✅ Heavy logging (ESP_LOGD enabled)
 
 **Known Limitations:**
+
 - Dev branch only - **not recommended for production yet**
 
 ---
@@ -253,7 +284,8 @@ esphome upload your-device.yaml
 ### Step 3: Verify Bond Clearing
 
 On first boot after upgrade, you should see:
-```
+
+```text
 [I][irk_capture:1235] Bond table cleared on boot - fresh pairing session guaranteed
 ```
 
@@ -263,7 +295,8 @@ On first boot after upgrade, you should see:
 2. Power cycle the ESP32-C3
 3. Attempt fresh pairing
 4. Monitor logs for mutex initialization:
-   ```
+
+   ```text
    [I][irk_capture:1054] IRK Capture v1.5.0 ready
    [I][irk_capture:1235] Bond table cleared on boot - fresh pairing session guaranteed
    ```
@@ -344,7 +377,7 @@ This release addresses **7 of 10** critical findings from professional code revi
 
 v1.5.0-dev represents a fundamental architectural shift from synchronous blocking operations to a fully event-driven, non-blocking state machine model. This architecture enables reliable operation across all ESP32 variants while maintaining strict thread safety guarantees.
 
-### 1. Non-Blocking MAC Rotation State Machine ✅ **IMPLEMENTED**
+### 1. Non-Blocking MAC Rotation State Machine ✅ IMPLEMENTED
 
 The component has transitioned from a synchronous "blocking" model to a deferred, event-driven state machine for MAC address rotation and identity management.
 
@@ -358,12 +391,14 @@ The component has transitioned from a synchronous "blocking" model to a deferred
 | **ROTATION_COMPLETE** | `loop()` iteration after successful rotation | Restarts advertising with new MAC, returns to IDLE |
 
 **Key Benefits:**
+
 - ✅ **Zero blocking calls:** Eliminates all `delay()`, `while()` loops, and watchdog feeds
 - ✅ **Single button press:** User action returns immediately, state machine handles the rest
 - ✅ **Race-condition free:** MAC rotation only occurs when radio is guaranteed idle
 - ✅ **Automatic retry:** Handles transient `BLE_HS_EINVAL` errors gracefully
 
 **Implementation Details:**
+
 ```cpp
 // REQUEST PHASE: refresh_mac()
 mac_rotation_state_ = MacRotationState::REQUESTED;
@@ -385,6 +420,7 @@ if (mac_rotation_state_ == MacRotationState::READY_TO_ROTATE) {
 ```
 
 **Files Changed:**
+
 - [irk_capture.h:189-197](components/irk_capture/irk_capture.h#L189-L197) - State machine enum and variables
 - [irk_capture.cpp:1388-1435](components/irk_capture/irk_capture.cpp#L1388-L1435) - Non-blocking `refresh_mac()` implementation
 - [irk_capture.cpp:1625-1631](components/irk_capture/irk_capture.cpp#L1625-L1631) - Trigger logic in `on_disconnect()`
@@ -395,10 +431,12 @@ if (mac_rotation_state_ == MacRotationState::READY_TO_ROTATE) {
 To support multi-core chips (ESP32-S3) and prevent crashes during high-frequency interactions, the following protections are enforced:
 
 **Atomic State Protection:**
+
 - All shared variables (`conn_handle_`, `ble_name_`, `mac_rotation_state_`) are accessed via `std::lock_guard<std::mutex>` using a central `state_mutex_`
 - RAII pattern ensures exception-safe locking even during early returns or errors
 
 **GATT Thread Safety:**
+
 - Device Information Service (DIS) callback copies `ble_name_` to a local buffer under lock before serving to NimBLE host task
 - Prevents "Use-After-Free" crashes during concurrent name updates and GATT reads
 
@@ -412,6 +450,7 @@ To support multi-core chips (ESP32-S3) and prevent crashes during high-frequency
 | **IRK Cache Cap** | Hard limit of 10 entries (FIFO) | Prevents unbounded memory growth on ESP32-C3 |
 
 **Critical Section Optimization:**
+
 ```cpp
 // CORRECT: Minimize mutex hold time
 ble_addr_t peer_id_copy;
@@ -423,6 +462,7 @@ ESP_LOGI(TAG, "Peer: %s", addr_to_str(peer_id_copy).c_str());  // UART logging
 ```
 
 **Why This Matters:**
+
 - On single-core ESP32-C3, holding mutex during UART logging can cause NimBLE task to miss supervision timeout
 - Fast copy + immediate release prevents BLE disconnections under heavy logging
 
@@ -431,11 +471,13 @@ ESP_LOGI(TAG, "Peer: %s", addr_to_str(peer_id_copy).c_str());  // UART logging
 Compatibility is **locked to ESP-IDF framework** (v4.4+ or v5.x). This allows direct interface with:
 
 **Low-Level NimBLE APIs:**
+
 - `ble_store_util_delete_peer()` - Surgical bond removal (single peer)
 - `ble_store_clear()` - Full bond table clearing (boot-time hygiene)
 - `ble_hs_id_set_rnd()` - Static random MAC address rotation
 
 **SDKConfig Overrides:**
+
 ```python
 # Stack size optimization for debug logging
 CONFIG_BT_NIMBLE_TASK_STACK_SIZE: 5120  # +25% safety margin
@@ -446,6 +488,7 @@ CONFIG_BT_NIMBLE_SM_SC: y
 ```
 
 **Why ESP-IDF (not Arduino):**
+
 - ✅ Direct access to NimBLE internals
 - ✅ Smaller binary size (~200KB savings)
 - ✅ Predictable memory layout
@@ -455,7 +498,7 @@ CONFIG_BT_NIMBLE_SM_SC: y
 
 ## 📦 Files Changed
 
-```
+```text
 components/irk_capture/
 ├── irk_capture.h          (+23 lines)  // State mutex + MAC rotation state machine
 ├── irk_capture.cpp        (+245 -159)  // Mutex protection, event-driven MAC rotation
@@ -464,11 +507,13 @@ components/irk_capture/
 ```
 
 **Total Code Changes:**
+
 - **+268 lines** (thread safety + state machine infrastructure)
 - **-159 lines** (removed version counter + blocking refresh_mac())
 - **Net: +109 lines**
 
 **Major Refactorings:**
+
 - ✅ Thread safety: +140 lines, -70 lines
 - ✅ Non-blocking MAC rotation: +122 lines, -89 lines
 
@@ -479,11 +524,13 @@ components/irk_capture/
 This is a **development preview branch**. Feedback welcome!
 
 **How to Test:**
+
 1. Switch to `dev` branch in your ESPHome YAML
-2. Report issues to: https://github.com/DerekSeaman/irk-capture/issues
+2. Report issues to: <https://github.com/DerekSeaman/irk-capture/issues>
 3. Include full logs (set `level: DEBUG` in ESPHome)
 
 **Known Good Configurations:**
+
 - ESP32-C3 + ESPHome 2025.12.2 + ESP-IDF framework
 - iPhone 17 Pro (iOS 26)
 - Apple Watch Ultra 3 (watchOS 26)
