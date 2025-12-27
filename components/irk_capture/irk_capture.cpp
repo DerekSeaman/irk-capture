@@ -207,14 +207,14 @@ static const ble_uuid128_t UUID_CHR_PROT = BLE_UUID128_INIT(
 
 //======================== Forward decls ========================
 
-static int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle,
-                            struct ble_gatt_access_ctxt* ctxt, void* arg);
-static int chr_read_batt(uint16_t conn_handle, uint16_t attr_handle,
-                         struct ble_gatt_access_ctxt* ctxt, void* arg);
-static int chr_read_hr(uint16_t conn_handle, uint16_t attr_handle,
+int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt* ctxt,
+                     void* arg);
+int chr_read_batt(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt* ctxt,
+                  void* arg);
+int chr_read_hr(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt* ctxt,
+                void* arg);
+int chr_read_protected(uint16_t conn_handle, uint16_t attr_handle,
                        struct ble_gatt_access_ctxt* ctxt, void* arg);
-static int chr_read_protected(uint16_t conn_handle, uint16_t attr_handle,
-                              struct ble_gatt_access_ctxt* ctxt, void* arg);
 
 // GAP event handlers (forward decls)
 class IRKCaptureComponent;
