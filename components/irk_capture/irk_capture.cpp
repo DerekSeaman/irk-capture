@@ -1276,8 +1276,7 @@ void IRKCaptureComponent::loop() {
   handle_post_disconnect_timer(now);
   handle_late_enc_timer(now);
 
-  // COMPLETION PHASE: MAC rotation state machine
-  // Handle MAC rotation when radio is idle (no active connection)
+  // MAC rotation state machine: handle completion when radio is idle
   // THREAD-SAFE: Check state under mutex
   MacRotationState rotation_state;
   uint16_t conn_handle_copy;
@@ -1708,7 +1707,7 @@ void IRKCaptureComponent::refresh_mac() {
   {
     MutexGuard lock(state_mutex_);
 
-    // REQUEST PHASE: Set flag and commit MAC to shared buffer
+    // Set rotation state and commit pre-generated MAC to shared buffer
     mac_rotation_state_ = MacRotationState::REQUESTED;
     if (mac_generated) {
       std::memcpy(pending_mac_, temp_mac, sizeof(pending_mac_));
@@ -1860,10 +1859,6 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   } else if (rc != 0 && rc != BLE_HS_EALREADY) {
     ESP_LOGW(TAG, "ble_gap_security_initiate rc=%d", rc);
   }
-
-  // Note: Avoid busy-waits in callbacks; previously a 0.5 ms micro-delay was
-  // used as log-yield. We skip any delay here to keep strict callback hygiene
-  // without altering pairing behavior.
 }
 
 void IRKCaptureComponent::on_disconnect() {
@@ -1874,7 +1869,7 @@ void IRKCaptureComponent::on_disconnect() {
     conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
     pairing_start_time_ = 0;
 
-    // TRIGGER PHASE: Check if MAC rotation is pending (CRITICAL: must be inside mutex)
+    // MAC rotation handoff: advance state if rotation is pending (CRITICAL: must be inside mutex)
     // Now that we're disconnected, the radio is idle and safe to rotate
     if (mac_rotation_state_ == MacRotationState::REQUESTED) {
       ESP_LOGD(TAG, "MAC rotation: connection closed, advancing to READY_TO_ROTATE");
