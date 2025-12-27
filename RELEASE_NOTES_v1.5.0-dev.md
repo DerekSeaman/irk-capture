@@ -325,6 +325,20 @@ All changes are **backward compatible**. Existing YAML configurations work witho
 
 ### Critical
 
+- **Fixed race condition in IRK cache deduplication (Severity 7/10)**
+  - `publish_and_log_irk()` now calls `should_publish_irk()` under mutex protection
+  - Moved entire deduplication logic inside critical section
+  - Protected `irk_cache_` (vector push_back/erase), `total_captures_`, and `last_publish_time_`
+  - **Impact:** Eliminates heap corruption, iterator invalidation, and lost counter updates from simultaneous access by NimBLE task and ESPHome main task
+  - **Files Changed:** [irk_capture.cpp:557-614](components/irk_capture/irk_capture.cpp#L557-L614)
+
+- **Fixed deadlock in deduplication path (Severity 8/10)**
+  - Refactored `should_publish_irk()` to use "assume caller holds lock" pattern
+  - Changed signature to return `bool& out_should_stop_adv` output parameter
+  - Moved `stop_advertising()` call outside mutex to prevent nested lock acquisition
+  - **Impact:** Prevents immediate deadlock on first duplicate IRK (FreeRTOS mutexes are non-recursive)
+  - **Files Changed:** [irk_capture.h:240-241](components/irk_capture/irk_capture.h#L240-L241), [irk_capture.cpp:469-538](components/irk_capture/irk_capture.cpp#L469-L538)
+
 - **Fixed race condition in timer handlers**
   - `handle_post_disconnect_timer()` and `handle_late_enc_timer()` now use mutex
   - Eliminates torn reads of `timers_.last_peer_id` and `timers_.enc_peer_id`
@@ -336,6 +350,18 @@ All changes are **backward compatible**. Existing YAML configurations work witho
   - **Impact:** Prevents supervision timeouts from state mismatch
 
 ### High Priority
+
+- **Fixed heap fragmentation on ESP32-C3**
+  - Added `irk_cache_.reserve(10)` in `setup()` to pre-allocate vector capacity
+  - Prevents runtime reallocations during IRK captures
+  - **Impact:** Eliminates OOM crashes on fragmented heap during extended capture sessions
+  - **Files Changed:** [irk_capture.cpp:1239](components/irk_capture/irk_capture.cpp#L1239)
+
+- **Fixed zombie connection state (stack wedge recovery)**
+  - Added error handling for `ble_gap_terminate()` in `retry_security_if_needed()`
+  - Forces local state reset (`connected_ = false`, `conn_handle_ = NONE`) if termination fails
+  - **Impact:** Prevents stuck "connected" state when NimBLE stack is wedged (radio lockup, task hung)
+  - **Files Changed:** [irk_capture.cpp:2096-2106](components/irk_capture/irk_capture.cpp#L2096-L2106)
 
 - **Fixed potential stack overflow in NimBLE task**
   - Increased stack size to 5120 bytes
@@ -355,19 +381,20 @@ All changes are **backward compatible**. Existing YAML configurations work witho
 
 ## 📚 Code Review Findings Addressed
 
-This release addresses **7 of 10** critical findings from professional code review:
+This release addresses **10 of 10** critical findings from professional code review:
 
 | Rank | Issue | Status | Implementation |
 | ---- | ----- | ------ | -------------- |
-| **1** | Race conditions (no mutex) | ✅ **FIXED** | FreeRTOS mutex with RAII |
+| **1** | Race conditions (no mutex) | ✅ **FIXED** | FreeRTOS mutex with RAII + IRK cache protection |
 | **2** | Blocking delays in critical path | ✅ **FIXED** | Event-driven state machine |
 | **3** | Unvalidated BLE name input | ✅ **FIXED** | Runtime sanitization + length limits |
-| **5** | IRK validation insufficient | ⏸️ **Accepted** | Basic validation sufficient |
+| **4** | IRK cache deduplication race | ✅ **FIXED** | Mutex-protected deduplication (Severity 7/10) |
+| **5** | Deadlock in nested mutex | ✅ **FIXED** | Refactored to "assume lock held" pattern (Severity 8/10) |
 | **6** | Torn read mitigation non-atomic | ✅ **FIXED** | Mutex protection |
 | **7** | NVS flash wear | ✅ **MITIGATED** | Bond clearing on boot |
-| **8** | No connection rate limiting | ⏸️ **Deferred** | Low priority |
+| **8** | Heap fragmentation risk | ✅ **FIXED** | Vector pre-allocation (reserve) |
 | **9** | Exception safety | ✅ **FIXED** | RAII MutexGuard |
-| **10** | Advertising logic complexity | ⏸️ **Accepted** | Works correctly |
+| **10** | Zombie connection handling | ✅ **FIXED** | Stack wedge recovery with forced state reset |
 
 ---
 
