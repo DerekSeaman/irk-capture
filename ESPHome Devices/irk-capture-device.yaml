@@ -1,3 +1,4 @@
+---
 substitutions:
   device_name: esphome-irk-capture
   friendly_name: IRK Capture

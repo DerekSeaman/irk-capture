@@ -1,3 +1,4 @@
+---
 # Generic ESP32 IRK Capture Package
 # This package provides IRK capture functionality for ESP32 devices
 # Device YAML must provide substitutions: device_name, friendly_name, api_key, ota_password, esp32_variant, esp32_board, ble_name

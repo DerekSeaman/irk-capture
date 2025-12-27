@@ -2,7 +2,7 @@
 
 ## Warning: Development Preview
 
-**⚠️ DEVELOPMENT PREVIEW - NOT FOR PRODUCTION USE**
+⚠️ DEVELOPMENT PREVIEW - NOT FOR PRODUCTION USE
 
 This release represents a major stability and robustness overhaul of the IRK Capture component, addressing critical concurrency issues and memory safety concerns identified through professional code review.
 
@@ -358,7 +358,7 @@ All changes are **backward compatible**. Existing YAML configurations work witho
 This release addresses **7 of 10** critical findings from professional code review:
 
 | Rank | Issue | Status | Implementation |
-|------|-------|--------|----------------|
+| ---- | ----- | ------ | -------------- |
 | **1** | Race conditions (no mutex) | ✅ **FIXED** | FreeRTOS mutex with RAII |
 | **2** | Blocking delays in critical path | ✅ **FIXED** | Event-driven state machine |
 | **3** | Unvalidated BLE name input | ✅ **FIXED** | Runtime sanitization + length limits |
@@ -384,7 +384,7 @@ The component has transitioned from a synchronous "blocking" model to a deferred
 **State Machine Flow:**
 
 | State | Trigger | Action |
-|-------|---------|--------|
+| ----- | ------- | ------ |
 | **IDLE** | System boot / Normal operation | Standard advertising or standby mode |
 | **REQUESTED** | `refresh_mac()` called | Stores target MAC in `pending_mac_[6]`, stops advertising, terminates active connections |
 | **READY_TO_ROTATE** | `on_disconnect()` callback | Signals that NimBLE host is idle and safe for identity changes |
@@ -443,7 +443,7 @@ To support multi-core chips (ESP32-S3) and prevent crashes during high-frequency
 **Session Lifecycle Management:**
 
 | Protection | Implementation | Purpose |
-|------------|----------------|---------|
+| ---------- | -------------- | ------- |
 | **Pairing Timeout** | 90-second hardware timer | Resets stack if bonding hangs indefinitely |
 | **Identity Cooldown** | 5-second post-disconnect delay | Allows radio clearing, prevents connection "snapping" |
 | **Heap Protection** | 5-capture session limit | Prevents iOS background reconnections from fragmenting heap |
@@ -561,4 +561,6 @@ This release was developed with assistance from [Claude Code](https://claude.com
 
 ---
 
-**Ready for Testing | v1.5.0-dev | Development Preview**
+## Status
+
+Ready for Testing | v1.5.0-dev | Development Preview

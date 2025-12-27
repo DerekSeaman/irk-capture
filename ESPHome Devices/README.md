@@ -6,7 +6,7 @@ This directory contains the ESPHome YAML configuration files for the IRK Capture
 
 ### irk-capture-base.yaml
 
-**Generic ESP32 IRK Capture Package**
+Generic ESP32 IRK Capture Package
 
 This is the base package configuration that provides IRK capture functionality for any ESP32 device. It contains all the core configuration but requires the device-specific YAML to provide substitutions for hardware details.
 
@@ -29,7 +29,7 @@ This is the base package configuration that provides IRK capture functionality f
 
 ### irk-capture-device.yaml
 
-**Example Device Configuration**
+Example Device Configuration
 
 This is a minimal example showing how to use the base package with the ESPHome Device Builder with a specific ESP32 device. It demonstrates the package-based approach where device-specific settings are kept separate from the core functionality.
 
@@ -43,7 +43,7 @@ This is a minimal example showing how to use the base package with the ESPHome D
 
 ### irk-capture-full.yaml
 
-**Standalone Complete Configuration**
+Standalone Complete Configuration
 
 This is a single-file configuration that merges the base package and device settings into one file. Use this if you prefer not to use the package system or want a simple all-in-one configuration.
 
@@ -57,7 +57,7 @@ This is a single-file configuration that merges the base package and device sett
 
 ### secrets.yaml
 
-**Example Secrets File**
+Example Secrets File
 
 This is an example secrets file showing the required Wi-Fi credentials. ESPHome Device Builder typically manages this file automatically. Make sure these substituations are in the secrets file.
 
