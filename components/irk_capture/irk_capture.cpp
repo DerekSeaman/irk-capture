@@ -1622,12 +1622,9 @@ void IRKCaptureComponent::start_advertising() {
   advp.conn_mode = BLE_GAP_CONN_MODE_UND;
   advp.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
-  uint8_t own_addr_type;
-  rc = ble_hs_id_infer_auto(0, &own_addr_type);
-  if (rc != 0) {
-    ESP_LOGE(TAG, "ble_hs_id_infer_auto rc=%d", rc);
-    return;
-  }
+  // Use explicit RANDOM address type (our static random address set in setup_ble/refresh_mac)
+  // Avoids Samsung One UI 7 "Maximum Restrictions" filtering RPA addresses as tracking risks
+  constexpr uint8_t own_addr_type = BLE_OWN_ADDR_RANDOM;
 
   rc = ble_gap_adv_start(own_addr_type, nullptr, BLE_HS_FOREVER, &advp,
                          IRKCaptureComponent::gap_event_handler, this);
