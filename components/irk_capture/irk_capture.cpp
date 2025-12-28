@@ -1622,6 +1622,11 @@ void IRKCaptureComponent::start_advertising() {
   advp.conn_mode = BLE_GAP_CONN_MODE_UND;
   advp.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
+  // Faster advertising interval for quicker discovery in Samsung/Android Settings UI
+  // Units are 0.625ms: 0x00A0 = 100ms, 0x00F0 = 150ms (default NimBLE is ~1.28s)
+  advp.itvl_min = 0x00A0;
+  advp.itvl_max = 0x00F0;
+
   // Use explicit RANDOM address type (our static random address set in setup_ble/refresh_mac)
   // Avoids Samsung One UI 7 "Maximum Restrictions" filtering RPA addresses as tracking risks
   constexpr uint8_t own_addr_type = BLE_OWN_ADDR_RANDOM;
