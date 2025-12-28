@@ -748,7 +748,7 @@ static int read_peer_bond_by_conn(uint16_t conn_handle, struct ble_store_value_s
 std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
   // Validate and sanitize BLE name for runtime changes from Home Assistant
   std::string sanitized;
-  sanitized.reserve(29);  // BLE advertising packet limit
+  sanitized.reserve(12);  // 12 chars for Samsung S24/S25 compatibility with single-UUID advertising
 
   // Check for empty string
   if (name.empty()) {
@@ -767,9 +767,9 @@ std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
                (c >= 32 && c <= 126) ? c : '?');
     }
 
-    // Enforce 29-byte limit (BLE advertising packet constraint)
-    if (sanitized.length() >= 29) {
-      ESP_LOGW(TAG, "BLE name truncated to 29 bytes (advertising packet limit)");
+    // Enforce 12-byte limit for Samsung S24/S25 compatibility (clean profile with single UUID)
+    if (sanitized.length() >= 12) {
+      ESP_LOGW(TAG, "BLE name truncated to 12 bytes (Samsung compatibility)");
       break;
     }
   }
@@ -1605,12 +1605,11 @@ void IRKCaptureComponent::start_advertising() {
   fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
   fields.appearance_is_present = 1;
 
-  // Include standard services in adv
-  uint16_t svc16[] = { UUID_SVC_HEART_RATE, UUID_SVC_BATTERY, UUID_SVC_DEVICE_INFO };
-  ble_uuid16_t uu16[3] = { BLE_UUID16_INIT(svc16[0]), BLE_UUID16_INIT(svc16[1]),
-                           BLE_UUID16_INIT(svc16[2]) };
-  fields.uuids16 = uu16;
-  fields.num_uuids16 = 3;
+  // Advertise ONLY Heart Rate service for Samsung S24/S25 compatibility
+  // Battery and Device Info services remain available in GATT server after connection
+  static ble_uuid16_t hr_uuid = BLE_UUID16_INIT(UUID_SVC_HEART_RATE);
+  fields.uuids16 = &hr_uuid;
+  fields.num_uuids16 = 1;  // Single service = clean "fitness device" profile
   fields.uuids16_is_complete = 1;
 
   int rc = ble_gap_adv_set_fields(&fields);

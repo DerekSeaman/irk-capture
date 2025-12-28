@@ -76,7 +76,7 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
      ota_password: "ChangeMe!2025"             # Change: Generated with the ESPHome new device wizard
      esp32_variant: esp32c3                    # Change: Your ESP32 variant (esp32, esp32c3, esp32c6, esp32s3, etc.)
      esp32_board: seeed_xiao_esp32c3           # Change: Your board type (see ESPHome board list)
-     ble_name: "IRK Capture"                   # Change: BLE advertising name (shown in Bluetooth settings)
+     ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
 
    packages:
      device: !include common/irk-capture-base.yaml
@@ -89,7 +89,7 @@ You can add these optional parameters to your device YAML configuration to contr
 ```yaml
 irk_capture:
   id: irk
-  ble_name: "IRK Capture"
+  ble_name: "IRK Capture"  # Max 12 characters
   start_on_boot: true
   continuous_mode: false  # Optional: Keep advertising after IRK capture (default: false)
   max_captures: 1         # Optional: Maximum IRKs to capture before auto-stop (default: 1, 0=unlimited)
