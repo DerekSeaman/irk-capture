@@ -233,6 +233,7 @@ Samsung One UI 7 (Galaxy S25, S24, etc.) aggressively filters BLE devices in Blu
 1. **Enable Developer Options**: Settings → About Phone → Software Information → Tap "Build Number" 7 times
 2. **Enable BLE visibility**: Settings → Developer Options → Scroll down and enable **"Show unsupported Bluetooth LE devices in Bluetooth settings"**
 3. Return to Bluetooth settings and scan again — the ESP32 device should now appear
+4. Tap on IRK Capture device and tap pair. The IRK should appear in the ESP32 logs and ESPHome device page in Home Assistant.
 
 ### Android device still not visible after Developer Options fix
 
