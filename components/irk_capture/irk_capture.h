@@ -210,7 +210,8 @@ class IRKCaptureComponent : public Component {
     ROTATION_COMPLETE  // Rotation done, ready to restart advertising
   };
   MacRotationState mac_rotation_state_ { MacRotationState::IDLE };
-  uint8_t pending_mac_[6] { 0 };  // Pre-generated MAC for rotation
+  uint8_t pending_mac_[6] { 0 };        // Pre-generated MAC for rotation
+  uint8_t mac_rotation_retries_ { 0 };  // Retry counter for MAC rotation
 
   // IRK capture tracking with deduplication and rate limiting
   struct IRKCacheEntry {

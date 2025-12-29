@@ -157,6 +157,8 @@ struct TimingConfig {
       5000;  // Cooldown after pairing timeout before re-advertising (prevents rapid-fire loop)
   static constexpr uint32_t MIN_REPUBLISH_INTERVAL_MS =
       60000;  // Min time between republishing same IRK (60s)
+  static constexpr uint8_t MAC_ROTATION_MAX_RETRIES = 10;       // Max retries for MAC rotation
+  static constexpr uint32_t MAC_ROTATION_RETRY_DELAY_MS = 100;  // Delay between retries (ms)
 };
 
 // GATT service and characteristic UUIDs
@@ -1295,22 +1297,25 @@ void IRKCaptureComponent::loop() {
       return;  // Wait for disconnect callback to advance state
     }
 
-    ESP_LOGI(TAG, "MAC rotation: radio idle, performing MAC change");
+    // Only log and clear bonds on first attempt (retry counter == 0)
+    if (mac_rotation_retries_ == 0) {
+      ESP_LOGI(TAG, "MAC rotation: radio idle, performing MAC change");
 
-    // Clear all bonds since MAC change invalidates them
-    ESP_LOGI(TAG, "Clearing all bond data before MAC refresh");
-    ble_store_clear();
+      // Clear all bonds since MAC change invalidates them
+      ESP_LOGI(TAG, "Clearing all bond data before MAC refresh");
+      ble_store_clear();
 
-    // Reset suppression flags since we're starting fresh with new MAC
-    // THREAD-SAFE: Write to shared state under mutex
-    {
-      MutexGuard lock(state_mutex_);
-      suppress_next_adv_ = false;
-      adv_restart_time_ = 0;
+      // Reset suppression flags since we're starting fresh with new MAC
+      // THREAD-SAFE: Write to shared state under mutex
+      {
+        MutexGuard lock(state_mutex_);
+        suppress_next_adv_ = false;
+        adv_restart_time_ = 0;
+      }
+
+      // Log previous MAC before change
+      log_mac("Previous");
     }
-
-    // Log previous MAC before change
-    log_mac("Previous");
 
     // Attempt to set the pre-generated MAC address (using local copy to avoid race)
     int rc = ble_hs_id_set_rnd(mac_copy);
@@ -1332,17 +1337,33 @@ void IRKCaptureComponent::loop() {
       enc_ready_ = false;
       enc_time_ = 0;
 
-      // Advance to completion state - THREAD-SAFE
+      // Advance to completion state and reset retry counter - THREAD-SAFE
       {
         MutexGuard lock(state_mutex_);
         mac_rotation_state_ = MacRotationState::ROTATION_COMPLETE;
       }
+      mac_rotation_retries_ = 0;
       ESP_LOGI(TAG, "MAC rotation complete, will restart advertising");
 
     } else if (rc == BLE_HS_EINVAL) {
-      // Host not ready yet - retry on next loop iteration
-      ESP_LOGW(TAG, "ble_hs_id_set_rnd EINVAL - host not ready, will retry");
-      // Stay in READY_TO_ROTATE state to retry next loop (no state change needed)
+      // Host not ready yet - increment retry counter with limit
+      mac_rotation_retries_++;
+      if (mac_rotation_retries_ >= TimingConfig::MAC_ROTATION_MAX_RETRIES) {
+        ESP_LOGE(TAG, "MAC rotation failed after %u retries - aborting", mac_rotation_retries_);
+        // Abort rotation - THREAD-SAFE
+        {
+          MutexGuard lock(state_mutex_);
+          mac_rotation_state_ = MacRotationState::IDLE;
+        }
+        mac_rotation_retries_ = 0;
+        // Restart advertising with old MAC
+        start_advertising();
+      } else {
+        ESP_LOGW(TAG, "ble_hs_id_set_rnd EINVAL - host not ready, retry %u/%u",
+                 mac_rotation_retries_, TimingConfig::MAC_ROTATION_MAX_RETRIES);
+        // Stay in READY_TO_ROTATE state; next loop iteration will retry
+        // Natural loop interval (~50ms) provides backoff between retries
+      }
     } else {
       ESP_LOGE(TAG, "ble_hs_id_set_rnd failed rc=%d - aborting MAC rotation", rc);
       // Abort rotation - THREAD-SAFE
@@ -1350,6 +1371,7 @@ void IRKCaptureComponent::loop() {
         MutexGuard lock(state_mutex_);
         mac_rotation_state_ = MacRotationState::IDLE;
       }
+      mac_rotation_retries_ = 0;
       // Restart advertising with old MAC
       start_advertising();
     }
@@ -1708,6 +1730,7 @@ void IRKCaptureComponent::refresh_mac() {
 
     // Set rotation state and commit pre-generated MAC to shared buffer
     mac_rotation_state_ = MacRotationState::REQUESTED;
+    mac_rotation_retries_ = 0;  // Reset retry counter for new rotation attempt
     if (mac_generated) {
       std::memcpy(pending_mac_, temp_mac, sizeof(pending_mac_));
     }
