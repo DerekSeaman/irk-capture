@@ -251,6 +251,10 @@ Android's system Bluetooth settings may apply aggressive filtering and the IRK C
 5. The pairing dialog should appear, allowing the bonding process to complete
 6. Look for the captured IRK in the ESP32 logs or the ESPHome device page
 
+### Deep Dive Troubleshooting
+
+- For additional troubleshooting logs, connect to your ESP32 device and view the logs during a capture session.
+
 ## Credits
 
 Based on [ESPresense](https://github.com/ESPresense/ESPresense) enrollment functionality.
