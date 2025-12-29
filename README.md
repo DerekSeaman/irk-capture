@@ -66,6 +66,7 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
 3. **Create your device YAML:**
    - Use [irk-capture-device.yaml](ESPHome%20Devices/irk-capture-device.yaml) as a template
    - Create a new dummy device in ESPHome, and take note of the unique API and OTA keys.
+   - Modify the template as needed to match your ESP32 device and board type
    - Replace the following values in the YAML from this repo:
 
    ```yaml
