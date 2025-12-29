@@ -228,7 +228,15 @@ This IRK capture component has been successfully tested with:
 
 ### Android device can't see ESP32 Device Name
 
-Android's system Bluetooth settings may apply aggressive filtering and the ESP32 device may not be listed as a pairing option. If this happens, try:
+Samsung One UI 7 (Galaxy S25, S24, etc.) aggressively filters BLE devices in Bluetooth settings. To restore visibility:
+
+1. **Enable Developer Options**: Settings → About Phone → Software Information → Tap "Build Number" 7 times
+2. **Enable BLE visibility**: Settings → Developer Options → Scroll down and enable **"Show unsupported Bluetooth LE devices in Bluetooth settings"**
+3. Return to Bluetooth settings and scan again — the ESP32 device should now appear
+
+### Android device still not visible after Developer Options fix
+
+If the Developer Options fix doesn't work, or you're on a non-Samsung Android device with similar filtering, try using the nRF Connect app:
 
 1. Install **nRF Connect** from the Play Store (by Nordic Semiconductor)
 2. Open the app and tap "Scan"
