@@ -582,8 +582,11 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
       current_captures = self->total_captures_;
 
       // Check if max captures reached
-      if (self->continuous_mode_ && self->max_captures_ > 0 &&
-          self->total_captures_ >= self->max_captures_) {
+      // Stop advertising if:
+      // 1. continuous_mode is false (single capture mode), OR
+      // 2. continuous_mode is true AND max_captures > 0 AND we've hit the limit
+      if (!self->continuous_mode_ ||
+          (self->max_captures_ > 0 && self->total_captures_ >= self->max_captures_)) {
         max_reached = true;
       }
     }
@@ -608,7 +611,12 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
   ESP_LOGI(TAG, "Total captures this session: %u", current_captures);
   if (max_reached) {
-    ESP_LOGI(TAG, "Max captures (%u) reached in continuous mode", self->max_captures_);
+    if (!self->continuous_mode_) {
+      ESP_LOGI(TAG, "Single capture mode: advertising will stop after disconnect");
+    } else {
+      ESP_LOGI(TAG, "Max captures (%u) reached - advertising will stop after disconnect",
+               self->max_captures_);
+    }
   }
 
   log_spacer();
@@ -933,10 +941,16 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     self->advertising_ = false;
   }
 
-  // Check if we should stop advertising (max captures reached)
+  // Check if we should stop advertising
+  // Stop if:
+  // 1. continuous_mode is false AND we've captured at least one IRK, OR
+  // 2. continuous_mode is true AND max_captures > 0 AND we've hit the limit
   bool should_stop_adv = false;
-  if (self->continuous_mode_ && self->max_captures_ > 0 &&
-      self->total_captures_ >= self->max_captures_) {
+  if (!self->continuous_mode_ && self->total_captures_ > 0) {
+    ESP_LOGI(TAG, "Single capture mode: stopping advertising after IRK capture");
+    should_stop_adv = true;
+  } else if (self->continuous_mode_ && self->max_captures_ > 0 &&
+             self->total_captures_ >= self->max_captures_) {
     ESP_LOGI(TAG, "Max captures (%u) reached - stopping advertising", self->max_captures_);
     should_stop_adv = true;
   }
