@@ -1588,8 +1588,9 @@ void IRKCaptureComponent::setup_ble() {
   // rotations
   uint8_t rnd[6];
   esp_fill_random(rnd, sizeof(rnd));
-  rnd[0] |= 0xC0;  // static random
-  rnd[0] &= 0xFE;
+  // NimBLE uses little-endian: rnd[5] is the MSB (displayed first in XX:XX:XX:XX:XX:XX)
+  rnd[5] |= 0xC0;  // Set top two bits of MSB for static random address type
+  rnd[0] &= 0xFE;  // Clear bit0 of LSB for unicast (not multicast)
   int rc = ble_hs_id_set_rnd(rnd);
   if (rc == 0) {
     ESP_LOGI(TAG, "Initial MAC (set_rnd): %02X:%02X:%02X:%02X:%02X:%02X", rnd[5], rnd[4], rnd[3],
