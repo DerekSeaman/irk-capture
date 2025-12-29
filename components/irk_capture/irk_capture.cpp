@@ -1719,9 +1719,11 @@ void IRKCaptureComponent::refresh_mac() {
   bool mac_generated = false;
   for (int tries = 0; tries < 10; ++tries) {
     esp_fill_random(temp_mac, sizeof(temp_mac));
-    // Force static-random: top two bits 11, LSB bit0 = 0 (unicast)
-    temp_mac[0] |= 0xC0;
-    temp_mac[0] &= 0xFE;
+    // NimBLE uses little-endian: temp_mac[5] is the MSB (displayed first in XX:XX:XX:XX:XX:XX)
+    // Force static-random: top two bits of MSB = 11 (0xC0 mask)
+    // Also ensure unicast: LSB bit0 of temp_mac[0] = 0 (the actual transmitted LSB)
+    temp_mac[5] |= 0xC0;  // Set top two bits of MSB for static random address type
+    temp_mac[0] &= 0xFE;  // Clear bit0 of LSB for unicast (not multicast)
 
     // Validate: reject all-zero MAC
     bool all_zero = true;
