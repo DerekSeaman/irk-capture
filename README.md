@@ -263,6 +263,18 @@ Android's system Bluetooth settings may apply aggressive filtering and the IRK C
       irk_capture: DEBUG
   ```
 
+  DEBUG logging covers:
+  - **Connection Details** - Peer addresses, connection parameters (interval, latency, supervision timeout), role info
+  - **GAP Events** - State transitions, unhandled event types
+  - **Bond/IRK Status** - Whether bonds exist, IRK availability in NVS store
+  - **Deduplication** - When duplicate IRKs are suppressed, cache management (eviction, additions)
+  - **GATT Operations** - DevInfo reads, characteristic handles
+  - **Advertising State** - Start/stop, device name being advertised
+  - **MAC Rotation** - Pre-generated MAC values, state machine transitions
+  - **Security/Pairing** - Bond security flags, peer identity resolution, security retry status
+  - **Timer Operations** - Post-disconnect and late encryption timer checks
+  - **Heart Rate Notifications** - Notify return codes
+
 ## Credits
 
 Based on [ESPresense](https://github.com/ESPresense/ESPresense) enrollment functionality.
