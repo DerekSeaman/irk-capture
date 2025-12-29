@@ -16,7 +16,7 @@ The **Identity Resolving Key (IRK)** is a cryptographic key exchanged during BLE
 
 Capturing IRKs from devices can be very tricky, as the Bluetooth stack can very widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes.
 
-Bluetooth uses an 'identity address' that is separate from the readily seen Bluetooth MAC address. The identity address is randomized each time the ESP32 device boots up. This means that even if you use the UI option to change the ESP32 BT MAC, your device may not see your ESP32 as new as the identity address is not changed. It is best to always restart your ESP32 to get a new random identity address and MAC. This should appear as an entirely new Bluetooth device to your phone or watch.
+The ESP32 uses a **random static address** for BLE advertising, which is regenerated each time the device boots. This address serves as both the advertised MAC address and the identity address for pairing. The "Generate New MAC" button also changes this address. However, if your phone or watch has previously paired with the ESP32, it may still have cached bond information. To ensure your device sees the ESP32 as completely new, either restart the ESP32 or use "Generate New MAC", and then **forget the pairing** on your phone/watch before attempting to pair again.
 
 ## Blog Post: Track Who's in Each Room with ESPHome + Bermuda BLE
 
