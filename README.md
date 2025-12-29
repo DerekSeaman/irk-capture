@@ -122,7 +122,7 @@ irk_capture:
 
 5. **Flash to your ESP32:**
    - In ESPHome Device Builder, click "Install" and choose your connection method
-   - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize both the BLE MAC address and identity address.
+   - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
 ### Using Standalone Configuration
 
