@@ -218,7 +218,7 @@ This IRK capture component has been successfully tested with:
 
 ## Troubleshooting Tips
 
-### Device Not Appearing in Bluetooth Settings
+### ESP32 Device Name Not Appearing in Bluetooth Settings
 
 - **Turn off Bluetooth** on your device
 - Press the **"Restart Device"** button to reset the ESP32's BLE stack
@@ -244,7 +244,7 @@ Android's system Bluetooth settings may apply aggressive filtering and the ESP32
 - Press the **"Restart Device"** button on the ESPHome device page
 - Turn Bluetooth ON on your device
 - Try pairing again from scratch
-- Power cycle your device, restart your ESP32, and try pairing again
+- Power cycle your phone/watch/tablet, restart your ESP32, and try pairing again
 
 ### ESPHome Build Fails
 
