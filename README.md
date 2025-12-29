@@ -42,7 +42,7 @@ This IRK capture component turns your ESP32 into a BLE peripheral that **adverti
 - **ESP-IDF framework** (required - this component does NOT support Arduino framework)
 - **ESPHome** 2024.x or newer - Tested with 2025.12
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
-- **ESPHome Device Builder** (Optional, but makes managing ESPHome devices in Home Assistant easier)
+- **ESPHome Device Builder** (optional, but makes managing ESPHome devices in Home Assistant easier)
 
 ## Installation
 
@@ -110,7 +110,7 @@ irk_capture:
 
 - If `continuous_mode: false` and `max_captures > 1`, ESPHome will reject the configuration (conflict)
 - For single-device capture, set `continuous_mode: false` and `max_captures: 1`
-- After capturing multiple IRKs, restart the device between captures to avoid pairing conflicts
+- After capturing multiple IRKs, restart your ESP32 device between captures to avoid pairing conflicts
 
 4. **Secrets File** (managed by ESPHome device builder):
 
@@ -162,12 +162,13 @@ After flashing and connecting to Home Assistant, the following entities will be 
 1. **Enable BLE advertising:**
    - In Home Assistant, open ESPHome and find your IRK Capture device
    - Power on your ESP32 board with the IRK Capture build
+   - Optional, but recommended, open the real time logs for your ESP32 device
 
 2. **Open Bluetooth settings on your device**
 
 3. **Look for the advertised device:**
    - Default name: "IRK Capture" (or whatever you set as `ble_name`)
-   - It will appear under available devices
+   - It will appear under available devices - See troubleshooting section if it's not listed
 
 4. **Tap on the device name to pair:**
    - If prompted, tap "Pair" or "Connect"
@@ -223,6 +224,18 @@ This IRK capture component has been successfully tested with:
 - Press the **"Restart Device"** button to reset the ESP32's BLE stack
 - Ensure the **"BLE Advertising"** switch is ON
 - Turn your device's Bluetooth back on and connect to the ESP32
+- If ESP32 device does not appear on Android, see the section below
+
+### Android device can't see ESP32 Device Name
+
+Android's system Bluetooth settings may apply aggressive filtering and the ESP32 device may not be listed as a pairing option. If this happens, try:
+
+1. Install **nRF Connect** from the Play Store (by Nordic Semiconductor)
+2. Open the app and tap "Scan"
+3. Look for "IRK Capture" in the device list (or your customized name)
+4. Tap on it to connect
+5. The pairing dialog should appear, allowing the bonding process to complete
+6. Look for the captured IRK in the ESP32 logs or the ESPHome device page
 
 ### IRK Not Captured After Pairing
 
@@ -239,17 +252,6 @@ This IRK capture component has been successfully tested with:
 - Ensure you're using ESPHome 2024.x or newer (tested with ESPHome 2025.12)
 - Verify your `esp32_variant` and `esp32_board` substitutions match your hardware
 - Check that all required secrets are defined in `secrets.yaml`
-
-### Android Device Cannot Find IRK Capture
-
-Android's system Bluetooth settings may apply aggressive filtering and the IRK Capture device may not be listed as a pairing option. If this happens, try:
-
-1. Install **nRF Connect** from the Play Store (by Nordic Semiconductor)
-2. Open the app and tap "Scan"
-3. Look for "IRK Capture" in the device list (or your customized name)
-4. Tap on it to connect
-5. The pairing dialog should appear, allowing the bonding process to complete
-6. Look for the captured IRK in the ESP32 logs or the ESPHome device page
 
 ### Advanced Troubleshooting
 
