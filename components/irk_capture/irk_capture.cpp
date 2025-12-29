@@ -157,8 +157,9 @@ struct TimingConfig {
       5000;  // Cooldown after pairing timeout before re-advertising (prevents rapid-fire loop)
   static constexpr uint32_t MIN_REPUBLISH_INTERVAL_MS =
       60000;  // Min time between republishing same IRK (60s)
-  static constexpr uint8_t MAC_ROTATION_MAX_RETRIES = 10;       // Max retries for MAC rotation
-  static constexpr uint32_t MAC_ROTATION_RETRY_DELAY_MS = 100;  // Delay between retries (ms)
+  static constexpr uint8_t MAC_ROTATION_MAX_RETRIES = 10;  // Max retries for MAC rotation
+  static constexpr uint32_t MAC_ROTATION_SETTLE_DELAY_MS =
+      500;  // Delay after adv stop before MAC change
 };
 
 // GATT service and characteristic UUIDs
@@ -1299,22 +1300,35 @@ void IRKCaptureComponent::loop() {
 
     // Only log and clear bonds on first attempt (retry counter == 0)
     if (mac_rotation_retries_ == 0) {
-      ESP_LOGI(TAG, "MAC rotation: radio idle, performing MAC change");
+      // First attempt: set up settling delay to let BLE stack fully stop
+      if (mac_rotation_ready_time_ == 0) {
+        ESP_LOGI(TAG, "MAC rotation: waiting %u ms for BLE stack to settle",
+                 TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS);
+        mac_rotation_ready_time_ = now + TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS;
 
-      // Clear all bonds since MAC change invalidates them
-      ESP_LOGI(TAG, "Clearing all bond data before MAC refresh");
-      ble_store_clear();
+        // Clear all bonds since MAC change invalidates them
+        ESP_LOGI(TAG, "Clearing all bond data before MAC refresh");
+        ble_store_clear();
 
-      // Reset suppression flags since we're starting fresh with new MAC
-      // THREAD-SAFE: Write to shared state under mutex
-      {
-        MutexGuard lock(state_mutex_);
-        suppress_next_adv_ = false;
-        adv_restart_time_ = 0;
+        // Reset suppression flags since we're starting fresh with new MAC
+        // THREAD-SAFE: Write to shared state under mutex
+        {
+          MutexGuard lock(state_mutex_);
+          suppress_next_adv_ = false;
+          adv_restart_time_ = 0;
+        }
+
+        // Log previous MAC before change
+        log_mac("Previous");
+        return;  // Wait for settling delay
       }
 
-      // Log previous MAC before change
-      log_mac("Previous");
+      // Check if settling delay has elapsed
+      if (now < mac_rotation_ready_time_) {
+        return;  // Still waiting for BLE stack to settle
+      }
+
+      ESP_LOGI(TAG, "MAC rotation: BLE stack settled, performing MAC change");
     }
 
     // Attempt to set the pre-generated MAC address (using local copy to avoid race)
@@ -1343,6 +1357,7 @@ void IRKCaptureComponent::loop() {
         mac_rotation_state_ = MacRotationState::ROTATION_COMPLETE;
       }
       mac_rotation_retries_ = 0;
+      mac_rotation_ready_time_ = 0;
       ESP_LOGI(TAG, "MAC rotation complete, will restart advertising");
 
     } else if (rc == BLE_HS_EINVAL) {
@@ -1356,6 +1371,7 @@ void IRKCaptureComponent::loop() {
           mac_rotation_state_ = MacRotationState::IDLE;
         }
         mac_rotation_retries_ = 0;
+        mac_rotation_ready_time_ = 0;
         // Restart advertising with old MAC
         start_advertising();
       } else {
@@ -1372,6 +1388,7 @@ void IRKCaptureComponent::loop() {
         mac_rotation_state_ = MacRotationState::IDLE;
       }
       mac_rotation_retries_ = 0;
+      mac_rotation_ready_time_ = 0;
       // Restart advertising with old MAC
       start_advertising();
     }
