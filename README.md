@@ -179,11 +179,11 @@ After flashing and connecting to Home Assistant, the following entities will be 
    - **Option 2:** View the "IRK" text sensor in Home Assistant (on your IRK Capture device page)
    - The IRK will be in format: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 
-6. **Forget the pairing (recommended):**
+6. **Forget the pairing (important):**
    - After successfully capturing the IRK, go to your device's Bluetooth settings
    - Forget or unpair the "IRK Capture" device (or whatever name you used)
    - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
-   - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' between each capture to avoid potential issues
+   - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' (or full power cycle of your ESP32) between each capture to avoid potential issues
 
 ### Installing Private BLE Device Integration
 
@@ -239,6 +239,17 @@ This IRK capture component has been successfully tested with:
 - Ensure you're using ESPHome 2024.x or newer (tested with ESPHome 2025.12)
 - Verify your `esp32_variant` and `esp32_board` substitutions match your hardware
 - Check that all required secrets are defined in `secrets.yaml`
+
+### Android Device Cannot Find IRK Capture
+
+Android's system Bluetooth settings may apply aggressive filtering and the IRK Capture device may not be listed as a pairing option. If this happens, try:
+
+1. Install **nRF Connect** from the Play Store (by Nordic Semiconductor)
+2. Open the app and tap "Scan"
+3. Look for "IRK Capture" in the device list (or your customized name)
+4. Tap on it to connect
+5. The pairing dialog should appear, allowing the bonding process to complete
+6. Look for the captured IRK in the ESP32 logs or the ESPHome device page
 
 ## Credits
 
