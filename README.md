@@ -220,7 +220,7 @@ This IRK capture component has been successfully tested with:
 ### Device Not Appearing in Bluetooth Settings
 
 - **Turn off Bluetooth** on your device
-- Press the **"Restart Device"** button to reset the ESP32's BLE identity information
+- Press the **"Restart Device"** button to reset the ESP32's BLE stack
 - Ensure the **"BLE Advertising"** switch is ON
 - Turn your device's Bluetooth back on and connect to the ESP32
 
