@@ -40,7 +40,7 @@ This IRK capture component turns your ESP32 into a BLE peripheral that **adverti
 
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESP-IDF framework** (required - this component does NOT support Arduino framework)
-- **ESPHome** 2024.x or newer
+- **ESPHome** 2024.x or newer - Tested with 2025.12
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
 - **ESPHome Device Builder** (Optional, but makes managing ESPHome devices in Home Assistant easier)
 
