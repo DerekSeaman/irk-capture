@@ -269,8 +269,8 @@ irk_capture:
   id: irk
   ble_name: "IRK Capture"
   start_on_boot: true
-  continuous_mode: false  # Optional
-  max_captures: 1         # Optional
+  continuous_mode: true   # Optional (default: true)
+  max_captures: 10        # Optional (default: 10)
 ```
 
 ### Step 2: Clean Build (Recommended)

@@ -92,25 +92,24 @@ irk_capture:
   id: irk
   ble_name: "IRK Capture"  # Max 12 characters
   start_on_boot: true
-  continuous_mode: false  # Optional: Keep advertising after IRK capture (default: false)
-  max_captures: 1         # Optional: Maximum IRKs to capture before auto-stop (default: 1, 0=unlimited)
+  continuous_mode: true   # Optional: Keep advertising after IRK capture (default: true)
+  max_captures: 10        # Optional: Maximum IRKs to capture before auto-stop (default: 10, 0=unlimited)
 ```
 
 **Configuration Options:**
 
-- **`continuous_mode`** (default: `false`):
-  - `false`: Stops advertising after capturing one IRK (single-device mode)
+- **`continuous_mode`** (default: `true`):
   - `true`: Keeps advertising after IRK capture to allow multiple device pairing
+  - `false`: Stops advertising after capturing one IRK (single-device mode)
 
-- **`max_captures`** (default: `1`):
-  - `1`: Capture one IRK and stop (recommended for most users)
-  - `2-255`: Capture multiple IRKs before auto-stopping
+- **`max_captures`** (default: `10`):
+  - `1-255`: Capture up to N IRKs before auto-stopping
   - `0`: Unlimited captures (not recommended for production)
 
 **Important Notes:**
 
 - If `continuous_mode: false` and `max_captures > 1`, ESPHome will reject the configuration (conflict)
-- For multi-device capture, set `continuous_mode: true` and `max_captures` to your desired limit
+- For single-device capture, set `continuous_mode: false` and `max_captures: 1`
 - After capturing multiple IRKs, restart the device between captures to avoid pairing conflicts
 
 4. **Secrets File** (managed by ESPHome device builder):

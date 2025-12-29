@@ -173,8 +173,8 @@ class IRKCaptureComponent : public Component {
   std::string ble_name_ { "IRK Capture" };
   std::string manufacturer_name_ { "ESPresense" };  // BLE Device Info manufacturer
   bool start_on_boot_ { true };
-  bool continuous_mode_ { false };  // Keep advertising after captures
-  uint8_t max_captures_ { 1 };      // Max captures (0=unlimited)
+  bool continuous_mode_ { true };  // Keep advertising after captures
+  uint8_t max_captures_ { 10 };    // Max captures (0=unlimited)
   text_sensor::TextSensor* irk_sensor_ { nullptr };
   text_sensor::TextSensor* address_sensor_ { nullptr };
   IRKCaptureSwitch* advertising_switch_ { nullptr };

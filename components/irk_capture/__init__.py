@@ -30,8 +30,8 @@ def validate_ble_name(value):
 
 def validate_continuous_mode_config(config):
     """Validate continuous_mode and max_captures interaction"""
-    continuous_mode = config.get(CONF_CONTINUOUS_MODE, False)
-    max_captures = config.get(CONF_MAX_CAPTURES, 1)
+    continuous_mode = config.get(CONF_CONTINUOUS_MODE, True)
+    max_captures = config.get(CONF_MAX_CAPTURES, 10)
 
     # Configuration conflict: continuous_mode=false with max_captures>1
     if not continuous_mode and max_captures > 1:
