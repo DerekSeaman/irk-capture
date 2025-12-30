@@ -1641,28 +1641,29 @@ void IRKCaptureComponent::start_advertising() {
     return;
   }
 
-  // 1. Change the Device Name to something that looks like an LG TV
-  // Samsung watches often prioritize names starting with brand keywords
-  ble_svc_gap_device_name_set("LG webOS TV");
+  // THREAD-SAFE: Copy BLE name to local variable before using it
+  // Prevents data race with update_ble_name() which can reallocate ble_name_
+  std::string name_copy;
+  {
+    MutexGuard lock(state_mutex_);
+    name_copy = ble_name_;
+  }  // Lock released - safe to call BLE stack functions
 
-  struct ble_hs_adv_fields fields;
-  memset(&fields, 0, sizeof(fields));
+  ble_hs_adv_fields fields {};
+  fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+  fields.name = (uint8_t*) name_copy.c_str();
+  fields.name_len = (uint8_t) name_copy.size();
+  fields.name_is_complete = 1;
 
-  // 2. Set Appearance to "Television" (0x0140)
-  fields.appearance = 0x0140;
+  // Appearance: Heart Rate Sensor
+  fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
   fields.appearance_is_present = 1;
 
-  // 3. Set Flags (General Discoverable Mode)
-  fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-
-  // 4. Use the "Human Interface Device" (0x1812) or "Battery" (0x180F) service
-  // Most TVs advertise HID or Battery for their remote interactions
-  static ble_uuid16_t tv_uuids[] = {
-    BLE_UUID16_INIT(0x180F),  // Battery Service
-    BLE_UUID16_INIT(0x180A)   // Device Info
-  };
-  fields.uuids16 = tv_uuids;
-  fields.num_uuids16 = 2;
+  // Advertise ONLY Heart Rate service for Samsung S24/S25 compatibility
+  // Battery and Device Info services remain available in GATT server after connection
+  static ble_uuid16_t hr_uuid = BLE_UUID16_INIT(UUID_SVC_HEART_RATE);
+  fields.uuids16 = &hr_uuid;
+  fields.num_uuids16 = 1;  // Single service = clean "fitness device" profile
   fields.uuids16_is_complete = 1;
 
   int rc = ble_gap_adv_set_fields(&fields);
