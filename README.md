@@ -24,9 +24,14 @@ For a complete guide for room-level presence detection using Bermuda BLE Trilate
 
 ## What This Package Does
 
-This IRK capture component turns your ESP32 into a BLE peripheral that **advertises as a heart rate monitor**. When your iOS or Android device pairs with it:
+This IRK capture component turns your ESP32 into a BLE peripheral that can emulate different device types to capture IRKs from various platforms. It supports two BLE profiles:
 
-1. The ESP32 presents itself as a standard Bluetooth LE heart rate sensor
+- **Heart Sensor Profile** (for Apple devices): Advertises as a heart rate monitor, which Apple devices readily pair with
+- **Keyboard Profile** (for Android devices): Advertises as a "Logitech K380" keyboard, which bypasses Samsung's aggressive BLE filtering
+
+When your iOS or Android device pairs with the ESP32:
+
+1. The ESP32 presents itself as the selected BLE device type (heart rate sensor or keyboard)
 2. Your device initiates a secure pairing process
 3. During pairing, the device shares its IRK with the ESP32
 4. The IRK is captured and exposed as a Home Assistant text sensor
