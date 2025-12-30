@@ -123,8 +123,9 @@ Key flags:
 -    connected_: Peer is currently connected
 -    enc_ready_: Encryption/pairing completed successfully
 -    irk_gave_up_: Exceeded 45s timeout without capturing IRK
--    suppress_next_adv_: Prevent immediate re-advertising after successful IRK capture
--    sec_retry_done_: Already attempted one security retry (2s after connect, before ENC)
+-    suppress_next_adv_: Prevent immediate re-advertising after successful IRK
+capture
+-    sec_retry_done_: Already attempted one security retry after ENC failure
 */
 
 // Timing configuration (all values in ms)
@@ -177,12 +178,12 @@ static constexpr uint16_t APPEARANCE_HEART_RATE_SENSOR = 0x0340;
 /*
 Connect → Initiate security
 ENC_CHANGE → immediate IRK read from store; if available: publish & disconnect
-(tested working behavior). If ENC fails (status != 0), clear all bonds and terminate
-connection (forces fresh pairing on reconnect). DISCONNECT → immediate store read;
-schedule delayed read at +800ms; restart advertising. While connected (post ENC) →
-poll every 1s starting at +1s, up to 45s, then give up. Disconnect when IRK captured.
-All address reporting uses the peer identity address; IRK hex is reversed for parity
-with Arduino output.
+(tested working behavior). If ENC fails (status != 0), delete that peer's keys and retry
+security once (self-heal). DISCONNECT → immediate store read; schedule delayed
+read at +800ms; restart advertising While connected (post ENC) → poll every 1s
+starting at +2s, up to 45s, then disconnect when IRK captured All address
+reporting uses the peer identity address; IRK hex is reversed for parity with
+Arduino output.
 
 Why this lifecycle: Maintains compatibility (immediate disconnect after capture)
 while adding robustness for timing variations across different BLE peer
@@ -284,7 +285,12 @@ static bool is_encrypted(uint16_t conn_handle) {
 RAII wrapper for FreeRTOS mutex to ensure exception-safe locking.
 Used to protect shared state accessed by both NimBLE task and ESPHome main task.
 
-Protected state: See state_mutex_ comment in irk_capture.h for the complete list.
+Protected state:
+- timers_.last_peer_id / timers_.enc_peer_id (ble_addr_t multi-word structs)
+- timers_.post_disc_due_ms / timers_.late_enc_due_ms (timer targets)
+- conn_handle_ (connection state)
+- advertising_ (advertising state)
+- pairing_start_time_ (timeout tracking)
 
 CRITICAL PERFORMANCE OPTIMIZATION:
 Always minimize mutex hold time by copying data out before releasing the lock,
@@ -753,7 +759,7 @@ static int read_peer_bond_by_conn(uint16_t conn_handle, struct ble_store_value_s
 std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
   // Validate and sanitize BLE name for runtime changes from Home Assistant
   std::string sanitized;
-  sanitized.reserve(12);  // 12 chars max for clean BLE advertising profile
+  sanitized.reserve(12);  // 12 chars for Samsung S24/S25 compatibility with single-UUID advertising
 
   // Check for empty string
   if (name.empty()) {
@@ -772,9 +778,9 @@ std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
                (c >= 32 && c <= 126) ? c : '?');
     }
 
-    // Enforce 12-byte limit for clean BLE advertising profile
+    // Enforce 12-byte limit for Samsung S24/S25 compatibility (clean profile with single UUID)
     if (sanitized.length() >= 12) {
-      ESP_LOGW(TAG, "BLE name truncated to 12 bytes");
+      ESP_LOGW(TAG, "BLE name truncated to 12 bytes (Samsung compatibility)");
       break;
     }
   }
@@ -1649,15 +1655,15 @@ void IRKCaptureComponent::start_advertising() {
   fields.name_len = (uint8_t) name_copy.size();
   fields.name_is_complete = 1;
 
-  // CHANGE: Set appearance to Unknown (0) so the Watch lists it as a generic device
-  fields.appearance = 0;
+  // Appearance: Heart Rate Sensor
+  fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
   fields.appearance_is_present = 1;
 
-  // CHANGE: Advertise the Device Info service instead of Heart Rate
-  // This forces the Watch to treat it as a generic gadget, not a hidden sensor
-  static ble_uuid16_t info_uuid = BLE_UUID16_INIT(UUID_SVC_DEVICE_INFO);
-  fields.uuids16 = &info_uuid;
-  fields.num_uuids16 = 1;
+  // Advertise ONLY Heart Rate service for Samsung S24/S25 compatibility
+  // Battery and Device Info services remain available in GATT server after connection
+  static ble_uuid16_t hr_uuid = BLE_UUID16_INIT(UUID_SVC_HEART_RATE);
+  fields.uuids16 = &hr_uuid;
+  fields.num_uuids16 = 1;  // Single service = clean "fitness device" profile
   fields.uuids16_is_complete = 1;
 
   int rc = ble_gap_adv_set_fields(&fields);
@@ -1670,13 +1676,13 @@ void IRKCaptureComponent::start_advertising() {
   advp.conn_mode = BLE_GAP_CONN_MODE_UND;
   advp.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
-  // Faster advertising interval for quicker discovery in Bluetooth settings
+  // Faster advertising interval for quicker discovery in Samsung/Android Settings UI
   // Units are 0.625ms: 0x00A0 = 100ms, 0x00F0 = 150ms (default NimBLE is ~1.28s)
   advp.itvl_min = 0x00A0;
   advp.itvl_max = 0x00F0;
 
   // Use explicit RANDOM address type (our static random address set in setup_ble/refresh_mac)
-  // Avoids BLE privacy filters that may hide RPA addresses as tracking risks
+  // Avoids Samsung One UI 7 "Maximum Restrictions" filtering RPA addresses as tracking risks
   constexpr uint8_t own_addr_type = BLE_OWN_ADDR_RANDOM;
 
   rc = ble_gap_adv_start(own_addr_type, nullptr, BLE_HS_FOREVER, &advp,
@@ -1880,6 +1886,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
           suppress_next_adv_ = true;
         }
         // Disconnect since we already have what we need
+        // THREAD-SAFE: Use function parameter (already set under mutex at line 1771)
         ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         return;  // Don't initiate security, we're done
       } else {
@@ -1899,6 +1906,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   }
 
   // Proactively initiate pairing; peer should show pairing dialog now
+  // THREAD-SAFE: Use function parameter (already set under mutex at line 1771)
   int rc = ble_gap_security_initiate(conn_handle);
   if (rc == BLE_HS_EBUSY) {
     // Peer is already initiating security - skip our retry to avoid conflicts
