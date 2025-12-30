@@ -1677,9 +1677,9 @@ void IRKCaptureComponent::start_advertising() {
   const char* profile_name;
 
   if (current_profile == BLEProfile::KEYBOARD) {
-    // Keyboard profile: Logitech K380
+    // Keyboard profile: Advertise as generic "Accessory"
     profile_name = "Keyboard";
-    ble_svc_gap_device_name_set("Logitech K380");
+    ble_svc_gap_device_name_set("Accessory");
 
     fields.flags = BLE_HS_ADV_F_DISC_GEN;
     fields.appearance = 0x03C1;  // Keyboard
@@ -1856,17 +1856,32 @@ void IRKCaptureComponent::update_ble_name(const std::string& name) {
 
 void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
   BLEProfile old_profile;
+  std::string current_name;
   {
     MutexGuard lock(state_mutex_);
     old_profile = ble_profile_;
     ble_profile_ = profile;
+    current_name = ble_name_;
   }
 
   const char* profile_name = (profile == BLEProfile::HEART_SENSOR) ? "Heart Sensor" : "Keyboard";
   ESP_LOGI(TAG, "BLE profile changed to: %s", profile_name);
 
-  // Only trigger MAC rotation if profile actually changed
+  // Only trigger changes if profile actually changed
   if (old_profile != profile) {
+    // Update the displayed BLE name based on profile
+    if (profile == BLEProfile::KEYBOARD) {
+      // Keyboard profile uses fixed name "Accessory"
+      if (ble_name_text_) {
+        ble_name_text_->publish_state("Accessory");
+      }
+    } else {
+      // Heart Sensor profile restores the configured name
+      if (ble_name_text_) {
+        ble_name_text_->publish_state(current_name);
+      }
+    }
+
     // Generate new MAC and restart advertising with new profile
     this->refresh_mac();
   }
