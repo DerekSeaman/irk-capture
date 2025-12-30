@@ -1677,9 +1677,9 @@ void IRKCaptureComponent::start_advertising() {
   const char* profile_name;
 
   if (current_profile == BLEProfile::KEYBOARD) {
-    // Keyboard profile: Advertise as generic "Accessory"
+    // Keyboard profile: Logitech K380
     profile_name = "Keyboard";
-    ble_svc_gap_device_name_set("Accessory");
+    ble_svc_gap_device_name_set("Logitech K380");
 
     fields.flags = BLE_HS_ADV_F_DISC_GEN;
     fields.appearance = 0x03C1;  // Keyboard
@@ -1871,9 +1871,9 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
   if (old_profile != profile) {
     // Update the displayed BLE name based on profile
     if (profile == BLEProfile::KEYBOARD) {
-      // Keyboard profile uses fixed name "Accessory"
+      // Keyboard profile uses fixed name "Logitech K380"
       if (ble_name_text_) {
-        ble_name_text_->publish_state("Accessory");
+        ble_name_text_->publish_state("Logitech K380");
       }
     } else {
       // Heart Sensor profile restores the configured name
