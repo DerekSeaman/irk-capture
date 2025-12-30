@@ -1650,7 +1650,6 @@ void IRKCaptureComponent::start_advertising() {
   // 2. IMPORTANT: Change Flags to indicate it's a "Simultaneous" device
   // This tells the Watch the device is capable of more than just simple BLE
   fields.flags = BLE_HS_ADV_F_DISC_GEN;
-  fields.flags_is_present = 1;
 
   // 3. Set Appearance to Keyboard (0x03C1)
   fields.appearance = 0x03C1;
