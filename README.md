@@ -234,7 +234,7 @@ Samsung One UI 7 (Galaxy S25, S24, etc.) aggressively filters BLE devices in Blu
 1. **Enable Developer Options**: Settings → About Phone → Software Information → Tap "Build Number" 7 times
 2. **Enable BLE visibility**: Settings → Developer Options → Scroll down and enable **"Show unsupported Bluetooth LE devices in Bluetooth settings"**
 3. Return to Bluetooth settings and scan again — the ESP32 device should now appear
-4. Tap on the 'IRK Capture' device and tap pair. The IRK should appear in the ESP32 logs and ESPHome device page in Home Assistant.
+4. Tap on the 'IRK Capture' device and tap pair. The IRK should appear in the ESP32 logs and ESPHome device page in Home Assistant
 
 ### Android device still not visible after Developer Options fix
 
@@ -251,10 +251,10 @@ If the Developer Options fix doesn't work, or you're on a non-Samsung Android de
 
 - After pairing, **forget/unpair the BLE device** from your device's Bluetooth settings
 - Turn Bluetooth OFF on your device
-- Press the **"Restart Device"** button on the ESPHome device page
+- Modify the BLE Device Name on the ESPHome device page
 - Turn Bluetooth ON on your device
 - Try pairing again from scratch
-- Power cycle your phone/watch/tablet, restart your ESP32, and try pairing again
+- If that still fails, power cycle your phone/watch/tablet, power cycle your ESP32, change the BLE Device Name, and try pairing again
 
 ### ESPHome Build Fails
 
@@ -286,6 +286,39 @@ If the Developer Options fix doesn't work, or you're on a non-Samsung Android de
   - **Security/Pairing** - Bond security flags, peer identity resolution, security retry status
   - **Timer Operations** - Post-disconnect and late encryption timer checks
   - **Heart Rate Notifications** - Notify return codes
+
+### ESPHome Log Sample
+
+Below is a sample log showing a successful IRK capture:
+
+```text
+[16:15:01.812][D][switch:065]: 'BLE Advertising': Sending state ON
+[16:15:01.814][D][irk_capture:1690]: Advertising as 'IRK Cap' (Heart Rate Sensor)
+[16:15:01.861][D][sensor:135]: 'Wi‑Fi RSSI': Sending state -30.00000 dBm with 0 decimals of accuracy
+[16:15:16.669][I][irk_capture:866][nimble_host]: Connection established successfully
+[16:15:16.669][I][irk_capture:1832][nimble_host]: Conn start: handle=0 enc_ready=0 adv=1
+[16:15:16.669][I][irk_capture:1835][nimble_host]: Connected; handle=0, initiating security
+[16:15:16.669][I][irk_capture:362][nimble_host]: sec: enc=0 bonded=0 auth=0 key_size=0
+[16:15:16.669][I][irk_capture:366][nimble_host]: peer ota=4A:1B:2C:3D:4E:5F type=1
+[16:15:16.669][I][irk_capture:368][nimble_host]: peer id =A1:B2:C3:D4:E5:F6 type=0
+[16:15:16.669][D][irk_capture:372][nimble_host]: conn params: interval=24 latency=0 supervision_timeout=500
+[16:15:16.672][D][irk_capture:376][nimble_host]: role=slave our_ota=C0:FF:EE:12:34:56
+[16:15:16.685][D][irk_capture:1856][nimble_host]: Peer unbonded and no cached bond (ENOENT) - will pair fresh
+[16:15:18.724][I][irk_capture:2105]: Retrying security initiate after 2050 ms
+[16:15:18.727][W][irk_capture:2107]: Retry security initiate rc=2
+[16:15:19.121][D][irk_capture:1195][nimble_host]: Peer identity resolved using IRK
+[16:15:19.121][I][irk_capture:988][nimble_host]: ENC_CHANGE status=0 (0x00)
+[16:15:19.121][I][irk_capture:1045][nimble_host]: Encryption established; attempting immediate IRK capture
+[16:15:19.121][I][irk_capture:522][nimble_host]: Re-publishing IRK (capture #2/5)
+[16:15:19.121][I][irk_capture:425][nimble_host]:
+[16:15:19.121][I][irk_capture:428][nimble_host]: *** IRK CAPTURED *** (ENC_CHANGE)
+[16:15:19.121][I][irk_capture:607][nimble_host]: Identity Address: A1:B2:C3:D4:E5:F6
+[16:15:19.121][I][irk_capture:608][nimble_host]: IRK: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
+[16:15:19.121][I][irk_capture:609][nimble_host]: Total captures this session: 2
+[16:15:19.121][I][irk_capture:425][nimble_host]:
+[16:15:19.211][I][irk_capture:893][nimble_host]: Disconnect reason=534 (0x216)
+[16:15:19.211][I][irk_capture:1932][nimble_host]: Disconnected
+```
 
 ## Credits
 
