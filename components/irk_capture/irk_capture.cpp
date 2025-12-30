@@ -1676,17 +1676,32 @@ void IRKCaptureComponent::start_advertising() {
 
   const char* profile_name;
 
+  // Scan response fields (used for Keyboard profile to fit name in separate packet)
+  struct ble_hs_adv_fields rsp_fields;
+  memset(&rsp_fields, 0, sizeof(rsp_fields));
+  bool use_scan_response = false;
+
   if (current_profile == BLEProfile::KEYBOARD) {
     // Keyboard profile: Logitech K380
+    // Move name to scan response to stay within 31-byte advertising packet limit
     profile_name = "Keyboard";
-    ble_svc_gap_device_name_set("Logitech K380");
+    static const char* keyboard_name = "Logitech K380";
+    ble_svc_gap_device_name_set(keyboard_name);
 
-    fields.flags = BLE_HS_ADV_F_DISC_GEN;
+    // Advertising data: flags, appearance, HID service UUID (keep small)
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.appearance = 0x03C1;  // Keyboard
     fields.appearance_is_present = 1;
     fields.uuids16 = &hid_uuid;
     fields.num_uuids16 = 1;
     fields.uuids16_is_complete = 1;
+    // Do NOT put name in advertising packet - put it in scan response
+
+    // Scan response data: device name (separate 31-byte budget)
+    rsp_fields.name = (uint8_t*) keyboard_name;
+    rsp_fields.name_len = strlen(keyboard_name);
+    rsp_fields.name_is_complete = 1;
+    use_scan_response = true;
   } else {
     // Heart Sensor profile (default): Use configured BLE name
     profile_name = "Heart Sensor";
@@ -1707,6 +1722,15 @@ void IRKCaptureComponent::start_advertising() {
   if (rc != 0) {
     ESP_LOGE(TAG, "ble_gap_adv_set_fields rc=%d", rc);
     return;
+  }
+
+  // Set scan response data if needed (Keyboard profile)
+  if (use_scan_response) {
+    rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
+    if (rc != 0) {
+      ESP_LOGE(TAG, "ble_gap_adv_rsp_set_fields rc=%d", rc);
+      return;
+    }
   }
 
   ble_gap_adv_params advp {};
