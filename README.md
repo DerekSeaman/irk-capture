@@ -253,7 +253,7 @@ If the Developer Options fix doesn't work, or you're on a non-Samsung Android de
 - Turn Bluetooth OFF on your device
 - Modify the BLE Device Name on the ESPHome device page
 - Turn Bluetooth ON on your device
-- Try pairing again from scratch
+- Try pairing to the ESP32 again
 - If that still fails, power cycle your phone/watch/tablet, power cycle your ESP32, change the BLE Device Name, and try pairing again
 
 ### ESPHome Build Fails
