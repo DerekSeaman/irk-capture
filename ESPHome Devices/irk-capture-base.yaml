@@ -79,6 +79,8 @@ irk_capture:
   id: irk
   ble_name: ${ble_name}
   start_on_boot: true
+  continuous_mode: true
+  max_captures: 10
 
 # Text sensors for Wi-Fi info and IRK capture
 text_sensor:
@@ -98,6 +100,9 @@ text_sensor:
     last_address:
       name: "Device MAC"
       id: last_addr
+    effective_mac:
+      name: "Effective MAC"
+      id: effective_mac
 
 # BLE advertising on/off (drives start/stop advertising)
 switch:
@@ -126,6 +131,14 @@ text:
       id: ble_name_input
       name: "BLE Device Name"
       mode: text
+
+# BLE profile selection dropdown
+select:
+  - platform: irk_capture
+    irk_capture_id: irk
+    ble_profile:
+      id: ble_profile_select
+      name: "BLE Profile"
 
 # Diagnostics and basics
 sensor:

@@ -7,3 +7,4 @@ dependencies:
   - switch
   - button
   - text
+  - select

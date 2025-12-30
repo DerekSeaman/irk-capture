@@ -4,7 +4,7 @@ from esphome.const import CONF_ID
 from esphome.components import esp32
 
 DEPENDENCIES = ["esp32"]
-AUTO_LOAD = ["text_sensor", "switch", "button", "text"]
+AUTO_LOAD = ["text_sensor", "switch", "button", "text", "select"]
 CODEOWNERS = ["@esphome"]
 
 CONF_IRK_CAPTURE_ID = "irk_capture_id"

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/components/button/button.h"
+#include "esphome/components/select/select.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/text/text.h"
 #include "esphome/components/text_sensor/text_sensor.h"
@@ -26,6 +27,25 @@ namespace esphome {
 namespace irk_capture {
 
 class IRKCaptureComponent;
+
+// BLE advertising profile options
+enum class BLEProfile : uint8_t {
+  HEART_SENSOR = 0,  // Heart Rate Sensor (default)
+  KEYBOARD = 1,      // Logitech K380 Keyboard
+};
+
+// Select for BLE profile
+class IRKCaptureSelect : public select::Select, public Component {
+ public:
+  void set_parent(IRKCaptureComponent* parent) {
+    parent_ = parent;
+  }
+  void control(const std::string& value) override;
+  void dump_config() override;
+
+ protected:
+  IRKCaptureComponent* parent_ { nullptr };
+};
 
 // Text input for BLE name
 class IRKCaptureText : public text::Text, public Component {
@@ -96,6 +116,7 @@ class IRKCaptureComponent : public Component {
   friend class IRKCaptureText;
   friend class IRKCaptureSwitch;
   friend class IRKCaptureButton;
+  friend class IRKCaptureSelect;
 
   // Friend functions for GAP event handlers and helpers (access private members)
   friend int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -134,6 +155,9 @@ class IRKCaptureComponent : public Component {
   void set_address_sensor(text_sensor::TextSensor* sensor) {
     address_sensor_ = sensor;
   }
+  void set_effective_mac_sensor(text_sensor::TextSensor* sensor) {
+    effective_mac_sensor_ = sensor;
+  }
   void set_advertising_switch(IRKCaptureSwitch* sw) {
     advertising_switch_ = sw;
     if (sw) sw->set_parent(this);
@@ -145,6 +169,16 @@ class IRKCaptureComponent : public Component {
   void set_ble_name_text(IRKCaptureText* txt) {
     ble_name_text_ = txt;
     if (txt) txt->set_parent(this);
+  }
+  void set_ble_profile_select(IRKCaptureSelect* sel) {
+    ble_profile_select_ = sel;
+    if (sel) sel->set_parent(this);
+  }
+
+  // Profile management
+  void set_ble_profile(BLEProfile profile);
+  BLEProfile get_ble_profile() {
+    return ble_profile_;
   }
 
   // Public actions
@@ -167,6 +201,7 @@ class IRKCaptureComponent : public Component {
 
   // Sensor publishing helper
   void publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str);
+  void publish_effective_mac();
 
  protected:
   // Configuration/state
@@ -177,9 +212,12 @@ class IRKCaptureComponent : public Component {
   uint8_t max_captures_ { 10 };    // Max captures (0=unlimited)
   text_sensor::TextSensor* irk_sensor_ { nullptr };
   text_sensor::TextSensor* address_sensor_ { nullptr };
+  text_sensor::TextSensor* effective_mac_sensor_ { nullptr };
   IRKCaptureSwitch* advertising_switch_ { nullptr };
   IRKCaptureButton* new_mac_button_ { nullptr };
   IRKCaptureText* ble_name_text_ { nullptr };
+  IRKCaptureSelect* ble_profile_select_ { nullptr };
+  BLEProfile ble_profile_ { BLEProfile::HEART_SENSOR };  // Default to Heart Rate Sensor
 
   // Connection state
   uint16_t conn_handle_ { BLE_HS_CONN_HANDLE_NONE };

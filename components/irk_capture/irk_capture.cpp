@@ -839,6 +839,19 @@ void IRKCaptureButton::dump_config() {
   ESP_LOGCONFIG(TAG, "IRK Capture New MAC Button");
 }
 
+void IRKCaptureSelect::control(const std::string& value) {
+  if (value == "Heart Sensor") {
+    parent_->set_ble_profile(BLEProfile::HEART_SENSOR);
+  } else if (value == "Keyboard") {
+    parent_->set_ble_profile(BLEProfile::KEYBOARD);
+  }
+  publish_state(value);
+}
+
+void IRKCaptureSelect::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture BLE Profile Select");
+}
+
 void IRKCaptureTextSensor::dump_config() {
   ESP_LOGCONFIG(TAG, "IRK Capture Text Sensor");
 }
@@ -1263,6 +1276,10 @@ void IRKCaptureComponent::setup() {
   if (ble_name_text_) {
     ble_name_text_->publish_state(ble_name_);
   }
+  if (ble_profile_select_) {
+    // Initialize select to default profile (Heart Sensor)
+    ble_profile_select_->publish_state("Heart Sensor");
+  }
 }
 
 void IRKCaptureComponent::dump_config() {
@@ -1641,25 +1658,50 @@ void IRKCaptureComponent::start_advertising() {
     return;
   }
 
-  // 1. Change name to something generic and unsuspicious
-  ble_svc_gap_device_name_set("Logitech K380");
+  // Get current profile (thread-safe)
+  BLEProfile current_profile;
+  std::string name_copy;
+  {
+    MutexGuard lock(state_mutex_);
+    current_profile = ble_profile_;
+    name_copy = ble_name_;
+  }
 
   struct ble_hs_adv_fields fields;
   memset(&fields, 0, sizeof(fields));
 
-  // 2. IMPORTANT: Change Flags to indicate it's a "Simultaneous" device
-  // This tells the Watch the device is capable of more than just simple BLE
-  fields.flags = BLE_HS_ADV_F_DISC_GEN;
-
-  // 3. Set Appearance to Keyboard (0x03C1)
-  fields.appearance = 0x03C1;
-  fields.appearance_is_present = 1;
-
-  // 4. Advertise the HID Service (0x1812)
+  // Static UUIDs for each profile (must remain valid during advertising)
+  static ble_uuid16_t hr_uuid = BLE_UUID16_INIT(UUID_SVC_HEART_RATE);
   static ble_uuid16_t hid_uuid = BLE_UUID16_INIT(0x1812);
-  fields.uuids16 = &hid_uuid;
-  fields.num_uuids16 = 1;
-  fields.uuids16_is_complete = 1;
+
+  const char* profile_name;
+
+  if (current_profile == BLEProfile::KEYBOARD) {
+    // Keyboard profile: Logitech K380
+    profile_name = "Keyboard";
+    ble_svc_gap_device_name_set("Logitech K380");
+
+    fields.flags = BLE_HS_ADV_F_DISC_GEN;
+    fields.appearance = 0x03C1;  // Keyboard
+    fields.appearance_is_present = 1;
+    fields.uuids16 = &hid_uuid;
+    fields.num_uuids16 = 1;
+    fields.uuids16_is_complete = 1;
+  } else {
+    // Heart Sensor profile (default): Use configured BLE name
+    profile_name = "Heart Sensor";
+    ble_svc_gap_device_name_set(name_copy.c_str());
+
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.name = (uint8_t*) name_copy.c_str();
+    fields.name_len = (uint8_t) name_copy.size();
+    fields.name_is_complete = 1;
+    fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
+    fields.appearance_is_present = 1;
+    fields.uuids16 = &hr_uuid;
+    fields.num_uuids16 = 1;
+    fields.uuids16_is_complete = 1;
+  }
 
   int rc = ble_gap_adv_set_fields(&fields);
   if (rc != 0) {
@@ -1696,7 +1738,10 @@ void IRKCaptureComponent::start_advertising() {
   } else {
     // UI update outside lock (publish_state is internally thread-safe)
     if (advertising_switch_) advertising_switch_->publish_state(true);
-    ESP_LOGD(TAG, "Advertising as '%s' (Heart Rate Sensor)", ble_name_.c_str());
+    ESP_LOGD(TAG, "Advertising with profile: %s", profile_name);
+
+    // Publish the effective MAC address to the sensor
+    publish_effective_mac();
   }
 }
 
@@ -1807,6 +1852,24 @@ void IRKCaptureComponent::update_ble_name(const std::string& name) {
   // Sequence: refresh_mac() → on_disconnect() → loop() → start_advertising()
   // The advertising will restart automatically with the new name after MAC rotation completes
   this->refresh_mac();
+}
+
+void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
+  BLEProfile old_profile;
+  {
+    MutexGuard lock(state_mutex_);
+    old_profile = ble_profile_;
+    ble_profile_ = profile;
+  }
+
+  const char* profile_name = (profile == BLEProfile::HEART_SENSOR) ? "Heart Sensor" : "Keyboard";
+  ESP_LOGI(TAG, "BLE profile changed to: %s", profile_name);
+
+  // Only trigger MAC rotation if profile actually changed
+  if (old_profile != profile) {
+    // Generate new MAC and restart advertising with new profile
+    this->refresh_mac();
+  }
 }
 
 //======================== GAP helpers ========================
@@ -2213,6 +2276,19 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
 void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str) {
   if (irk_sensor_) irk_sensor_->publish_state(irk_hex);
   if (address_sensor_) address_sensor_->publish_state(addr_str);
+}
+
+void IRKCaptureComponent::publish_effective_mac() {
+  if (!effective_mac_sensor_) return;
+
+  uint8_t mac[6];
+  if (get_own_addr(mac, nullptr)) {
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X", mac[5], mac[4], mac[3],
+             mac[2], mac[1], mac[0]);
+    effective_mac_sensor_->publish_state(mac_str);
+    ESP_LOGD(TAG, "Published effective MAC: %s", mac_str);
+  }
 }
 
 }  // namespace irk_capture
