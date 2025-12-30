@@ -145,8 +145,10 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | :--- | :--- | :--- |
 | **IRK** | Text Sensor | The captured IRK in format `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
+| **Effective MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
 | **BLE Advertising** | Switch | Turn Bluetooth advertising on/off (starts ON by default) |
 | **BLE Device Name** | Text Input | Change the advertised Bluetooth name (default: "IRK Capture") |
+| **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple) or "Keyboard" (Android) |
 | **Generate New MAC** | Button | Generate a new random MAC address for the ESP32 |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
@@ -170,14 +172,22 @@ This IRK capture component has been successfully tested with:
 
 ## Usage Instructions
 
-### Capturing an IRK
+### Getting Started
 
 1. **Enable BLE advertising:**
    - In Home Assistant, open ESPHome and find your IRK Capture device
    - Power on your ESP32 board with the IRK Capture build
    - Optional, but recommended, open the real time logs for your ESP32 device
 
-2. **Open Bluetooth settings on your device**
+2. **Select the appropriate BLE Profile:**
+   - For **Apple devices** (iPhone, iPad, Apple Watch): Select **"Heart Sensor"** profile
+   - For **Android devices** (Samsung, Pixel, etc.): Select **"Keyboard"** profile
+
+### Capturing an IRK from Apple Devices
+
+1. **Ensure the "Heart Sensor" profile is selected** in the BLE Profile dropdown on the ESPHome device page
+
+2. **Open Bluetooth settings** on your Apple device
 
 3. **Look for the advertised device:**
    - Default name: "IRK Capture" (or whatever you set as `ble_name`)
@@ -196,6 +206,32 @@ This IRK capture component has been successfully tested with:
 6. **Forget the pairing (important):**
    - After successfully capturing the IRK, go to your device's Bluetooth settings
    - Forget or unpair the "IRK Capture" device (or whatever name you used)
+   - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
+   - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' (or full power cycle of your ESP32) between each capture to avoid potential issues
+
+### Capturing an IRK from Android Devices
+
+1. **Select the "Keyboard" profile** in the BLE Profile dropdown on the ESPHome device page
+   - The BLE Device Name will automatically change to "Logitech K380"
+   - A new MAC address will be generated automatically
+
+2. **Open Bluetooth settings** on your Android device
+
+3. **Look for "Logitech K380"** under Available Devices
+   - If you don't see it, see the Troubleshooting section for Samsung One UI 7 devices
+
+4. **Tap on "Logitech K380" to pair:**
+   - If prompted, tap "Pair"
+   - No PIN is required for this pairing
+
+5. **View the captured IRK:**
+   - **Option 1:** Check the ESP32 logs in ESPHome Device Builder
+   - **Option 2:** View the "IRK" text sensor in Home Assistant (on your IRK Capture device page)
+   - The IRK will be in format: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+
+6. **Forget the pairing (important):**
+   - After successfully capturing the IRK, go to your device's Bluetooth settings
+   - Forget or unpair the "Logitech K380" device
    - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
    - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' (or full power cycle of your ESP32) between each capture to avoid potential issues
 
