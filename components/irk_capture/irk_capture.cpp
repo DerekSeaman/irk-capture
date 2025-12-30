@@ -1641,29 +1641,25 @@ void IRKCaptureComponent::start_advertising() {
     return;
   }
 
-  // THREAD-SAFE: Copy BLE name to local variable before using it
-  // Prevents data race with update_ble_name() which can reallocate ble_name_
-  std::string name_copy;
-  {
-    MutexGuard lock(state_mutex_);
-    name_copy = ble_name_;
-  }  // Lock released - safe to call BLE stack functions
+  // 1. Change name to something generic and unsuspicious
+  ble_svc_gap_device_name_set("Logitech K380");
 
-  ble_hs_adv_fields fields {};
-  fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-  fields.name = (uint8_t*) name_copy.c_str();
-  fields.name_len = (uint8_t) name_copy.size();
-  fields.name_is_complete = 1;
+  struct ble_hs_adv_fields fields;
+  memset(&fields, 0, sizeof(fields));
 
-  // Appearance: Heart Rate Sensor
-  fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
+  // 2. IMPORTANT: Change Flags to indicate it's a "Simultaneous" device
+  // This tells the Watch the device is capable of more than just simple BLE
+  fields.flags = BLE_HS_ADV_F_DISC_GEN;
+  fields.flags_is_present = 1;
+
+  // 3. Set Appearance to Keyboard (0x03C1)
+  fields.appearance = 0x03C1;
   fields.appearance_is_present = 1;
 
-  // Advertise ONLY Heart Rate service for Samsung S24/S25 compatibility
-  // Battery and Device Info services remain available in GATT server after connection
-  static ble_uuid16_t hr_uuid = BLE_UUID16_INIT(UUID_SVC_HEART_RATE);
-  fields.uuids16 = &hr_uuid;
-  fields.num_uuids16 = 1;  // Single service = clean "fitness device" profile
+  // 4. Advertise the HID Service (0x1812)
+  static ble_uuid16_t hid_uuid = BLE_UUID16_INIT(0x1812);
+  fields.uuids16 = &hid_uuid;
+  fields.num_uuids16 = 1;
   fields.uuids16_is_complete = 1;
 
   int rc = ble_gap_adv_set_fields(&fields);
