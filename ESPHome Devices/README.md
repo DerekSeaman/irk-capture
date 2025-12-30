@@ -23,7 +23,7 @@ This is the base package configuration that provides IRK capture functionality f
 - `ota_password` - OTA update password
 - `esp32_variant` - Your ESP32 variant (esp32, esp32c3, esp32c6, esp32s3, etc.)
 - `esp32_board` - Your board type (see ESPHome board list)
-- `ble_name` - BLE advertising name shown in Bluetooth settings
+- `ble_name` - BLE advertising name shown in Bluetooth settings (max 12 characters)
 
 ---
 

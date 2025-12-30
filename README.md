@@ -14,7 +14,7 @@ Modern Apple and Android devices use **BLE privacy features** that randomize the
 
 The **Identity Resolving Key (IRK)** is a cryptographic key exchanged during BLE pairing that allows authorized devices to resolve these random MAC addresses back to the original device. By capturing a device's IRK, you can reliably track it for presence detection even as it randomizes its MAC address.
 
-Capturing IRKs from devices can be very tricky, as the Bluetooth stack can very widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes.
+Capturing IRKs from devices can be very tricky, as the Bluetooth stack can very widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes. Samsung Android devices, such as the Galaxy S25+, can be particularly problematic. However, the troubleshooting section provides simple workarounds that should allow you capture your Android phone IRKs.
 
 The ESP32 uses a **random static address** for BLE advertising, which is regenerated each time the device boots. This address serves as both the advertised MAC address and the identity address for pairing. The "Generate New MAC" button also changes this address. However, if your phone or watch has previously paired with the ESP32, it may still have cached bond information. To ensure your device sees the ESP32 as completely new, either restart the ESP32 or use "Generate New MAC", and then **forget the pairing** on your phone/watch before attempting to pair again.
 
@@ -24,7 +24,7 @@ For a complete guide for room-level presence detection using Bermuda BLE Trilate
 
 ## What This Package Does
 
-This IRK capture component turns your ESP32 into a BLE peripheral that **advertises as a heart rate monitor**. When your iOS or Android device pairs with it:
+This IRK capture component turns your ESP32 into a BLE peripheral that **advertises as a heart rate monitor**. When your Apple or Android device pairs with it:
 
 1. The ESP32 presents itself as a standard Bluetooth LE heart rate sensor
 2. Your device initiates a secure pairing process
@@ -131,7 +131,7 @@ If you prefer a single-file configuration without packages:
 1. **Download the full configuration:**
    - Use [irk-capture-full.yaml](ESPHome%20Devices/irk-capture-full.yaml)
 
-2. **Modify the substitutions section** (lines 5-11) with your device-specific values
+2. **Modify the substitutions section** (lines 6-13) with your device-specific values
 
 3. **Configure your secrets.yaml** as shown above
 
