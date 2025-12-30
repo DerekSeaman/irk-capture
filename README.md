@@ -155,6 +155,19 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Internal Temp** | Sensor | ESP32 internal temperature (diagnostic) |
 | **Wi-Fi Signal** | Sensor | Wi-Fi signal strength (diagnostic) |
 
+## Tested Devices
+
+This IRK capture component has been successfully tested with:
+
+- **Apple OS 26 family:**
+  - iPhone
+  - Apple Watch
+  - iPad
+
+- **Android devices:**
+  - Samsung Galaxy S25+ (see Troubleshooting section)
+  - Jailbroken Amazon Echo Show 5 with LineageOS 18.1
+
 ## Usage Instructions
 
 ### Capturing an IRK
@@ -203,19 +216,6 @@ After flashing and connecting to Home Assistant, the following entities will be 
 4. **Complete setup:**
    - Give the device a friendly name (e.g., "Derek's iPhone")
    - The device will now be tracked for presence detection
-
-## Tested Devices
-
-This IRK capture component has been successfully tested with:
-
-- **Apple OS 26 family:**
-  - iPhone
-  - Apple Watch
-  - iPad
-
-- **Android devices:**
-  - Samsung Galaxy S25+ (see Troubleshooting section)
-  - Jailbroken Amazon Echo Show 5 with LineageOS 18.1
 
 ## Troubleshooting Tips
 
