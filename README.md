@@ -214,6 +214,7 @@ This IRK capture component has been successfully tested with:
   - iPad
 
 - **Android devices:**
+  - Samsung Galaxy S25+ (see Troubleshooting section)
   - Jailbroken Amazon Echo Show 5 with LineageOS 18.1
 
 ## Troubleshooting Tips
