@@ -148,19 +148,22 @@ After flashing and connecting to Home Assistant, the following entities will be 
 
 | Entity | Type | Description |
 | :--- | :--- | :--- |
-| **IRK** | Text Sensor | The captured IRK in format `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
-| **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
-| **Effective MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
 | **BLE Advertising** | Switch | Turn Bluetooth advertising on/off (starts ON by default) |
 | **BLE Device Name** | Text Input | Change the advertised Bluetooth name (default: "IRK Capture") |
 | **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple) or "Keyboard" (Android) |
 | **Generate New MAC** | Button | Generate a new random MAC address for the ESP32 |
+| **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
+| **Effective MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
+| **IRK** | Text Sensor | The captured IRK in format `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
-| **IP** | Text Sensor | Device IP address (diagnostic) |
-| **Uptime** | Sensor | Device uptime in hours (diagnostic) |
 | **Internal Temp** | Sensor | ESP32 internal temperature (diagnostic) |
-| **Wi-Fi Signal** | Sensor | Wi-Fi signal strength (diagnostic) |
+| **IP** | Text Sensor | Device IP address (diagnostic) |
+| **MAC** | Text Sensor | ESP32 Wi-Fi MAC address (diagnostic) |
+| **SSID** | Text Sensor | Connected Wi-Fi network name (diagnostic) |
+| **Uptime** | Sensor | Device uptime (diagnostic) |
+| **Wi-Fi Disconnects (since boot)** | Sensor | Number of Wi-Fi disconnections since boot (diagnostic) |
+| **Wi-Fi RSSI** | Sensor | Wi-Fi signal strength in dBm (diagnostic) |
 
 ## Tested Devices
 
