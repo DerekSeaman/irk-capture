@@ -148,7 +148,77 @@ for (auto& entry : irk_cache_) {
 - [irk_capture.cpp:698-752](components/irk_capture/irk_capture.cpp#L698-L752) - Validation implementation
 - [\_\_init\_\_.py:20-28](components/irk_capture/__init__.py#L20-L28) - Config-time validation
 
-### 5. NimBLE Task Stack Size Increase
+### 5. BLE Profile Selector (Apple vs Android Support)
+
+**Problem Solved:** Samsung and other Android devices aggressively filter BLE devices, making the Heart Rate Sensor profile invisible in Bluetooth settings.
+
+**Implementation:**
+
+- Added `BLEProfile` enum with two options: `HEART_SENSOR` (default) and `KEYBOARD`
+- New `IRKCaptureSelect` ESPHome select component for runtime profile switching
+- Keyboard profile advertises as "Logitech K380" with HID Service UUID (0x1812)
+- Heart Sensor profile advertises with user-defined name and Heart Rate Service UUID (0x180D)
+- Automatic MAC rotation when switching profiles to ensure fresh pairing
+- BLE Device Name automatically updates to match selected profile
+
+**Profile Details:**
+
+| Profile | Appearance | Service UUID | Device Name | Target Platform |
+| ------- | ---------- | ------------ | ----------- | --------------- |
+| Heart Sensor | 0x0340 | 0x180D | User-defined | Apple (iOS/watchOS) |
+| Keyboard | 0x03C1 | 0x1812 | "Logitech K380" | Android (Samsung, etc.) |
+
+**Scan Response Optimization:**
+
+For the Keyboard profile, the device name is moved to the BLE Scan Response packet to stay within the 31-byte advertising packet limit. This ensures Samsung devices display "Logitech K380" instead of the MAC address.
+
+**ESPHome YAML Configuration:**
+
+```yaml
+select:
+  - platform: irk_capture
+    irk_capture_id: irk
+    ble_profile:
+      id: ble_profile_select
+      name: "BLE Profile"
+```
+
+**Files Changed:**
+
+- [irk_capture.h:31-34](components/irk_capture/irk_capture.h#L31-L34) - `BLEProfile` enum
+- [irk_capture.h:37-47](components/irk_capture/irk_capture.h#L37-L47) - `IRKCaptureSelect` class
+- [irk_capture.cpp:1679-1734](components/irk_capture/irk_capture.cpp#L1679-L1734) - Profile-based advertising logic
+- [irk_capture.cpp:1856-1888](components/irk_capture/irk_capture.cpp#L1856-L1888) - `set_ble_profile()` implementation
+- [select.py](components/irk_capture/select.py) - New ESPHome select platform
+
+### 6. Effective MAC Sensor
+
+**Problem Solved:** Users couldn't verify that MAC rotation was working without checking logs.
+
+**Implementation:**
+
+- New `effective_mac` text sensor showing the current BLE advertising MAC address
+- Updates automatically when "Generate New MAC" is pressed or profile is changed
+- Displayed in ESPHome device page alongside IRK and Device MAC
+
+**ESPHome YAML Configuration:**
+
+```yaml
+text_sensor:
+  - platform: irk_capture
+    irk_capture_id: irk
+    effective_mac:
+      name: "Effective MAC"
+      id: effective_mac
+```
+
+**Files Changed:**
+
+- [irk_capture.h:158-159](components/irk_capture/irk_capture.h#L158-L159) - Sensor setter
+- [irk_capture.cpp:1756-1774](components/irk_capture/irk_capture.cpp#L1756-L1774) - `publish_effective_mac()` implementation
+- [text_sensor.py:12,27-29,46-48](components/irk_capture/text_sensor.py) - ESPHome sensor configuration
+
+### 7. NimBLE Task Stack Size Increase
 
 **Problem Solved:** Stack overflow risk when ESP_LOG calls in GAP event callbacks exceed default 4096 byte stack.
 
