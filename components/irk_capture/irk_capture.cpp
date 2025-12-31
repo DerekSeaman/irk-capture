@@ -203,8 +203,9 @@ static const ble_uuid16_t UUID_CHR_MODEL = BLE_UUID16_INIT(UUID_CHR_MODEL_NUMBER
 static const ble_uuid16_t UUID_SVC_BAS = BLE_UUID16_INIT(UUID_SVC_BATTERY);
 static const ble_uuid16_t UUID_CHR_BATT_LVL = BLE_UUID16_INIT(UUID_CHR_BATTERY_LEVEL);
 
-// Audio Sink service UUID (A2DP Sink) - used for Earbuds profile visibility on iOS/Samsung
-static const ble_uuid16_t UUID_SVC_AUDIO_SINK = BLE_UUID16_INIT(0x110B);
+// LE Audio Published Audio Capabilities Service (PACS) - used for Earbuds profile visibility
+// 0x1850 is the BLE LE Audio standard, not Classic Bluetooth A2DP (0x110B)
+static const ble_uuid16_t UUID_SVC_PACS = BLE_UUID16_INIT(0x1850);
 
 // Optional protected service/characteristic to force pairing via READ_ENC
 static const ble_uuid128_t UUID_SVC_PROT = BLE_UUID128_INIT(
@@ -700,10 +701,10 @@ static struct ble_gatt_svc_def gatt_svcs[] = {
       .characteristics = prot_chrs,
   },
   {
-      // Audio Sink service (A2DP) - placeholder for Earbuds profile
+      // LE Audio PACS service - placeholder for Earbuds profile
       // No characteristics needed; presence satisfies iOS/Samsung discovery
       .type = BLE_GATT_SVC_TYPE_PRIMARY,
-      .uuid = &UUID_SVC_AUDIO_SINK.u,
+      .uuid = &UUID_SVC_PACS.u,
       .characteristics = nullptr,
   },
   { 0 }
@@ -1723,12 +1724,12 @@ void IRKCaptureComponent::start_advertising() {
     static const char* earbuds_name = "Earbuds";
     ble_svc_gap_device_name_set(earbuds_name);
 
-    // Advertising data: flags, appearance, Audio Sink service UUID
+    // Advertising data: flags, appearance, LE Audio PACS service UUID
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.appearance = APPEARANCE_EARBUDS;
     fields.appearance_is_present = 1;
-    // Use file-scope Audio Sink UUID (matches GATT service registration)
-    fields.uuids16 = const_cast<ble_uuid16_t*>(&UUID_SVC_AUDIO_SINK);
+    // Use LE Audio PACS UUID (matches GATT service registration)
+    fields.uuids16 = const_cast<ble_uuid16_t*>(&UUID_SVC_PACS);
     fields.num_uuids16 = 1;
     fields.uuids16_is_complete = 1;
 
