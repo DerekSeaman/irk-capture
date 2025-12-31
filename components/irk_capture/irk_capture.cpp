@@ -678,30 +678,54 @@ static struct ble_gatt_chr_def prot_chrs[] = { {
                                                },
                                                { 0 } };
 
-static struct ble_gatt_svc_def gatt_svcs[] = {
+// Heart Sensor profile GATT services
+static struct ble_gatt_svc_def gatt_svcs_heart_sensor[] = {
   {
-      // Heart Rate service (for Heart Sensor profile)
+      // Heart Rate service
       .type = BLE_GATT_SVC_TYPE_PRIMARY,
       .uuid = &UUID_SVC_HR.u,
       .characteristics = hr_chrs,
   },
   {
-      // Device Information service (common to all profiles)
+      // Device Information service
       .type = BLE_GATT_SVC_TYPE_PRIMARY,
       .uuid = &UUID_SVC_DEVINFO.u,
       .characteristics = devinfo_chrs,
   },
   {
-      // Battery service (common to all profiles)
+      // Battery service
       .type = BLE_GATT_SVC_TYPE_PRIMARY,
       .uuid = &UUID_SVC_BAS.u,
       .characteristics = batt_chrs,
   },
   {
-      // HID service (for Keyboard profile) - placeholder, no characteristics needed
+      // Protected service (forces pairing via encrypted read)
+      .type = BLE_GATT_SVC_TYPE_PRIMARY,
+      .uuid = &UUID_SVC_PROT.u,
+      .characteristics = prot_chrs,
+  },
+  { 0 }
+};
+
+// Keyboard profile GATT services
+static struct ble_gatt_svc_def gatt_svcs_keyboard[] = {
+  {
+      // HID service
       .type = BLE_GATT_SVC_TYPE_PRIMARY,
       .uuid = &UUID_SVC_HID_BLE.u,
       .characteristics = nullptr,
+  },
+  {
+      // Device Information service
+      .type = BLE_GATT_SVC_TYPE_PRIMARY,
+      .uuid = &UUID_SVC_DEVINFO.u,
+      .characteristics = devinfo_chrs,
+  },
+  {
+      // Battery service
+      .type = BLE_GATT_SVC_TYPE_PRIMARY,
+      .uuid = &UUID_SVC_BAS.u,
+      .characteristics = batt_chrs,
   },
   {
       // Protected service (forces pairing via encrypted read)
@@ -1276,6 +1300,18 @@ void IRKCaptureComponent::setup() {
     // Continue anyway - component will work but may have race conditions
   }
 
+  // Load persisted BLE profile from NVS (before BLE stack init so GATT is correct)
+  nvs_handle_t nvs_handle;
+  if (nvs_open("irk_capture", NVS_READONLY, &nvs_handle) == ESP_OK) {
+    uint8_t profile_val = 0;
+    if (nvs_get_u8(nvs_handle, "ble_profile", &profile_val) == ESP_OK) {
+      ble_profile_ = static_cast<BLEProfile>(profile_val);
+      ESP_LOGI(TAG, "Loaded persisted BLE profile: %s",
+               ble_profile_ == BLEProfile::KEYBOARD ? "Keyboard" : "Heart Sensor");
+    }
+    nvs_close(nvs_handle);
+  }
+
   // Clear in-memory IRK cache for fresh session (complements ble_store_clear()
   // which is called later during BLE stack initialization)
   irk_cache_.clear();
@@ -1290,11 +1326,17 @@ void IRKCaptureComponent::setup() {
     this->start_advertising();
   }
   if (ble_name_text_) {
-    ble_name_text_->publish_state(ble_name_);
+    // Update name based on profile
+    if (ble_profile_ == BLEProfile::KEYBOARD) {
+      ble_name_text_->publish_state("Logitech K380");
+    } else {
+      ble_name_text_->publish_state(ble_name_);
+    }
   }
   if (ble_profile_select_) {
-    // Initialize select to default profile (Heart Sensor)
-    ble_profile_select_->publish_state("Heart Sensor");
+    // Initialize select to persisted profile
+    ble_profile_select_->publish_state(ble_profile_ == BLEProfile::KEYBOARD ? "Keyboard"
+                                                                            : "Heart Sensor");
   }
 }
 
@@ -1654,6 +1696,25 @@ void IRKCaptureComponent::register_gatt_services() {
   devinfo_chrs[0].arg = (void*) this;  // Manufacturer Name
   devinfo_chrs[1].arg = (void*) this;  // Model Number
 
+  // Select GATT services based on current profile
+  BLEProfile current_profile;
+  {
+    MutexGuard lock(state_mutex_);
+    current_profile = ble_profile_;
+  }
+
+  struct ble_gatt_svc_def* gatt_svcs;
+  const char* profile_name;
+  if (current_profile == BLEProfile::KEYBOARD) {
+    gatt_svcs = gatt_svcs_keyboard;
+    profile_name = "Keyboard";
+  } else {
+    gatt_svcs = gatt_svcs_heart_sensor;
+    profile_name = "Heart Sensor";
+  }
+
+  ESP_LOGI(TAG, "Registering GATT services for %s profile", profile_name);
+
   int rc = ble_gatts_count_cfg(gatt_svcs);
   if (rc == 0) rc = ble_gatts_add_svcs(gatt_svcs);
   if (rc != 0) {
@@ -1905,6 +1966,17 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
 
   // Only trigger changes if profile actually changed
   if (old_profile != profile) {
+    // Persist profile to NVS before restart
+    nvs_handle_t nvs_handle;
+    if (nvs_open("irk_capture", NVS_READWRITE, &nvs_handle) == ESP_OK) {
+      nvs_set_u8(nvs_handle, "ble_profile", static_cast<uint8_t>(profile));
+      nvs_commit(nvs_handle);
+      nvs_close(nvs_handle);
+      ESP_LOGI(TAG, "Persisted BLE profile to NVS");
+    } else {
+      ESP_LOGW(TAG, "Failed to persist BLE profile to NVS");
+    }
+
     // Update the displayed BLE name based on profile
     if (profile == BLEProfile::KEYBOARD) {
       // Keyboard profile uses fixed name "Logitech K380"
@@ -1918,8 +1990,12 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
       }
     }
 
-    // Generate new MAC and restart advertising with new profile
-    this->refresh_mac();
+    // GATT database cannot be dynamically changed in NimBLE - restart required
+    // Schedule restart to apply new GATT services for the selected profile
+    ESP_LOGW(TAG,
+             "Profile change requires restart to update GATT database - restarting in 1 second...");
+    vTaskDelay(pdMS_TO_TICKS(1000));  // Brief delay to allow UI update and log output
+    esp_restart();
   }
 }
 
