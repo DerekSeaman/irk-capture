@@ -221,7 +221,7 @@ This IRK capture component has been successfully tested with:
 
 ### Capturing an IRK from Android Devices
 
-1. **Select the "Keyboard" profile** in the BLE Profile dropdown on the ESPHome device page
+1. **Ensure the "Keyboard" profile is selected** in the BLE Profile dropdown on the ESPHome device page
    - The BLE Device Name will automatically change to "Logitech K380"
    - A new MAC address will be generated automatically
 
