@@ -2,7 +2,7 @@
 
 ## Overview
 
-v1.5.0 is a major update focused on **Android device support** and **reliability improvements**. This release introduces a new BLE profile system that enables IRK capture from Samsung Galaxy phones and other Android devices that were previously incompatible.
+v1.5.0 is a major update focused on **Android device support** and **reliability improvements**. This release introduces a new BLE profile system that enables IRK capture from Samsung Galaxy phones and other Android devices that previously needed workarounds.
 
 ---
 
@@ -107,7 +107,7 @@ None. All existing YAML configurations work without modification.
 | Apple Watch | watchOS 26 | Heart Sensor | Working |
 | iPad | iPadOS 26 | Heart Sensor | Working |
 | Samsung Galaxy S25+ | One UI 7 | Keyboard | Working |
-| Samsung Galaxy Watch Ultra | Wear OS 6 | Both | Not Working |
+| Samsung Galaxy Watch8 Classic | Wear OS 6 | Both | Not Working |
 | Google Pixel 9 | Android 15 | Keyboard | Working |
 | Amazon Echo Show | LineageOS 18.1 | Heart Sensor | Working |
 
