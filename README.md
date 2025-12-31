@@ -222,8 +222,8 @@ This IRK capture component has been successfully tested with:
 ### Capturing an IRK from Android Devices
 
 1. **Ensure the "Keyboard" profile is selected** in the BLE Profile dropdown on the ESPHome device page
-   - The BLE Device Name will automatically change to "Logitech K380"
-   - A new MAC address will be generated automatically
+   - The ESP32 will reboot to apply the new GATT services
+   - After reboot, the BLE Device Name will be "Logitech K380" and a new MAC address will be generated
 
 2. **Open Bluetooth settings** on your Android device
 
@@ -280,7 +280,7 @@ Samsung One UI 7 (Galaxy S25, S24, etc.) aggressively filters BLE devices in Blu
 1. **Enable Developer Options**: Settings → About Phone → Software Information → Tap "Build Number" 7 times
 2. **Enable BLE visibility**: Settings → Developer Options → Scroll down and enable **"Show unsupported Bluetooth LE devices in Bluetooth settings"**
 3. Return to Bluetooth settings and scan again — the ESP32 device should now appear
-4. Tap on the 'IRK Capture' device and tap pair. The IRK should appear in the ESP32 logs and ESPHome device page in Home Assistant
+4. Tap on the device (e.g., "Logitech K380" when using Keyboard profile) and tap pair. The IRK should appear in the ESP32 logs and ESPHome device page in Home Assistant
 
 ### Android device still not visible after Developer Options fix
 
