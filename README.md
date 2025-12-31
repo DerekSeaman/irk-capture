@@ -29,7 +29,7 @@ This IRK capture component turns your ESP32 into a BLE peripheral that can emula
 - **Heart Sensor Profile** (for Apple devices): Advertises as a heart rate monitor, which Apple devices readily pair with
 - **Keyboard Profile** (for Android devices): Advertises as a "Logitech K380" keyboard, which bypasses Samsung's aggressive BLE filtering on Galaxy phones
 
-When your iOS or Android device pairs with the ESP32:
+When your Apple or Android device pairs with the ESP32:
 
 1. The ESP32 presents itself as the selected BLE device type (heart rate sensor or keyboard)
 2. Your device initiates a secure pairing process
