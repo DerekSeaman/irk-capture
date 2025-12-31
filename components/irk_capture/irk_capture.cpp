@@ -173,6 +173,7 @@ static constexpr uint16_t UUID_CHR_BATTERY_LEVEL = 0x2A19;
 
 // BLE Appearance values
 static constexpr uint16_t APPEARANCE_HEART_RATE_SENSOR = 0x0340;
+static constexpr uint16_t APPEARANCE_EARBUDS = 0x0941;
 
 //======================== IRK lifecycle (for readers) ========================
 /*
@@ -844,6 +845,8 @@ void IRKCaptureSelect::control(const std::string& value) {
     parent_->set_ble_profile(BLEProfile::HEART_SENSOR);
   } else if (value == "Keyboard") {
     parent_->set_ble_profile(BLEProfile::KEYBOARD);
+  } else if (value == "Earbuds") {
+    parent_->set_ble_profile(BLEProfile::EARBUDS);
   }
   publish_state(value);
 }
@@ -1702,6 +1705,27 @@ void IRKCaptureComponent::start_advertising() {
     rsp_fields.name_len = strlen(keyboard_name);
     rsp_fields.name_is_complete = 1;
     use_scan_response = true;
+  } else if (current_profile == BLEProfile::EARBUDS) {
+    // Earbuds profile: Generic audio earbuds
+    profile_name = "Earbuds";
+    static const char* earbuds_name = "Earbuds";
+    ble_svc_gap_device_name_set(earbuds_name);
+
+    // Advertising data: flags, appearance, Audio Sink service UUID
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.appearance = APPEARANCE_EARBUDS;
+    fields.appearance_is_present = 1;
+    // Audio Sink UUID (0x110B) to look like a real audio device
+    static ble_uuid16_t audio_sink_uuid = BLE_UUID16_INIT(0x110B);
+    fields.uuids16 = &audio_sink_uuid;
+    fields.num_uuids16 = 1;
+    fields.uuids16_is_complete = 1;
+
+    // Scan response data: device name
+    rsp_fields.name = (uint8_t*) earbuds_name;
+    rsp_fields.name_len = strlen(earbuds_name);
+    rsp_fields.name_is_complete = 1;
+    use_scan_response = true;
   } else {
     // Heart Sensor profile (default): Use configured BLE name
     profile_name = "Heart Sensor";
@@ -1888,7 +1912,18 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     current_name = ble_name_;
   }
 
-  const char* profile_name = (profile == BLEProfile::HEART_SENSOR) ? "Heart Sensor" : "Keyboard";
+  const char* profile_name;
+  switch (profile) {
+    case BLEProfile::KEYBOARD:
+      profile_name = "Keyboard";
+      break;
+    case BLEProfile::EARBUDS:
+      profile_name = "Earbuds";
+      break;
+    default:
+      profile_name = "Heart Sensor";
+      break;
+  }
   ESP_LOGI(TAG, "BLE profile changed to: %s", profile_name);
 
   // Only trigger changes if profile actually changed
@@ -1898,6 +1933,11 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
       // Keyboard profile uses fixed name "Logitech K380"
       if (ble_name_text_) {
         ble_name_text_->publish_state("Logitech K380");
+      }
+    } else if (profile == BLEProfile::EARBUDS) {
+      // Earbuds profile uses fixed name "Earbuds"
+      if (ble_name_text_) {
+        ble_name_text_->publish_state("Earbuds");
       }
     } else {
       // Heart Sensor profile restores the configured name
