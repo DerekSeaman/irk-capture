@@ -173,7 +173,7 @@ static constexpr uint16_t UUID_CHR_BATTERY_LEVEL = 0x2A19;
 
 // BLE Appearance values (from Bluetooth SIG Assigned Numbers)
 static constexpr uint16_t APPEARANCE_HEART_RATE_SENSOR = 0x0340;
-static constexpr uint16_t APPEARANCE_EARBUD = 0x0942;  // Earbud (not 0x0941 Generic Audio)
+static constexpr uint16_t APPEARANCE_STANDALONE_SPEAKER = 0x0841;  // Standalone Speaker (like Echo)
 
 //======================== IRK lifecycle (for readers) ========================
 /*
@@ -1719,16 +1719,16 @@ void IRKCaptureComponent::start_advertising() {
     rsp_fields.name_is_complete = 1;
     use_scan_response = true;
   } else if (current_profile == BLEProfile::EARBUDS) {
-    // Earbuds profile: Generic audio earbuds
-    // Uses Battery Service UUID (0x180F) - universally recognized, doesn't trigger
-    // iOS/Samsung LE Audio filtering. Appearance 0x0942 identifies as Earbud.
-    profile_name = "Earbuds";
-    static const char* earbuds_name = "Earbuds";
-    ble_svc_gap_device_name_set(earbuds_name);
+    // Speaker profile: Standalone Speaker (like Echo Show)
+    // Uses Speaker appearance (0x0841) which iOS/Samsung recognize from Echo devices.
+    // Uses Battery Service UUID (0x180F) - universally recognized.
+    profile_name = "Earbuds";  // Keep enum name for backwards compatibility
+    static const char* speaker_name = "Speaker";
+    ble_svc_gap_device_name_set(speaker_name);
 
     // Advertising data: flags, appearance, Battery service UUID
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    fields.appearance = APPEARANCE_EARBUD;
+    fields.appearance = APPEARANCE_STANDALONE_SPEAKER;
     fields.appearance_is_present = 1;
     // Use Battery Service UUID - safe, universally supported
     static ble_uuid16_t batt_uuid = BLE_UUID16_INIT(0x180F);
@@ -1737,8 +1737,8 @@ void IRKCaptureComponent::start_advertising() {
     fields.uuids16_is_complete = 1;
 
     // Scan response data: device name
-    rsp_fields.name = (uint8_t*) earbuds_name;
-    rsp_fields.name_len = strlen(earbuds_name);
+    rsp_fields.name = (uint8_t*) speaker_name;
+    rsp_fields.name_len = strlen(speaker_name);
     rsp_fields.name_is_complete = 1;
     use_scan_response = true;
   } else {
@@ -1950,9 +1950,9 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
         ble_name_text_->publish_state("Logitech K380");
       }
     } else if (profile == BLEProfile::EARBUDS) {
-      // Earbuds profile uses fixed name "Earbuds"
+      // Speaker profile uses fixed name "Speaker"
       if (ble_name_text_) {
-        ble_name_text_->publish_state("Earbuds");
+        ble_name_text_->publish_state("Speaker");
       }
     } else {
       // Heart Sensor profile restores the configured name
