@@ -176,6 +176,7 @@ This IRK capture component has been successfully tested with:
 
 - **Android devices:**
   - Samsung Galaxy S25+
+  - Google Pixel 9
   - Jailbroken Amazon Echo Show 5 with LineageOS 18.1
 
 ## Usage Instructions
