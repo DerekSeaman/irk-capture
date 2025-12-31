@@ -297,8 +297,6 @@ If the Developer Options fix doesn't work, or you're on a non-Samsung Android de
 
 Samsung Galaxy Watches aggressively filter BLE devices, and neither the Keyboard nor Heart Sensor profile will likely appear as a pairable device in the watch's Bluetooth settings. The app "BLE Scanner" by Stefan Thomas does list the ESP32 device on the watch, however the app does not allow pairing attempts. This appears to be an app limitation, as user reviews have also complained about the lack of pairing functionality.
 
-**Workaround:** Capture the IRK from your Samsung phone instead, as phones and watches from the same Samsung account typically share the same IRK for presence detection purposes.
-
 ### IRK Not Captured After Pairing
 
 - After pairing, **forget/unpair the BLE device** from your device's Bluetooth settings
