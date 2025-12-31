@@ -170,6 +170,7 @@ static constexpr uint16_t UUID_CHR_MANUFACTURER_NAME = 0x2A29;
 static constexpr uint16_t UUID_CHR_MODEL_NUMBER = 0x2A24;
 static constexpr uint16_t UUID_SVC_BATTERY = 0x180F;
 static constexpr uint16_t UUID_CHR_BATTERY_LEVEL = 0x2A19;
+static constexpr uint16_t UUID_SVC_HID = 0x1812;  // Human Interface Device (for Keyboard profile)
 
 // BLE Appearance values
 static constexpr uint16_t APPEARANCE_HEART_RATE_SENSOR = 0x0340;
@@ -201,6 +202,9 @@ static const ble_uuid16_t UUID_CHR_MODEL = BLE_UUID16_INIT(UUID_CHR_MODEL_NUMBER
 
 static const ble_uuid16_t UUID_SVC_BAS = BLE_UUID16_INIT(UUID_SVC_BATTERY);
 static const ble_uuid16_t UUID_CHR_BATT_LVL = BLE_UUID16_INIT(UUID_CHR_BATTERY_LEVEL);
+
+// HID service for Keyboard profile
+static const ble_uuid16_t UUID_SVC_HID_BLE = BLE_UUID16_INIT(UUID_SVC_HID);
 
 // Optional protected service/characteristic to force pairing via READ_ENC
 static const ble_uuid128_t UUID_SVC_PROT = BLE_UUID128_INIT(
@@ -674,27 +678,39 @@ static struct ble_gatt_chr_def prot_chrs[] = { {
                                                },
                                                { 0 } };
 
-static struct ble_gatt_svc_def gatt_svcs[] = { {
-                                                   .type = BLE_GATT_SVC_TYPE_PRIMARY,
-                                                   .uuid = &UUID_SVC_HR.u,
-                                                   .characteristics = hr_chrs,
-                                               },
-                                               {
-                                                   .type = BLE_GATT_SVC_TYPE_PRIMARY,
-                                                   .uuid = &UUID_SVC_DEVINFO.u,
-                                                   .characteristics = devinfo_chrs,
-                                               },
-                                               {
-                                                   .type = BLE_GATT_SVC_TYPE_PRIMARY,
-                                                   .uuid = &UUID_SVC_BAS.u,
-                                                   .characteristics = batt_chrs,
-                                               },
-                                               {
-                                                   .type = BLE_GATT_SVC_TYPE_PRIMARY,
-                                                   .uuid = &UUID_SVC_PROT.u,
-                                                   .characteristics = prot_chrs,
-                                               },
-                                               { 0 } };
+static struct ble_gatt_svc_def gatt_svcs[] = {
+  {
+      // Heart Rate service (for Heart Sensor profile)
+      .type = BLE_GATT_SVC_TYPE_PRIMARY,
+      .uuid = &UUID_SVC_HR.u,
+      .characteristics = hr_chrs,
+  },
+  {
+      // Device Information service (common to all profiles)
+      .type = BLE_GATT_SVC_TYPE_PRIMARY,
+      .uuid = &UUID_SVC_DEVINFO.u,
+      .characteristics = devinfo_chrs,
+  },
+  {
+      // Battery service (common to all profiles)
+      .type = BLE_GATT_SVC_TYPE_PRIMARY,
+      .uuid = &UUID_SVC_BAS.u,
+      .characteristics = batt_chrs,
+  },
+  {
+      // HID service (for Keyboard profile) - placeholder, no characteristics needed
+      .type = BLE_GATT_SVC_TYPE_PRIMARY,
+      .uuid = &UUID_SVC_HID_BLE.u,
+      .characteristics = nullptr,
+  },
+  {
+      // Protected service (forces pairing via encrypted read)
+      .type = BLE_GATT_SVC_TYPE_PRIMARY,
+      .uuid = &UUID_SVC_PROT.u,
+      .characteristics = prot_chrs,
+  },
+  { 0 }
+};
 
 //======================== Access callbacks ========================
 
@@ -1670,10 +1686,6 @@ void IRKCaptureComponent::start_advertising() {
   struct ble_hs_adv_fields fields;
   memset(&fields, 0, sizeof(fields));
 
-  // Static UUIDs for each profile (must remain valid during advertising)
-  static ble_uuid16_t hr_uuid = BLE_UUID16_INIT(UUID_SVC_HEART_RATE);
-  static ble_uuid16_t hid_uuid = BLE_UUID16_INIT(0x1812);
-
   const char* profile_name;
 
   // Scan response fields (used for Keyboard profile to fit name in separate packet)
@@ -1692,7 +1704,7 @@ void IRKCaptureComponent::start_advertising() {
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.appearance = 0x03C1;  // Keyboard
     fields.appearance_is_present = 1;
-    fields.uuids16 = &hid_uuid;
+    fields.uuids16 = const_cast<ble_uuid16_t*>(&UUID_SVC_HID_BLE);
     fields.num_uuids16 = 1;
     fields.uuids16_is_complete = 1;
     // Do NOT put name in advertising packet - put it in scan response
@@ -1713,7 +1725,7 @@ void IRKCaptureComponent::start_advertising() {
     fields.name_is_complete = 1;
     fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
     fields.appearance_is_present = 1;
-    fields.uuids16 = &hr_uuid;
+    fields.uuids16 = const_cast<ble_uuid16_t*>(&UUID_SVC_HR);
     fields.num_uuids16 = 1;
     fields.uuids16_is_complete = 1;
   }
