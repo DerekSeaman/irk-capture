@@ -103,9 +103,9 @@ None. All existing YAML configurations work without modification.
 
 | Device | OS | Profile | Status |
 | ------ | -- | ------- | ------ |
-| iPhone | iOS 18+ | Heart Sensor | Working |
-| Apple Watch | watchOS 11+ | Heart Sensor | Working |
-| iPad | iPadOS 18+ | Heart Sensor | Working |
+| iPhone | iOS 26 | Heart Sensor | Working |
+| Apple Watch | watchOS 26 | Heart Sensor | Working |
+| iPad | iPadOS 26 | Heart Sensor | Working |
 | Samsung Galaxy S25+ | One UI 7 | Keyboard | Working |
 | Google Pixel 9 | Android 15 | Keyboard | Working |
 | Amazon Echo Show | LineageOS 18.1 | Heart Sensor | Working |
@@ -116,36 +116,24 @@ None. All existing YAML configurations work without modification.
 
 ### From v1.4.x
 
-1. Update your ESPHome YAML to use the `main` branch (or `dev` for testing):
+Add the new optional entities to your configuration (if desired):
 
-   ```yaml
-   external_components:
-     - source:
-         type: git
-         url: https://github.com/DerekSeaman/irk-capture
-         ref: main  # or 'dev' for testing
-       components: [irk_capture]
-   ```
+```yaml
+select:
+  - platform: irk_capture
+    irk_capture_id: irk
+    ble_profile:
+      id: ble_profile_select
+      name: "BLE Profile"
 
-2. Add the new optional entities to your configuration (if desired):
+text_sensor:
+  - platform: irk_capture
+    irk_capture_id: irk
+    effective_mac:
+      name: "Effective MAC"
+```
 
-   ```yaml
-   select:
-     - platform: irk_capture
-       irk_capture_id: irk
-       ble_profile:
-         id: ble_profile_select
-         name: "BLE Profile"
-
-   text_sensor:
-     - platform: irk_capture
-       irk_capture_id: irk
-       effective_mac:
-         name: "Effective MAC"
-   ```
-
-3. Compile and flash your device
-4. Power cycle the ESP32 after flashing
+Then compile, flash, and power cycle your ESP32.
 
 ---
 
