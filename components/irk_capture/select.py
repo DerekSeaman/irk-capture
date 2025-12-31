@@ -27,6 +27,6 @@ async def to_code(config):
     if CONF_BLE_PROFILE in config:
         sel = await select.new_select(
             config[CONF_BLE_PROFILE],
-            options=["Heart Sensor", "Keyboard", "Earbuds"],
+            options=["Heart Sensor", "Keyboard"],
         )
         cg.add(parent.set_ble_profile_select(sel))

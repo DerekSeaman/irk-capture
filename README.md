@@ -226,7 +226,7 @@ This IRK capture component has been successfully tested with:
 2. **Open Bluetooth settings** on your Android device
 
 3. **Look for "Logitech K380"** under Available Devices
-   - If you don't see it, see the Troubleshooting section
+   - If you don't see it, see the Troubleshooting section for Samsung One UI 7 devices
 
 4. **Tap on "Logitech K380" to pair:**
    - If prompted, tap "Pair"
@@ -294,6 +294,8 @@ If the Developer Options fix doesn't work, or you're on a non-Samsung Android de
 ### Samsung Galaxy Watches
 
 Samsung Galaxy Watches aggressively filter BLE devices, and neither the Keyboard nor Heart Sensor profile will likely appear as a pairable device in the watch's Bluetooth settings. The app "BLE Scanner" by Stefan Thomas does list the ESP32 device on the watch, however the app does not allow pairing attempts. This appears to be an app limitation, as user reviews have also complained about the lack of pairing functionality.
+
+**Workaround:** Capture the IRK from your Samsung phone instead, as phones and watches from the same Samsung account typically share the same IRK for presence detection purposes.
 
 ### IRK Not Captured After Pairing
 
