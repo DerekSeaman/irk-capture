@@ -150,7 +150,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | :--- | :--- | :--- |
 | **BLE Advertising** | Switch | Turn Bluetooth advertising on/off (starts ON by default) |
 | **BLE Device Name** | Text Input | Change the advertised Bluetooth name (default: "IRK Capture") |
-| **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple) or "Keyboard" (Android) |
+| **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple) or "Keyboard" (Android). Changing profiles triggers a reboot. |
 | **Generate New MAC** | Button | Generate a new random MAC address for the ESP32 |
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
 | **Effective MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
@@ -190,6 +190,7 @@ This IRK capture component has been successfully tested with:
 2. **Select the appropriate BLE Profile:**
    - For **Apple devices** (iPhone, iPad, Apple Watch): Select **"Heart Sensor"** profile
    - For **Android devices** (Samsung, Pixel, etc.): Select **"Keyboard"** profile
+   - **Note:** Changing profiles will automatically reboot the ESP32 to apply the new GATT services. Wait approximately 30 seconds after the reboot before attempting to pair.
 
 ### Capturing an IRK from Apple Devices
 
