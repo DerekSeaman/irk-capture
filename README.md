@@ -288,7 +288,7 @@ If the Developer Options fix doesn't work, or you're on a non-Samsung Android de
 
 1. Install **nRF Connect** from the Play Store (by Nordic Semiconductor)
 2. Open the app and tap "Scan"
-3. Look for "IRK Capture" in the device list (or your customized name)
+3. Look for "Logitech K380" in the device list (when using Keyboard profile)
 4. Tap on it to connect
 5. The pairing dialog should appear, allowing the bonding process to complete
 6. Look for the captured IRK in the ESP32 logs or the ESPHome device page
