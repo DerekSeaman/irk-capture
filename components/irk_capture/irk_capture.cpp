@@ -1344,16 +1344,26 @@ void IRKCaptureComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "IRK Capture:");
   vTaskDelay(pdMS_TO_TICKS(5));
 
-  // THREAD-SAFE: Copy name and advertising state before logging
+  // THREAD-SAFE: Copy state before logging
   std::string name_copy;
   bool adv_state;
+  BLEProfile current_profile;
   {
     MutexGuard lock(state_mutex_);
     name_copy = ble_name_;
     adv_state = advertising_;
+    current_profile = ble_profile_;
   }
 
-  ESP_LOGCONFIG(TAG, "  BLE Name: %s", name_copy.c_str());
+  // Show effective name based on profile
+  const char* effective_name =
+      (current_profile == BLEProfile::KEYBOARD) ? "Logitech K380" : name_copy.c_str();
+  const char* profile_name =
+      (current_profile == BLEProfile::KEYBOARD) ? "Keyboard" : "Heart Sensor";
+
+  ESP_LOGCONFIG(TAG, "  BLE Profile: %s", profile_name);
+  vTaskDelay(pdMS_TO_TICKS(5));
+  ESP_LOGCONFIG(TAG, "  BLE Name: %s", effective_name);
   vTaskDelay(pdMS_TO_TICKS(5));
   ESP_LOGCONFIG(TAG, "  Advertising: %s", adv_state ? "YES" : "NO");
 }
