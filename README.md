@@ -190,7 +190,7 @@ This IRK capture component has been successfully tested with:
 2. **Select the appropriate BLE Profile:**
    - For **Apple devices** (iPhone, iPad, Apple Watch): Select **"Heart Sensor"** profile
    - For **Android devices** (Samsung, Pixel, etc.): Select **"Keyboard"** profile
-   - **Note:** Changing profiles will automatically reboot the ESP32 to apply the new GATT services. Wait approximately 30 seconds after the reboot before attempting to pair. If you are viewing logs wirelessly in ESPHome, you may need to reconnect to the ESP32 after the reboot to see current logs.
+   - **Note:** Changing profiles will automatically reboot the ESP32 to apply the new GATT services. Wait approximately 30 seconds after the reboot before attempting to pair. If you are viewing logs wirelessly in ESPHome, you may need to reconnect to the ESP32 after the reboot to see current logs. When the Effective MAC sensor updates with a new address, the device is ready to capture IRKs.
 
 ### Capturing an IRK from Apple Devices
 
