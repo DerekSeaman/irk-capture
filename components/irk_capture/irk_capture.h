@@ -217,7 +217,7 @@ class IRKCaptureComponent : public Component {
   IRKCaptureButton* new_mac_button_ { nullptr };
   IRKCaptureText* ble_name_text_ { nullptr };
   IRKCaptureSelect* ble_profile_select_ { nullptr };
-  BLEProfile ble_profile_ { BLEProfile::HEART_SENSOR };  // Default to Heart Rate Sensor
+  BLEProfile ble_profile_ { BLEProfile::KEYBOARD };  // Default to Keyboard profile
 
   // Connection state
   uint16_t conn_handle_ { BLE_HS_CONN_HANDLE_NONE };
