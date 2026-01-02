@@ -26,9 +26,8 @@ For a complete guide for room-level presence detection using Bermuda BLE Trilate
 
 This IRK capture component turns your ESP32 into a BLE peripheral that can emulate different device types to capture IRKs from various platforms. It supports two BLE profiles:
 
-- **Heart Sensor Profile** (for Apple devices): Advertises as a heart rate monitor, which Apple devices readily pair with
+- **Heart Sensor Profile** (for Apple devices, Android watches): Advertises as a heart rate monitor, which Apple devices and many Android watches can discover (with third party app)
 - **Keyboard Profile** (for Android phones): Advertises as a "Logitech K380" keyboard, which bypasses Samsung's aggressive BLE filtering on Galaxy phones
-- **Heart Sensor Profile** (for Android watches): Android watches aggressively filter BLE devices, but the Gear Tracker II app enables pairing with the heart rate sensor profile (other apps may work as well)
 
 When your Apple or Android device pairs with the ESP32:
 
