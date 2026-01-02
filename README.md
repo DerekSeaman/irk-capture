@@ -27,7 +27,8 @@ For a complete guide for room-level presence detection using Bermuda BLE Trilate
 This IRK capture component turns your ESP32 into a BLE peripheral that can emulate different device types to capture IRKs from various platforms. It supports two BLE profiles:
 
 - **Heart Sensor Profile** (for Apple devices): Advertises as a heart rate monitor, which Apple devices readily pair with
-- **Keyboard Profile** (for Android devices): Advertises as a "Logitech K380" keyboard, which bypasses Samsung's aggressive BLE filtering on Galaxy phones
+- **Keyboard Profile** (for Android phones): Advertises as a "Logitech K380" keyboard, which bypasses Samsung's aggressive BLE filtering on Galaxy phones
+- **Heart Sensor Profile** (for Android watches): Android watches aggressively filter BLE devices, but the Gear Tracker II app enables pairing with the heart rate sensor profile (other apps may work as well)
 
 When your Apple or Android device pairs with the ESP32:
 
@@ -176,6 +177,7 @@ This IRK capture component has been successfully tested with:
 
 - **Android devices:**
   - Samsung Galaxy S25+
+  - Samsung Galaxy Watch7
   - Google Pixel 9
   - Jailbroken Amazon Echo Show 5 with LineageOS 18.1
 
@@ -190,7 +192,9 @@ This IRK capture component has been successfully tested with:
 
 2. **Select the appropriate BLE Profile:**
    - For **Apple devices** (iPhone, iPad, Apple Watch): Select **"Heart Sensor"** profile
-   - For **Android devices** (Samsung, Pixel, etc.): Select **"Keyboard"** profile
+   - For **Android phones** (Samsung, Pixel, etc.): Select **"Keyboard"** profile
+   - For **Android watches**: Select **"Heart Sensor"** profile and then follow the instructions below to enable discovering of the heart rate sensor via a third party app from the Play store
+
    - **Note:** Changing profiles will automatically reboot the ESP32 to apply the new GATT services. Wait approximately 30 seconds after the reboot before attempting to pair. If you are viewing logs wirelessly in ESPHome, you may need to reconnect to the ESP32 after the reboot to see current logs. When the Effective MAC sensor updates with a new address, the device is ready to capture IRKs.
 
 ### Capturing an IRK from Apple Devices
@@ -219,7 +223,7 @@ This IRK capture component has been successfully tested with:
    - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
    - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' (or full power cycle of your ESP32) between each capture to avoid potential issues
 
-### Capturing an IRK from Android Devices
+### Capturing an IRK from Android Phones
 
 1. **Ensure the "Keyboard" profile is selected** in the BLE Profile dropdown on the ESPHome device page
    - The ESP32 will reboot to apply the new GATT services
@@ -242,6 +246,30 @@ This IRK capture component has been successfully tested with:
 6. **Forget the pairing (important):**
    - After successfully capturing the IRK, go to your device's Bluetooth settings
    - Forget or unpair the "Logitech K380" device
+   - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
+   - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' (or full power cycle of your ESP32) between each capture to avoid potential issues
+
+### Capturing an IRK from Android Watches
+
+1. **Install the app "[Gear Tracker II](https://play.google.com/store/apps/details?id=com.limegreenv.geartracker)"** on your Android watch
+
+2. **Ensure the "Heart Sensor" profile is selected** in the BLE Profile dropdown on the ESPHome device page
+
+3. **Open the Gear Tracker II app** on your watch and pair to the advertised ESP32 device name
+
+4. **Tap on the device name to pair:**
+   - If prompted, tap "Pair" or "Connect"
+   - No PIN is required for this pairing
+   - Depending on the device/OS, pairing may not complete or show as not connected. This can be normal.
+
+5. **View the captured IRK:**
+   - **Option 1:** Check the ESP32 logs in ESPHome Device Builder
+   - **Option 2:** View the "IRK" text sensor in Home Assistant (on your IRK Capture device page)
+   - The IRK will be in format: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+
+6. **Forget the pairing (important):**
+   - After successfully capturing the IRK, go to your device's Bluetooth settings
+   - Forget or unpair the "IRK Capture" device (or whatever name you used)
    - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
    - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' (or full power cycle of your ESP32) between each capture to avoid potential issues
 
@@ -273,7 +301,7 @@ This IRK capture component has been successfully tested with:
 - Turn your device's Bluetooth back on and connect to the ESP32
 - If ESP32 device does not appear on Android, see the section below
 
-### Android device can't see ESP32 Device Name
+### Android Phone can't see ESP32 Device Name
 
 Samsung One UI 7 (Galaxy S25, S24, etc.) aggressively filters BLE devices in Bluetooth settings. To restore visibility:
 
@@ -282,7 +310,7 @@ Samsung One UI 7 (Galaxy S25, S24, etc.) aggressively filters BLE devices in Blu
 3. Return to Bluetooth settings and scan again — the ESP32 device should now appear
 4. Tap on the device (e.g., "Logitech K380" when using Keyboard profile) and tap pair. The IRK should appear in the ESP32 logs and ESPHome device page in Home Assistant
 
-### Android device still not visible after Developer Options fix
+### Android Phone still not visible after Developer Options fix
 
 If the Developer Options fix doesn't work, or you're on a non-Samsung Android device with similar filtering, try using the nRF Connect app:
 
@@ -293,9 +321,11 @@ If the Developer Options fix doesn't work, or you're on a non-Samsung Android de
 5. The pairing dialog should appear, allowing the bonding process to complete
 6. Look for the captured IRK in the ESP32 logs or the ESPHome device page
 
-### Samsung Galaxy Watches
+### Android Watches
 
-Samsung Galaxy Watches aggressively filter BLE devices, and neither the Keyboard nor Heart Sensor profile will likely appear as a pairable device in the watch's Bluetooth settings. The app "BLE Scanner" by Stefan Thomas does list the ESP32 device on the watch, however the app does not allow pairing attempts. This appears to be an app limitation, as user reviews have also complained about the lack of pairing functionality.
+Many Android watches aggressively filter BLE devices, and by default neither the keyboard or heart sensor will be shown as a pairable device. However, the app "Gear Tracker II" (no affiliation) overcomes this aggressive BLE filtering and should allow you pair your watch to the ESP32 and extract the IRK.
+
+Watches that require "reverse" pairing (i.e. the watch advertises as a device that needs to be paired with) will NOT work with this package. This package requires your watch pair TO the ESP32, not the other way around.
 
 ### IRK Not Captured After Pairing
 
