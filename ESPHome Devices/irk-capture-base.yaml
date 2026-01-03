@@ -135,7 +135,7 @@ select:
     ble_profile:
       id: ble_profile_select
       name: "BLE Profile"
-      initial_option: "Keyboard"  # Options: "Heart Sensor" or "Keyboard"
+      # Options: "Heart Sensor" or "Keyboard" (default set in code)
 
 # Diagnostics and basics
 sensor:
