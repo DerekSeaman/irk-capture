@@ -75,7 +75,7 @@ mdns:
 external_components:
   - source:
       type: git
-      url: https://github.com/DerekSeaman/irk-capture-bludroid
+      url: https://github.com/DerekSeaman/irk-capture
       ref: main
     components: [irk_capture]
     refresh: always
