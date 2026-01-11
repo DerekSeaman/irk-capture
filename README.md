@@ -87,11 +87,24 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
      ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
    ```
 
+4. **Secrets File** (managed by ESPHome device builder):
+   - Modify the Wi-Fi secrets as needed
+
+   ```yaml
+   wifi_ssid: "Your WiFi Network"
+   wifi_password: "your_wifi_password"
+   wifi_captive: "fallback_password"
+   ```
+
+5. **Flash to your ESP32:**
+   - In ESPHome Device Builder, click "Install" and choose your connection method
+   - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
+
 ### Using a ESPHome Device (Option 2)
 
 1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
 2. Delete all of the pre-populated YAML from the dummy device.
-3. Copy the contents of the [irk-capture-full.yaml](https://github.com/DerekSeaman/irk-capture/blob/main/ESPHome%20Devices/irk-capture-full.yaml) into the ESPHome device builder.
+3. Copy the contents of the [irk-capture-full.yaml](https://github.com/DerekSeaman/irk-capture/blob/main/ESPHome%20Devices/irk-capture-full.yaml) into the ESPHome device builder and replace the OTA and API keys with the ones ESPHome generated.
 4. Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type.
 5. Change the `device_name` and `friendly_name` as desired.
 6. You should only modify the substitutions shown below:
@@ -106,6 +119,19 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
      esp32_board: seeed_xiao_esp32c3           # Change: Your board type (see ESPHome board list)
      ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
    ```
+
+7. **Secrets File** (managed by ESPHome device builder):
+   - Modify the Wi-Fi secrets as needed
+
+   ```yaml
+   wifi_ssid: "Your WiFi Network"
+   wifi_password: "your_wifi_password"
+   wifi_captive: "fallback_password"
+   ```
+
+8. **Flash to your ESP32:**
+   - In ESPHome Device Builder, click "Install" and choose your connection method
+   - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
 ### Optional Configuration Parameters (not recommended)
 
@@ -134,18 +160,6 @@ irk_capture:
 - If `continuous_mode: false` and `max_captures > 1`, ESPHome will reject the configuration (conflict)
 - For single-device capture, set `continuous_mode: false` and `max_captures: 1`
 - After capturing multiple IRKs, restart your ESP32 device between captures to avoid pairing conflicts
-
-4. **Secrets File** (managed by ESPHome device builder):
-
-   ```yaml
-   wifi_ssid: "Your WiFi Network"
-   wifi_password: "your_wifi_password"
-   wifi_captive: "fallback_password"
-   ```
-
-5. **Flash to your ESP32:**
-   - In ESPHome Device Builder, click "Install" and choose your connection method
-   - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
 ### Using Standalone Configuration
 
