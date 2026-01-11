@@ -8,6 +8,8 @@ This ESPHome package will capture Apple and Android Bluetooth Identity Resolving
 
 This package uses the ESP-IDF framework for broad ESP32 board compatibility. The ESP-IDF framework is required for ESP32-C2, ESP32-C5, ESP32-C6, ESP32-C61, ESP32-H2, and ESP32-P4 variants, as these newer ESP32 variants are not supported by the Arduino framework.
 
+This ESPHome IRK capture package is only designed to capture IRKs and can NOT also act as a Bluetooth proxy. You can either flash this to a spare ESP32 device and keep it in a sock drawer when not being used, or temporarily flash this to an ESP32 then flash back to your generic Bluetooth proxy ESPHome configuration.
+
 ## What is a BLE IRK and Why Is It Needed?
 
 Modern Apple and Android devices use **BLE privacy features** that randomize their MAC addresses periodically to prevent tracking. This creates a problem for ESPHome Bluetooth Proxy tracking in Home Assistant - your device appears as a different device every time its MAC address changes. This can happen as often as every 15 minutes.
