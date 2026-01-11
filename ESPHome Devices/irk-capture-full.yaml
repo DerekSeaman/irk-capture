@@ -35,6 +35,10 @@ esp32:
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
+  project:
+    name: "DerekSeaman.irk-capture"
+    version: "1.5.1"
+  project_url: "https://github.com/DerekSeaman/irk-capture"
 
 # IMPORTANT: Do NOT include esp32_ble:, esp32_ble_tracker:, or bluetooth_proxy: here.
 # The irk_capture component fully initializes and manages NimBLE itself.
