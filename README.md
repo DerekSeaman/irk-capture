@@ -57,9 +57,7 @@ If you use either the Seeed ESP32-C3 or Seeed ESP32-C6, I've built dedicated IRK
 
 ### Using ESPHome Device Builder Packages (Option 1)
 
-If you're using the ESPHome Device Builder add-on in Home Assistant, follow these steps:
-
-1. **Create the 'common' directory, if not already present:**
+1. **In the Home Assistant filesystem create the 'common' directory under esphome, if not already present:**
 
    ```text
    /config/esphome/
@@ -73,12 +71,12 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
    - Place it in `/config/esphome/common/` on your Home Assistant installation
 
 3. **Create your device YAML:**
-   1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
-   2. Delete all of the pre-populated YAML from the dummy device.
-   3. Paste the [irk-capture-device.yaml](ESPHome%20Devices/irk-capture-device.yaml) contents into the ESPHome device builder and replace the OTA and API keys with the ones ESPHome generated.
-   4. Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
-   5. Change the `device_name` and `friendly_name` as desired.
-   6. You should only modify the substitutions shown below:
+   - Create a new dummy device in ESPHome, and save the unique API and OTA keys.
+   - Delete all of the pre-populated YAML from the dummy device.
+   - Paste the [irk-capture-device.yaml](ESPHome%20Devices/irk-capture-device.yaml) contents into the ESPHome device builder and replace the OTA and API keys with the ones ESPHome generated.
+   - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
+   - Change the `device_name` and `friendly_name` as desired.
+   - You should only modify the substitutions shown below:
 
    ```yaml
    substitutions:
