@@ -71,6 +71,8 @@ This is the simplest installation method. It pulls the component directly from G
    - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
    - Change the `device_name` and `friendly_name` as desired.
 
+   ![ESPHome Device Builder YAML Configuration](docs/screenshot-3.jpg)
+
 4. **Secrets File (managed by ESPHome device builder UI):**
 
    ```yaml
