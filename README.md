@@ -100,7 +100,7 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
    - In ESPHome Device Builder, click "Install" and choose your connection method
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
-### Using a ESPHome Device (Option 2)
+### Using a Standalone ESPHome Device (Option 2)
 
 1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
 2. Delete all of the pre-populated YAML from the dummy device.
@@ -133,7 +133,7 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
    - In ESPHome Device Builder, click "Install" and choose your connection method
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
-### Optional Configuration Parameters (not recommended)
+### Optional Configuration Parameters (Not recommended to change)
 
 You can modify these parameters in your device YAML configuration to control multi-device capture behavior:
 
@@ -160,19 +160,6 @@ irk_capture:
 - If `continuous_mode: false` and `max_captures > 1`, ESPHome will reject the configuration (conflict)
 - For single-device capture, set `continuous_mode: false` and `max_captures: 1`
 - After capturing multiple IRKs, restart your ESP32 device between captures to avoid pairing conflicts
-
-### Using Standalone Configuration
-
-If you prefer a single-file configuration without packages:
-
-1. **Download the full configuration:**
-   - Use [irk-capture-full.yaml](ESPHome%20Devices/irk-capture-full.yaml)
-
-2. **Modify the substitutions section** (lines 5-11) with your device-specific values
-
-3. **Configure your secrets.yaml** as shown above
-
-4. **Flash to your ESP32**
 
 ## Home Assistant Entities
 
