@@ -51,6 +51,10 @@ When your Apple or Android device pairs with the ESP32:
 
 ## Installation
 
+I cover two methods for deploying your ESPHome device. First, you can use an ESPHome package which has a device independent YAML configuration file, plus a tiny device-specific YAML file. Second, you can use a single standalone YAML file that has all of the configuration details. Both accomplish the same end result. Personally I use the package method, as I have various ESP32 device types.
+
+If you use either the Seeed ESP32-C3 or Seeed ESP32-C6, I've built dedicated IRK capture YAML files. You can find those IRK YAML files in my repos: [ESPHome-Seeed-Xiao-ESP32-c3-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c3-Config) and [ESPHome-Seeed-Xiao-ESP32-C6-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-C6-Config).
+
 ### Using ESPHome Device Builder Packages (Option 1)
 
 If you're using the ESPHome Device Builder add-on in Home Assistant, follow these steps:
