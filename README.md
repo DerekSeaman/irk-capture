@@ -53,7 +53,11 @@ When your Apple or Android device pairs with the ESP32:
 
 ## Installation
 
-I cover two methods for deploying your ESPHome device. First, you can use an ESPHome package which has a device independent YAML configuration file, plus a tiny device-specific YAML file. Second, you can use a single standalone YAML file that has all of the configuration details. Both accomplish the same end result. Personally I use the package method, as I have various ESP32 device types.
+I cover three methods for deploying your ESPHome device:
+
+- **Option 1 - Remote (Recommended):** Pulls the component directly from GitHub. Simplest method with no local file downloads required. This is the recommended option, as it will always pull the latest version at build time.
+- **Option 2 - Local Package:** Uses a base YAML file plus a device-specific YAML file. Best for managing multiple ESP32 device types. Requires accessing the Home Assistant filesystem to manually copy files in the esphome directory tree.
+- **Option 3 - Local Standalone:** A single self-contained YAML file with all configuration details. Only pulls the IRK Capture component from GitHub at build time.
 
 If you use either the Seeed ESP32-C3 or Seeed ESP32-C6, I've built dedicated IRK capture YAML files. You can find those IRK YAML files in my repos: [ESPHome-Seeed-Xiao-ESP32-c3-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c3-Config) and [ESPHome-Seeed-Xiao-ESP32-C6-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-C6-Config).
 
@@ -67,7 +71,7 @@ This is the simplest installation method. It pulls the component directly from G
    - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
    - Change the `device_name` and `friendly_name` as desired.
 
-4. **Configure your secrets.yaml:**
+4. **Configure your secrets.yaml (Managed by ESPHome UI):**
 
    ```yaml
    wifi_ssid: "Your WiFi Network"
