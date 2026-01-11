@@ -114,7 +114,7 @@ This is an example secrets file showing the required Wi-Fi credentials. ESPHome 
 - You have a single ESP32 device
 - You prefer everything in one file
 - You want simplicity over modularity
-- You need offline builds without GitHub access
+- You want an offline copy of the YAML configuration. However, the IRK Capture component is still pulled from GitHub at build time.
 
 ---
 
@@ -127,13 +127,4 @@ When using the package approach, your ESPHome directory should look like this:
 ├── common/
 │   └── irk-capture-base.yaml
 └── my-irk-capture.yaml (your device file)
-```
-
-## Directory Structure for Standalone Approach
-
-When using the standalone approach:
-
-```text
-/config/esphome/
-└── irk-capture-full.yaml (renamed to your preference)
 ```
