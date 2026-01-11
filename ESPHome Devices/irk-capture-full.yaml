@@ -36,7 +36,7 @@ esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
   project:
-    name: "Derek Seaman.irk-capture (github.com/DerekSeaman/irk-capture)"
+    name: "derekseaman.irk-capture (github.com/DerekSeaman/irk-capture)"
     version: "1.5.1"
 
 # IMPORTANT: Do NOT include esp32_ble:, esp32_ble_tracker:, or bluetooth_proxy: here.
