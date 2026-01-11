@@ -295,6 +295,8 @@ This IRK capture component has been successfully tested with:
 
 ### Installing Private BLE Device Integration
 
+In order to use the captured IRKs with Home Assistant, you need to install the Private BLE integration. This will let you paste your IRKs and will enable tracking of the 'random' Bluetooth MAC addresses.
+
 1. **Go to Home Assistant:**
    - Navigate to Settings → Devices & Services
 
