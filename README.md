@@ -57,7 +57,29 @@ I cover two methods for deploying your ESPHome device. First, you can use an ESP
 
 If you use either the Seeed ESP32-C3 or Seeed ESP32-C6, I've built dedicated IRK capture YAML files. You can find those IRK YAML files in my repos: [ESPHome-Seeed-Xiao-ESP32-c3-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c3-Config) and [ESPHome-Seeed-Xiao-ESP32-C6-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-C6-Config).
 
-### Using ESPHome Device Builder Packages (Option 1)
+### Using ESPHome Device Builder Package - Remote (Option 1)
+
+This is the simplest installation method. It pulls the component directly from GitHub without requiring any local file downloads.
+
+1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
+2. Delete all of the pre-populated YAML from the dummy device.
+3. **Create your device YAML** using [irk-capture-device-remote.yaml](ESPHome%20Devices/irk-capture-device-remote.yaml) as a template and replace the OTA and API keys with the ones ESPHome generated.
+   - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
+   - Change the `device_name` and `friendly_name` as desired.
+
+4. **Configure your secrets.yaml:**
+
+   ```yaml
+   wifi_ssid: "Your WiFi Network"
+   wifi_password: "your_wifi_password"
+   wifi_captive: "fallback_password"
+   ```
+
+5. **Flash to your ESP32:**
+   - In ESPHome, click "Install" and choose your connection method
+   - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
+
+### Using ESPHome Device Builder Package - Local (Option 2)
 
 1. **In the Home Assistant filesystem create the 'common' directory under esphome, if not already present:**
 
@@ -104,7 +126,7 @@ If you use either the Seeed ESP32-C3 or Seeed ESP32-C6, I've built dedicated IRK
    - In ESPHome Device Builder, click "Install" and choose your connection method
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
-### Using a Standalone ESPHome Device (Option 2)
+### Using a Standalone ESPHome Device - Local (Option 3)
 
 1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
 2. Delete all of the pre-populated YAML from the dummy device.
