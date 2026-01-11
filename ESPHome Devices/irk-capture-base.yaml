@@ -28,7 +28,11 @@ esphome:
   project:
     name: "DerekSeaman.irk-capture"
     version: "1.5.1"
-    url: "https://github.com/DerekSeaman/irk-capture"
+
+# Dashboard import for ESPHome adoption
+dashboard_import:
+  package_import_url: github://DerekSeaman/irk-capture/ESPHome%20Devices/irk-capture-base.yaml@main
+  import_full_config: false
 
 # IMPORTANT: Do NOT include esp32_ble:, esp32_ble_tracker:, or bluetooth_proxy: here.
 # The irk_capture component fully initializes and manages NimBLE itself.
