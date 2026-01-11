@@ -4,23 +4,28 @@
 # Device YAML must provide substitutions: device_name, friendly_name, api_key, ota_password, esp32_variant, esp32_board, ble_name
 
 esp32:
-  # Bluedroid stack with ESP-IDF. Use ESP32 / S2 / S3. Do NOT use C3/C6/H2 (NimBLE-only).
+  # NimBLE stack with ESP-IDF. Supports all ESP32 variants (ESP32, C3, C6, S3, etc.)
   board: ${esp32_board}
   variant: ${esp32_variant}
   framework:
     type: esp-idf
     version: recommended
     sdkconfig_options:
+      # Enable Bluetooth and NimBLE, disable Bluedroid
       CONFIG_BT_ENABLED: "y"
-      CONFIG_BT_BLUEDROID_ENABLED: "y"
-      CONFIG_BT_NIMBLE_ENABLED: "n"
-      # Roles: peripheral/broadcaster are sufficient here
-      CONFIG_BT_GATTS_ENABLE: "y"
-      CONFIG_BT_GATTC_ENABLE: "n"
-      CONFIG_BT_BLE_50_FEATURES_SUPPORTED: "y"
-  # If board resolution fails, pin a newer platform release:
-  # platformio_options:
-  #   platform: espressif32@6.8.1
+      CONFIG_BT_BLUEDROID_ENABLED: "n"
+      CONFIG_BT_NIMBLE_ENABLED: "y"
+
+      # Roles (peripheral/broadcaster sufficient)
+      CONFIG_BT_NIMBLE_ROLE_PERIPHERAL: "y"
+      CONFIG_BT_NIMBLE_ROLE_BROADCASTER: "y"
+      CONFIG_BT_NIMBLE_ROLE_CENTRAL: "n"
+      CONFIG_BT_NIMBLE_ROLE_OBSERVER: "n"
+
+      # Security (bonding + LESC)
+      CONFIG_BT_NIMBLE_SECURITY_ENABLE: "y"
+      CONFIG_BT_NIMBLE_SM_LEGACY: "y"
+      CONFIG_BT_NIMBLE_SM_SC: "y"
 
 esphome:
   name: ${device_name}
@@ -64,7 +69,7 @@ captive_portal:
 
 mdns:
 
-# Pull irk_capture external component (Bluedroid variant)
+# Pull irk_capture external component
 external_components:
   - source:
       type: git

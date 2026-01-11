@@ -51,7 +51,7 @@ When your Apple or Android device pairs with the ESP32:
 
 ## Installation
 
-### Using ESPHome Device Builder (Recommended)
+### Using ESPHome Device Builder Packages (Option 1)
 
 If you're using the ESPHome Device Builder add-on in Home Assistant, follow these steps:
 
@@ -69,10 +69,12 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
    - Place it in `/config/esphome/common/` on your Home Assistant installation
 
 3. **Create your device YAML:**
-   - Use [irk-capture-device.yaml](ESPHome%20Devices/irk-capture-device.yaml) as a template
-   - Create a new dummy device in ESPHome, and take note of the unique API and OTA keys.
-   - Modify the template as needed to match your ESP32 device and board type
-   - Replace the following values in the YAML from this repo:
+   1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
+   2. Delete all of the pre-populated YAML from the dummy device.
+   3. Paste the [irk-capture-device.yaml](ESPHome%20Devices/irk-capture-device.yaml) contents into the ESPHome device builder and replace the OTA and API keys with the ones ESPHome generated.
+   4. Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
+   5. Change the `device_name` and `friendly_name` as desired.
+   6. You should only modify the substitutions shown below:
 
    ```yaml
    substitutions:
@@ -83,19 +85,35 @@ If you're using the ESPHome Device Builder add-on in Home Assistant, follow thes
      esp32_variant: esp32c3                    # Change: Your ESP32 variant (esp32, esp32c3, esp32c6, esp32s3, etc.)
      esp32_board: seeed_xiao_esp32c3           # Change: Your board type (see ESPHome board list)
      ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
-
-   packages:
-     device: !include common/irk-capture-base.yaml
    ```
 
-### Optional Configuration Parameters
+### Using a ESPHome Device (Option 2)
 
-You can add these optional parameters to your device YAML configuration to control multi-device capture behavior:
+1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
+2. Delete all of the pre-populated YAML from the dummy device.
+3. Copy the contents of the [irk-capture-full.yaml](https://github.com/DerekSeaman/irk-capture/blob/main/ESPHome%20Devices/irk-capture-full.yaml) into the ESPHome device builder.
+4. Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type.
+5. Change the `device_name` and `friendly_name` as desired.
+6. You should only modify the substitutions shown below:
+
+   ```yaml
+   substitutions:
+     device_name: esphome-irk-capture          # Change: Unique name for your device (lowercase, hyphens only)
+     friendly_name: IRK Capture                # Change: Human-readable name shown in Home Assistant
+     api_key: "ZmFrZWFwaWtleWZha2VleGFtcGxlZmFrZWtleQ=="  # Change: Generated with ESPHome new device wizard
+     ota_password: "ChangeMe!2025"             # Change: Generated with the ESPHome new device wizard
+     esp32_variant: esp32c3                    # Change: Your ESP32 variant (esp32, esp32c3, esp32c6, esp32s3, etc.)
+     esp32_board: seeed_xiao_esp32c3           # Change: Your board type (see ESPHome board list)
+     ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
+   ```
+
+### Optional Configuration Parameters (not recommended)
+
+You can modify these parameters in your device YAML configuration to control multi-device capture behavior:
 
 ```yaml
 irk_capture:
   id: irk
-  ble_name: "IRK Capture"  # Max 12 characters
   start_on_boot: true
   continuous_mode: true   # Optional: Keep advertising after IRK capture (default: true)
   max_captures: 10        # Optional: Maximum IRKs to capture before auto-stop (default: 10, 0=unlimited)

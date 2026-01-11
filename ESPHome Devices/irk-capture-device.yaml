@@ -4,7 +4,7 @@ substitutions:
   friendly_name: IRK Capture
   api_key: "ZmFrZWFwaWtleWZha2VleGFtcGxlZmFrZWtleQ=="
   ota_password: "ChangeMe!2025"
-  esp32_variant: esp32          # Bluedroid-capable (esp32/esp32s2/esp32s3)
+  esp32_variant: esp32          # Any ESP32 variant (esp32, esp32c3, esp32c6, esp32s3, etc.)
   esp32_board: featheresp32     # Set to your board ID (e.g., featheresp32, esp32dev)
   ble_name: "IRK Capture"
 
