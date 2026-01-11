@@ -1,8 +1,8 @@
-# IRK Capture v1.5.0 Release Notes
+# IRK Capture v1.5.2 Release Notes
 
 ## Overview
 
-v1.5.0 is a major update focused on **Android device support** and **reliability improvements**. This release introduces a new BLE profile system that enables IRK capture from Samsung Galaxy phones and other Android devices that previously needed workarounds.
+v1.5.2 is a major update focused on **Android device support** and **reliability improvements**. This release introduces a new BLE profile system that enables IRK capture from Samsung Galaxy phones and other Android devices that previously needed workarounds.
 
 ---
 
@@ -14,8 +14,8 @@ A new dropdown in the ESPHome device page lets you switch between two BLE advert
 
 | Profile | Best For | Advertised Name | Service |
 | ------- | -------- | --------------- | ------- |
-| **Heart Sensor** | Apple devices (iPhone, iPad, Apple Watch) | Your configured name | Heart Rate (0x180D) |
-| **Keyboard** | Android devices (Samsung Galaxy, Pixel, etc.) | "Logitech K380" | HID (0x1812) |
+| **Heart Sensor** | Apple devices (iPhone, iPad, Apple Watch), Android Watches | Your configured name | Heart Rate (0x180D) |
+| **Keyboard** | Android Phones (Samsung Galaxy, Pixel, etc.) | "Logitech K380" | HID (0x1812) |
 
 **Why this matters:** Samsung One UI 7 and other Android versions aggressively filter BLE devices in Bluetooth settings. The Keyboard profile advertises as a familiar Logitech keyboard, bypassing these filters and making the ESP32 visible for pairing.
 
@@ -107,31 +107,6 @@ None. All existing YAML configurations work without modification.
 | Apple Watch | watchOS 26 | Heart Sensor | Working |
 | iPad | iPadOS 26 | Heart Sensor | Working |
 | Samsung Galaxy S25+ | One UI 7 | Keyboard | Working |
-| Samsung Galaxy Watch8 Classic | Wear OS 6 | Both | Not Working |
+| Samsung Galaxy Watch8 Classic | Wear OS 6 | Heart Sensor | Working |
 | Google Pixel 9 | Android 15 | Keyboard | Working |
 | Amazon Echo Show | LineageOS 18.1 | Heart Sensor | Working |
-
----
-
-## Migration Guide
-
-### From v1.4.x
-
-Add the new optional entities to your configuration (if desired):
-
-```yaml
-select:
-  - platform: irk_capture
-    irk_capture_id: irk
-    ble_profile:
-      id: ble_profile_select
-      name: "BLE Profile"
-
-text_sensor:
-  - platform: irk_capture
-    irk_capture_id: irk
-    effective_mac:
-      name: "Effective MAC"
-```
-
-Then compile, flash, and power cycle your ESP32.
