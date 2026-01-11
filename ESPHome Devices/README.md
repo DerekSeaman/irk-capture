@@ -83,7 +83,7 @@ This is a single-file configuration that merges the base package and device sett
 
 Example Secrets File
 
-This is an example secrets file showing the required Wi-Fi credentials. ESPHome Device Builder typically manages this file automatically. Make sure these substituations are in the secrets file.
+This is an example secrets file showing the required Wi-Fi credentials. ESPHome Device Builder typically manages this file automatically. Make sure these substituations are in the secrets file. The ESPHome device builder secrets can be accessed directly via the UI.
 
 **Required secrets:**
 
