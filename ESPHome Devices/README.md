@@ -4,6 +4,30 @@ This directory contains the ESPHome YAML configuration files for the IRK Capture
 
 ## Files
 
+### irk-capture-device-remote.yaml
+
+Remote Device Configuration (Recommended)
+
+This is the simplest configuration option. It pulls both the YAML package and IRK Capture component directly from GitHub at build time. No need to download or copy any files to your Home Assistant filesystem.
+
+**Usage:**
+
+- Use this as a template for your own device configuration
+- Replace all substitution values with your device-specific settings
+- Tip: Create a dummy device in ESPHome Device Builder, grab the API/OTA keys, then use this YAML template
+
+**Required substitutions:**
+
+- `device_name` - Unique device name (lowercase, hyphens only)
+- `friendly_name` - Human-readable name shown in Home Assistant
+- `api_key` - ESPHome API encryption key
+- `ota_password` - OTA update password
+- `esp32_variant` - Your ESP32 variant (esp32, esp32c3, esp32c6, esp32s3, etc.)
+- `esp32_board` - Your board type (see ESPHome board list)
+- `ble_name` - BLE advertising name shown in Bluetooth settings
+
+---
+
 ### irk-capture-base.yaml
 
 Generic ESP32 IRK Capture Package
@@ -59,7 +83,7 @@ This is a single-file configuration that merges the base package and device sett
 
 Example Secrets File
 
-This is an example secrets file showing the required Wi-Fi credentials. ESPHome Device Builder typically manages this file automatically. Make sure these substituations are in the secrets file.
+This is an example secrets file showing the required Wi-Fi credentials. ESPHome Device Builder typically manages this file automatically. Make sure these substituations are in the secrets file. The ESPHome device builder secrets can be accessed directly via the UI.
 
 **Required secrets:**
 
@@ -71,19 +95,26 @@ This is an example secrets file showing the required Wi-Fi credentials. ESPHome 
 
 ## Which Configuration Should I Use
 
-### Use the Package Approach (base + device) if
+### Use the Remote Configuration (Recommended) if
+
+- You want the simplest setup with no local file management
+- You want automatic updates when the component is updated on GitHub
+- You don't need to modify the base package
+- You're new to ESPHome
+
+### Use the Local Package Approach (base + device) if
 
 - You have multiple ESP32 devices running IRK Capture
 - You want to maintain consistency across devices
 - You prefer separation between base functionality and device settings
-- You're comfortable with the ESPHome package system
+- You need to customize the base package
 
 ### Use the Standalone Configuration (full) if
 
 - You have a single ESP32 device
 - You prefer everything in one file
 - You want simplicity over modularity
-- You're new to ESPHome packages
+- You want an offline copy of the YAML configuration. However, the IRK Capture component is still pulled from GitHub at build time.
 
 ---
 
@@ -96,13 +127,4 @@ When using the package approach, your ESPHome directory should look like this:
 ├── common/
 │   └── irk-capture-base.yaml
 └── my-irk-capture.yaml (your device file)
-```
-
-## Directory Structure for Standalone Approach
-
-When using the standalone approach:
-
-```text
-/config/esphome/
-└── irk-capture-full.yaml (renamed to your preference)
 ```
