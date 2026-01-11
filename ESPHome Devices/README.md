@@ -95,7 +95,6 @@ When using the package approach, your ESPHome directory should look like this:
 /config/esphome/
 ├── common/
 │   └── irk-capture-base.yaml
-├── secrets.yaml
 └── my-irk-capture.yaml (your device file)
 ```
 
@@ -105,6 +104,5 @@ When using the standalone approach:
 
 ```text
 /config/esphome/
-├── secrets.yaml
 └── irk-capture-full.yaml (renamed to your preference)
 ```

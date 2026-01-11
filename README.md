@@ -188,7 +188,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 
 ## Tested Devices
 
-This IRK capture component has been successfully tested with:
+This ESPHome IRK capture component has been successfully tested with:
 
 - **Apple OS 26 family:**
   - iPhone
@@ -295,7 +295,7 @@ This IRK capture component has been successfully tested with:
 
 ### Installing Private BLE Device Integration
 
-In order to use the captured IRKs with Home Assistant, you need to install the Private BLE integration. This will let you paste your IRKs and will enable tracking of the 'random' Bluetooth MAC addresses.
+In order to use the captured IRKs with Home Assistant, you need to install the Private BLE integration. This will let you paste your IRKs into the integration and will enable tracking of the 'random' Bluetooth MAC addresses.
 
 1. **Go to Home Assistant:**
    - Navigate to Settings → Devices & Services
