@@ -71,7 +71,7 @@ This is the simplest installation method. It pulls the component directly from G
    - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
    - Change the `device_name` and `friendly_name` as desired.
 
-4. **Configure your secrets.yaml (Managed by ESPHome UI):**
+4. **Secrets File (managed by ESPHome device builder UI):**
 
    ```yaml
    wifi_ssid: "Your WiFi Network"
@@ -117,7 +117,7 @@ This is the simplest installation method. It pulls the component directly from G
      ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
    ```
 
-4. **Secrets File** (managed by ESPHome device builder):
+4. **Secrets File (managed by ESPHome device builder UI):**
    - Modify the Wi-Fi secrets as needed
 
    ```yaml
@@ -150,7 +150,7 @@ This is the simplest installation method. It pulls the component directly from G
      ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
    ```
 
-7. **Secrets File** (managed by ESPHome device builder):
+7. **Secrets File (managed by ESPHome device builder UI):**
    - Modify the Wi-Fi secrets as needed
 
    ```yaml
