@@ -1740,13 +1740,13 @@ void IRKCaptureComponent::register_gatt_services() {
 //======================== Advertising ========================
 
 void IRKCaptureComponent::start_advertising() {
-  // Defensive stop - ensure clean GAP state before starting (fixes rc=21 BLE_HS_EALREADY)
-  ble_gap_adv_stop();
-
   if (!host_synced_) {
     ESP_LOGW(TAG, "Host not synced; cannot advertise");
     return;
   }
+
+  // Defensive stop - ensure clean GAP state before starting (fixes rc=21 BLE_HS_EALREADY)
+  ble_gap_adv_stop();
 
   // Get current profile (thread-safe)
   BLEProfile current_profile;
