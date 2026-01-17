@@ -69,7 +69,9 @@ This is the simplest installation method. It pulls the component directly from G
 2. Delete all of the pre-populated YAML from the dummy device.
 3. **Create your device YAML** using [irk-capture-device-remote.yaml](ESPHome%20Devices/irk-capture-device-remote.yaml) as a template and replace the OTA and API keys with the ones ESPHome generated.
    - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
+   ![ESP32 Variants](docs/ESP-variants.jpg)
    - Change the `device_name` and `friendly_name` as desired.
+   - Modify the Wi-Fi secrets references as needed to match your secrets file.
 
 4. **Secrets File (managed by ESPHome device builder UI):**
 
