@@ -75,7 +75,7 @@ This is the simplest installation method. It pulls the component directly from G
    - Change the `device_name` and `friendly_name` as desired.
    - Modify the Wi-Fi secrets references as needed to match your secrets file.
 
-4. **Secrets File (managed by ESPHome device builder UI):**
+4. **Review your ESPHome Builder Secrets File and modify the Wi-Fi values as needed:**
 
    ```yaml
    wifi_ssid: "Your WiFi Network"
