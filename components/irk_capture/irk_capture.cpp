@@ -26,6 +26,9 @@ static const char* const TAG = "irk_capture";
 static constexpr char VERSION[] = "1.5.3";
 static constexpr char HEX[] = "0123456789abcdef";
 
+// Global instance pointer for NimBLE callbacks that don't accept user args
+static IRKCaptureComponent* g_irk_instance = nullptr;
+
 //======================== NAMING CONVENTIONS ========================
 /*
 This codebase follows ESPHome style guidelines:
@@ -1322,9 +1325,9 @@ void IRKCaptureComponent::setup() {
 
   this->setup_ble();
 
-  if (start_on_boot_) {
-    this->start_advertising();
-  }
+  // Note: start_on_boot advertising is handled in on_ble_host_synced() callback
+  // which fires when NimBLE host is ready (asynchronous)
+
   if (ble_name_text_) {
     // Update name based on profile
     if (ble_profile_ == BLEProfile::KEYBOARD) {
@@ -1636,6 +1639,9 @@ void IRKCaptureComponent::setup_ble() {
   // NimBLE host
   nimble_port_init();
 
+  // Set global instance for callbacks that don't accept user args
+  g_irk_instance = this;
+
   // Security (set once here; no later re-asserts)
   ble_hs_cfg.reset_cb = [](int reason) { ESP_LOGW(TAG, "NimBLE reset reason=%d", reason); };
   ble_hs_cfg.sync_cb = []() {
@@ -1648,6 +1654,11 @@ void IRKCaptureComponent::setup_ble() {
              (int) ble_hs_cfg.sm_bonding, (int) ble_hs_cfg.sm_mitm, (int) ble_hs_cfg.sm_sc,
              (int) ble_hs_cfg.sm_io_cap, (unsigned) ble_hs_cfg.sm_our_key_dist,
              (unsigned) ble_hs_cfg.sm_their_key_dist);
+
+    // Now that host is synced, set flag and start advertising if configured
+    if (g_irk_instance) {
+      g_irk_instance->on_ble_host_synced();
+    }
   };
 
   ble_hs_cfg.sm_bonding = 1;
@@ -1681,13 +1692,15 @@ void IRKCaptureComponent::setup_ble() {
     nimble_port_freertos_deinit();
     vTaskDelete(NULL);
   });
+}
 
-  // Seed initial static random address at boot (matches Arduino BLE library
-  // behavior) Why: Provides stable identity before user-triggered refresh_mac
-  // rotations
+void IRKCaptureComponent::on_ble_host_synced() {
+  // Called from sync_cb when NimBLE host is ready
+  host_synced_ = true;
+
+  // Set initial random MAC address now that host is synced
   uint8_t rnd[6];
   esp_fill_random(rnd, sizeof(rnd));
-  // NimBLE uses little-endian: rnd[5] is the MSB (displayed first in XX:XX:XX:XX:XX:XX)
   rnd[5] |= 0xC0;  // Set top two bits of MSB for static random address type
   rnd[0] &= 0xFE;  // Clear bit0 of LSB for unicast (not multicast)
   int rc = ble_hs_id_set_rnd(rnd);
@@ -1697,7 +1710,11 @@ void IRKCaptureComponent::setup_ble() {
     log_mac("Effective");
   }
 
-  host_synced_ = true;
+  // Start advertising if configured
+  if (start_on_boot_) {
+    ESP_LOGI(TAG, "Host synced - starting advertising (start_on_boot=true)");
+    start_advertising();
+  }
 }
 
 void IRKCaptureComponent::register_gatt_services() {

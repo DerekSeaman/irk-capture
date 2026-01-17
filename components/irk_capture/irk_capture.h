@@ -189,7 +189,8 @@ class IRKCaptureComponent : public Component {
   void start_advertising();
   void stop_advertising();
   void refresh_mac();
-  bool is_advertising();  // Thread-safe check of advertising state
+  bool is_advertising();      // Thread-safe check of advertising state
+  void on_ble_host_synced();  // Called when NimBLE host is ready
 
   // GAP events
   void on_connect(uint16_t conn_handle);
