@@ -106,7 +106,10 @@ This is the simplest installation method. It pulls the component directly from G
    - Create a new dummy device in ESPHome, and save the unique API and OTA keys.
    - Delete all of the pre-populated YAML from the dummy device.
    - Paste the [irk-capture-device.yaml](ESPHome%20Devices/irk-capture-device.yaml) contents into the ESPHome device builder and replace the OTA and API keys with the ones ESPHome generated.
-   - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
+   - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type. Refer to the list below for the January 2026 list of esp32_variant options, which must match your board type.
+   - For example, an ESP32 Huzzah32 Feather would be: `esp32_board: featheresp32`, `esp32_variant: esp32`
+
+     ![ESP32 Variants](docs/ESP-variants.jpg)
    - Change the `device_name` and `friendly_name` as desired.
    - You should only modify the substitutions shown below:
 
