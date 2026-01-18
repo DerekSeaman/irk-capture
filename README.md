@@ -401,7 +401,7 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 ### ESPHome Build Fails
 
 - Clean the build folder and retry
-- Ensure you're using ESPHome 2024.x or newer (tested with ESPHome 2025.12)
+- Ensure you're using ESPHome 2024.x or newer (tested with ESPHome 2025.12.7)
 - Verify your `esp32_variant` and `esp32_board` substitutions match your hardware
 - Check that all required secrets are defined in `secrets.yaml`
 
