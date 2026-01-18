@@ -83,7 +83,11 @@ This is the simplest installation method. It pulls the component directly from G
    wifi_captive: "fallback_password"
    ```
 
-5. **Flash to your ESP32:**
+5. Below is an example of a complete device YAML file:
+
+   ![Remote Example](docs/remote-example.jpg)
+
+6. **Flash to your ESP32:**
    - In ESPHome, click "Install" and choose your connection method. If you select serial, make sure you are using a browser that supports direct serial port access such as Chrome, Edge, or Brave. Not compatible with Firefox or Safari. Depending on PC OS and ESP32 device, you may need to install serial port drivers. Refer to the ESP32 flasher pop-up windows for links to various ESP32 driver packages.
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
