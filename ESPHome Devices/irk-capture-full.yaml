@@ -12,6 +12,20 @@ substitutions:
   esp32_board: featheresp32     # Set to your board ID (e.g., featheresp32, esp32dev)
   ble_name: "IRK Capture"
 
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  domain: .local
+  use_address: ${device_name}.local
+  power_save_mode: NONE
+  fast_connect: true
+  enable_on_boot: true
+  reboot_timeout: 10min
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret wifi_captive
+    ap_timeout: 120s
+
 # Do not change anything below this line unless you know what you're doing
 
 esp32:
@@ -61,20 +75,6 @@ ota:
   - platform: esphome
     password: ${ota_password}
     version: 2
-
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  domain: .local
-  use_address: ${device_name}.local
-  power_save_mode: NONE
-  fast_connect: true
-  enable_on_boot: true
-  reboot_timeout: 10min
-  ap:
-    ssid: "${friendly_name} Fallback"
-    password: !secret wifi_captive
-    ap_timeout: 120s
 
 captive_portal:
 
