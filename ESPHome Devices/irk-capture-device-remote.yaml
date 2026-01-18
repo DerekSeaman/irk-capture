@@ -13,6 +13,7 @@ packages:
     url: https://github.com/DerekSeaman/irk-capture
     ref: main
     file: ESPHome Devices/irk-capture-base.yaml
+    refresh: always
 
 # Override the package's WiFi configuration with your secrets
 wifi:
