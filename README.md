@@ -8,7 +8,7 @@ This ESPHome package will capture Apple and Android Bluetooth Identity Resolving
 
 This package uses the ESP-IDF framework for broad ESP32 board compatibility. The ESP-IDF framework is required for ESP32-C2, ESP32-C5, ESP32-C6, ESP32-C61, ESP32-H2, and ESP32-P4 variants, as these newer ESP32 variants are not supported by the Arduino framework.
 
-This ESPHome IRK capture package is only designed to capture IRKs and can NOT also act as a Bluetooth proxy. You can either flash this to a spare ESP32 device and keep it in a sock drawer when not being used, or temporarily flash this to an ESP32 then flash back to your generic Bluetooth proxy ESPHome configuration. Bermuda BLE will NOT recognize the IRK Capture firmware as a Bluetooth proxy.
+This ESPHome IRK capture package is only designed to capture IRKs and can NOT also act as a Bluetooth proxy. You can either flash this to a spare ESP32 device and keep it in a sock drawer when not being used, or temporarily flash this to an ESP32 then flash back to your generic Bluetooth proxy ESPHome configuration.
 
 ## What is a BLE IRK and Why Is It Needed?
 
@@ -47,7 +47,7 @@ When your Apple or Android device pairs with the ESP32:
 
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESP-IDF framework** (required - this component does NOT support Arduino framework)
-- **ESPHome** 2024.x or newer - Tested with 2025.12
+- **ESPHome** 2024.x or newer - Tested with 2025.12.7
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
 - **ESPHome Device Builder** (optional, but makes managing ESPHome devices in Home Assistant easier)
 
@@ -67,13 +67,15 @@ This is the simplest installation method. It pulls the component directly from G
 
 1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
 2. Delete all of the pre-populated YAML from the dummy device.
-3. **Create your device YAML** using [irk-capture-device-remote.yaml](ESPHome%20Devices/irk-capture-device-remote.yaml) as a template and replace the OTA and API keys with the ones ESPHome generated.
-   - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
+3. Create your device YAML using [irk-capture-device-remote.yaml](ESPHome%20Devices/irk-capture-device-remote.yaml) as a template and replace the OTA and API keys with the ones ESPHome generated.
+   - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type. Refer to the list below for the January 2026 list of esp32_variant options, which must match your board type.
+   - For example, an ESP32 Huzzah32 Feather would be: `esp32_board: featheresp32`, `esp32_variant: esp32`
+
+     ![ESP32 Variants](docs/ESP-variants.jpg)
    - Change the `device_name` and `friendly_name` as desired.
+   - Modify the Wi-Fi secrets references as needed to match your secrets file.
 
-   ![ESPHome Device Builder YAML Configuration](docs/screenshot-3.jpg)
-
-4. **Secrets File (managed by ESPHome device builder UI):**
+4. **Review your ESPHome Builder Secrets File and modify the Wi-Fi values as needed:**
 
    ```yaml
    wifi_ssid: "Your WiFi Network"
@@ -81,8 +83,12 @@ This is the simplest installation method. It pulls the component directly from G
    wifi_captive: "fallback_password"
    ```
 
-5. **Flash to your ESP32:**
-   - In ESPHome, click "Install" and choose your connection method
+5. Below is an example of a complete device YAML file:
+
+   ![Remote Example](docs/remote-example.jpg)
+
+6. **Flash to your ESP32:**
+   - In ESPHome, click "Install" and choose your connection method. If you select serial, make sure you are using a browser that supports direct serial port access such as Chrome, Edge, or Brave. Not compatible with Firefox or Safari. Depending on PC OS and ESP32 device, you may need to install serial port drivers. Refer to the ESP32 flasher pop-up windows for links to various ESP32 driver packages.
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
 ### Using ESPHome Device Builder Package - Local (Option 2)
@@ -104,7 +110,10 @@ This is the simplest installation method. It pulls the component directly from G
    - Create a new dummy device in ESPHome, and save the unique API and OTA keys.
    - Delete all of the pre-populated YAML from the dummy device.
    - Paste the [irk-capture-device.yaml](ESPHome%20Devices/irk-capture-device.yaml) contents into the ESPHome device builder and replace the OTA and API keys with the ones ESPHome generated.
-   - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type
+   - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type. Refer to the list below for the January 2026 list of esp32_variant options, which must match your board type.
+   - For example, an ESP32 Huzzah32 Feather would be: `esp32_board: featheresp32`, `esp32_variant: esp32`
+
+     ![ESP32 Variants](docs/ESP-variants.jpg)
    - Change the `device_name` and `friendly_name` as desired.
    - You should only modify the substitutions shown below:
 
@@ -119,8 +128,7 @@ This is the simplest installation method. It pulls the component directly from G
      ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
    ```
 
-4. **Secrets File (managed by ESPHome device builder UI):**
-   - Modify the Wi-Fi secrets as needed
+4. **Review your ESPHome Builder Secrets File and modify the Wi-Fi values as needed:**
 
    ```yaml
    wifi_ssid: "Your WiFi Network"
@@ -129,7 +137,7 @@ This is the simplest installation method. It pulls the component directly from G
    ```
 
 5. **Flash to your ESP32:**
-   - In ESPHome Device Builder, click "Install" and choose your connection method
+   - In ESPHome, click "Install" and choose your connection method. If you select serial, make sure you are using a browser that supports direct serial port access such as Chrome, Edge, or Brave. Not compatible with Firefox or Safari. Depending on PC OS and ESP32 device, you may need to install serial port drivers. Refer to the ESP32 flasher pop-up windows for links to various ESP32 driver packages.
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
 ### Using a Standalone ESPHome Device - Local (Option 3)
@@ -137,7 +145,10 @@ This is the simplest installation method. It pulls the component directly from G
 1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
 2. Delete all of the pre-populated YAML from the dummy device.
 3. Copy the contents of the [irk-capture-full.yaml](https://github.com/DerekSeaman/irk-capture/blob/main/ESPHome%20Devices/irk-capture-full.yaml) into the ESPHome device builder and replace the OTA and API keys with the ones ESPHome generated.
-4. Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type.
+4. Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type. Refer to the list below for the January 2026 list of esp32_variant options, which must match your board type.
+   - For example, an ESP32 Huzzah32 Feather would be: `esp32_board: featheresp32`, `esp32_variant: esp32`
+
+     ![ESP32 Variants](docs/ESP-variants.jpg)
 5. Change the `device_name` and `friendly_name` as desired.
 6. You should only modify the substitutions shown below:
 
@@ -152,8 +163,7 @@ This is the simplest installation method. It pulls the component directly from G
      ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
    ```
 
-7. **Secrets File (managed by ESPHome device builder UI):**
-   - Modify the Wi-Fi secrets as needed
+7. **Review your ESPHome Builder Secrets File and modify the Wi-Fi values as needed:**
 
    ```yaml
    wifi_ssid: "Your WiFi Network"
@@ -162,7 +172,7 @@ This is the simplest installation method. It pulls the component directly from G
    ```
 
 8. **Flash to your ESP32:**
-   - In ESPHome Device Builder, click "Install" and choose your connection method
+   - In ESPHome, click "Install" and choose your connection method. If you select serial, make sure you are using a browser that supports direct serial port access such as Chrome, Edge, or Brave. Not compatible with Firefox or Safari. Depending on PC OS and ESP32 device, you may need to install serial port drivers. Refer to the ESP32 flasher pop-up windows for links to various ESP32 driver packages.
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
 ### Optional Configuration Parameters (Not recommended to change)
@@ -391,7 +401,7 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 ### ESPHome Build Fails
 
 - Clean the build folder and retry
-- Ensure you're using ESPHome 2024.x or newer (tested with ESPHome 2025.12)
+- Ensure you're using ESPHome 2024.x or newer (tested with ESPHome 2025.12.7)
 - Verify your `esp32_variant` and `esp32_board` substitutions match your hardware
 - Check that all required secrets are defined in `secrets.yaml`
 
