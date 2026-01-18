@@ -121,8 +121,7 @@ This is the simplest installation method. It pulls the component directly from G
      ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
    ```
 
-4. **Secrets File (managed by ESPHome device builder UI):**
-   - Modify the Wi-Fi secrets as needed
+4. **Review your ESPHome Builder Secrets File and modify the Wi-Fi values as needed:**
 
    ```yaml
    wifi_ssid: "Your WiFi Network"
@@ -131,7 +130,7 @@ This is the simplest installation method. It pulls the component directly from G
    ```
 
 5. **Flash to your ESP32:**
-   - In ESPHome Device Builder, click "Install" and choose your connection method
+   - In ESPHome, click "Install" and choose your connection method. If you select serial, make sure you are using a browser that supports direct serial port access such as Chrome, Edge, or Brave. Not compatible with Firefox or Safari. Depending on PC OS and ESP32 device, you may need to install serial port drivers. Refer to the ESP32 flasher pop-up windows for links to various ESP32 driver packages.
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
 ### Using a Standalone ESPHome Device - Local (Option 3)
@@ -154,8 +153,7 @@ This is the simplest installation method. It pulls the component directly from G
      ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
    ```
 
-7. **Secrets File (managed by ESPHome device builder UI):**
-   - Modify the Wi-Fi secrets as needed
+7. **Review your ESPHome Builder Secrets File and modify the Wi-Fi values as needed:**
 
    ```yaml
    wifi_ssid: "Your WiFi Network"
@@ -164,7 +162,7 @@ This is the simplest installation method. It pulls the component directly from G
    ```
 
 8. **Flash to your ESP32:**
-   - In ESPHome Device Builder, click "Install" and choose your connection method
+   - In ESPHome, click "Install" and choose your connection method. If you select serial, make sure you are using a browser that supports direct serial port access such as Chrome, Edge, or Brave. Not compatible with Firefox or Safari. Depending on PC OS and ESP32 device, you may need to install serial port drivers. Refer to the ESP32 flasher pop-up windows for links to various ESP32 driver packages.
    - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
 
 ### Optional Configuration Parameters (Not recommended to change)
