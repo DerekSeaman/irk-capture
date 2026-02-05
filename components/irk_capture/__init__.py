@@ -18,12 +18,13 @@ IRKCaptureComponent = irk_capture_ns.class_("IRKCaptureComponent", cg.Component)
 
 
 def validate_ble_name(value):
-    """Validate BLE name length (BLE spec: max 29 bytes for advertising packet)"""
+    """Validate BLE name length (12 bytes max for Samsung S24/S25 compatibility)"""
     value = cv.string(value)
-    if len(value.encode("utf-8")) > 29:
+    if len(value.encode("utf-8")) > 12:
         raise cv.Invalid(
             f"BLE name too long ({len(value.encode('utf-8'))} bytes). "
-            f"Maximum 29 bytes for BLE advertising packet. Shorten your name."
+            f"Maximum 12 bytes for Samsung S24/S25 compatibility with "
+            f"single-UUID advertising. Shorten your name."
         )
     return value
 
@@ -59,8 +60,8 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.declare_id(IRKCaptureComponent),
             cv.Optional(CONF_BLE_NAME, default="IRK Capture"): validate_ble_name,
             cv.Optional(CONF_START_ON_BOOT, default=True): cv.boolean,
-            cv.Optional(CONF_CONTINUOUS_MODE, default=False): cv.boolean,
-            cv.Optional(CONF_MAX_CAPTURES, default=1): cv.int_range(min=0, max=255),
+            cv.Optional(CONF_CONTINUOUS_MODE, default=True): cv.boolean,
+            cv.Optional(CONF_MAX_CAPTURES, default=10): cv.int_range(min=0, max=255),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     validate_continuous_mode_config,  # Cross-field validation
