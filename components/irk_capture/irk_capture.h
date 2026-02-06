@@ -1,5 +1,9 @@
 #pragma once
 
+#include <atomic>
+#include <string>
+#include <vector>
+
 #include "esphome/components/button/button.h"
 #include "esphome/components/select/select.h"
 #include "esphome/components/switch/switch.h"
@@ -264,8 +268,9 @@ class IRKCaptureComponent : public Component {
   uint32_t last_publish_time_ { 0 };      // Last IRK publish timestamp
   uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
 
-  // Host state (ESPHome-managed host; this is a soft flag)
-  bool host_synced_ { false };
+  // Host state — written once by NimBLE task (sync_cb), read by ESPHome main task
+  // Uses std::atomic for cross-core visibility without requiring state_mutex_
+  std::atomic<bool> host_synced_ { false };
 
   // Timer targets and cached peer ids
   struct Timers {
