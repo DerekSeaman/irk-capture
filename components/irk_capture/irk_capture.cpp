@@ -3,6 +3,7 @@
 // ESP32-only implementation - requires Bluetooth hardware
 #ifdef USE_ESP32
 
+#include <cstring>
 #include <esp_random.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -23,7 +24,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.5.5";
+static constexpr char VERSION[] = "1.5.6";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -70,6 +71,7 @@ THREAD SAFETY RULES:
 -    RAII MutexGuard class ensures exception-safe lock/unlock
 -    Mutex MUST be released before calling BLE stack APIs (prevents deadlock)
 -    UI updates (publish_state) are safe outside mutex (internally thread-safe)
+-    host_synced_ uses std::atomic<bool> (one-shot write from NimBLE, reads from main loop)
 
 IMPORTANT: Do NOT rely on "aligned writes are atomic" - always use mutex for
 shared state to ensure:
@@ -821,6 +823,15 @@ std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
     }
   }
 
+  // Trim leading and trailing whitespace
+  size_t start = sanitized.find_first_not_of(' ');
+  size_t end = sanitized.find_last_not_of(' ');
+  if (start != std::string::npos) {
+    sanitized = sanitized.substr(start, end - start + 1);
+  } else {
+    sanitized.clear();
+  }
+
   // Final validation: ensure we have at least one character
   if (sanitized.empty()) {
     ESP_LOGW(TAG, "BLE name contained only invalid characters, using default 'IRK Capture'");
@@ -1293,7 +1304,8 @@ void IRKCaptureComponent::setup() {
   state_mutex_ = xSemaphoreCreateMutex();
   if (!state_mutex_) {
     ESP_LOGE(TAG, "CRITICAL: Failed to create state mutex - thread safety compromised!");
-    // Continue anyway - component will work but may have race conditions
+    this->mark_failed();
+    return;
   }
 
   // Load persisted BLE profile from NVS (before BLE stack init so GATT is correct)
@@ -1301,9 +1313,13 @@ void IRKCaptureComponent::setup() {
   if (nvs_open("irk_capture", NVS_READONLY, &nvs_handle) == ESP_OK) {
     uint8_t profile_val = 0;
     if (nvs_get_u8(nvs_handle, "ble_profile", &profile_val) == ESP_OK) {
-      ble_profile_ = static_cast<BLEProfile>(profile_val);
-      ESP_LOGI(TAG, "Loaded persisted BLE profile: %s",
-               ble_profile_ == BLEProfile::KEYBOARD ? "Keyboard" : "Heart Sensor");
+      if (profile_val <= static_cast<uint8_t>(BLEProfile::KEYBOARD)) {
+        ble_profile_ = static_cast<BLEProfile>(profile_val);
+        ESP_LOGI(TAG, "Loaded persisted BLE profile: %s",
+                 ble_profile_ == BLEProfile::KEYBOARD ? "Keyboard" : "Heart Sensor");
+      } else {
+        ESP_LOGW(TAG, "Invalid persisted profile value %u, using default", profile_val);
+      }
     }
     nvs_close(nvs_handle);
   }
@@ -1717,6 +1733,7 @@ void IRKCaptureComponent::register_gatt_services() {
   if (rc == 0) rc = ble_gatts_add_svcs(gatt_svcs);
   if (rc != 0) {
     ESP_LOGE(TAG, "GATT registration failed rc=%d", rc);
+    this->mark_failed();
     return;
   }
   hr_char_handle_ = g_hr_handle;
@@ -1889,6 +1906,10 @@ void IRKCaptureComponent::refresh_mac() {
     mac_rotation_state_ = MacRotationState::REQUESTED;
     mac_rotation_retries_ = 0;  // Reset retry counter for new rotation attempt
     std::memcpy(pending_mac_, temp_mac, sizeof(pending_mac_));
+
+    // Prevent handle_gap_disconnect from restarting advertising immediately,
+    // which would race with ble_hs_id_set_rnd() in loop() (BLE_HS_EBUSY)
+    suppress_next_adv_ = true;
 
     // Snapshot connection state for disconnect logic
     should_stop_adv = advertising_;
