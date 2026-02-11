@@ -24,7 +24,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.5.6";
+static constexpr char VERSION[] = "1.5.7";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -1678,16 +1678,10 @@ void IRKCaptureComponent::setup_ble() {
       if (cerr == ESP_OK) {
         ESP_LOGI(TAG, "NVS health check passed");
       } else {
-        ESP_LOGE(TAG, "NVS commit failed (err=%d)", cerr);
-        this->mark_failed();
-        nvs_close(nvs_test_handle);
-        return;
+        ESP_LOGW(TAG, "NVS health check commit failed (err=%d) - continuing", cerr);
       }
     } else {
-      ESP_LOGE(TAG, "NVS set_u32 failed (err=%d)", werr);
-      this->mark_failed();
-      nvs_close(nvs_test_handle);
-      return;
+      ESP_LOGW(TAG, "NVS health check write failed (err=%d) - continuing", werr);
     }
     // Clean up test data in same handle (best-effort)
     esp_err_t erase_test_err = nvs_erase_all(nvs_test_handle);
@@ -1700,9 +1694,7 @@ void IRKCaptureComponent::setup_ble() {
     }
     nvs_close(nvs_test_handle);
   } else {
-    ESP_LOGE(TAG, "NVS open failed (err=%d) - IRK capture requires working NVS", err);
-    this->mark_failed();
-    return;
+    ESP_LOGW(TAG, "NVS health check open failed (err=%d) - continuing", err);
   }
 
   // NimBLE host
@@ -1741,9 +1733,7 @@ void IRKCaptureComponent::setup_ble() {
   // Key-value store for bonding/keys
   int rc = ble_store_config_init();
   if (rc != 0) {
-    ESP_LOGE(TAG, "ble_store_config_init failed rc=%d", rc);
-    this->mark_failed();
-    return;
+    ESP_LOGW(TAG, "ble_store_config_init failed rc=%d - continuing", rc);
   }
 
   // Clear all bonds on boot for a "clean slate" - prevents bond table from
@@ -1751,9 +1741,7 @@ void IRKCaptureComponent::setup_ble() {
   // device ownership changes)
   rc = ble_store_clear();
   if (rc != 0) {
-    ESP_LOGE(TAG, "ble_store_clear on boot failed rc=%d", rc);
-    this->mark_failed();
-    return;
+    ESP_LOGW(TAG, "ble_store_clear on boot failed rc=%d - continuing", rc);
   }
   ESP_LOGI(TAG, "Bond table cleared on boot - fresh pairing session guaranteed");
 
@@ -1762,9 +1750,7 @@ void IRKCaptureComponent::setup_ble() {
   ble_svc_gatt_init();
   rc = ble_svc_gap_device_name_set(ble_name_.c_str());
   if (rc != 0) {
-    ESP_LOGE(TAG, "ble_svc_gap_device_name_set failed rc=%d", rc);
-    this->mark_failed();
-    return;
+    ESP_LOGW(TAG, "ble_svc_gap_device_name_set failed rc=%d - continuing", rc);
   }
 
   // Register services
