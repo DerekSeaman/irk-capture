@@ -24,7 +24,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.5.9";
+static constexpr char VERSION[] = "1.5.10";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -1871,8 +1871,11 @@ void IRKCaptureComponent::register_gatt_services() {
   }
 
   if (rc != 0) {
-    ESP_LOGE(TAG, "No valid GATT profile could be registered; component will fail");
-    this->mark_failed();
+    ESP_LOGE(TAG,
+             "No valid GATT profile could be registered; continuing without custom GATT "
+             "services to avoid boot failure");
+    hr_char_handle_ = 0;
+    prot_char_handle_ = 0;
     return;
   }
   hr_char_handle_ = g_hr_handle;
