@@ -24,7 +24,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.5.8";
+static constexpr char VERSION[] = "1.5.9";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -1825,22 +1825,53 @@ void IRKCaptureComponent::register_gatt_services() {
     current_profile = ble_profile_;
   }
 
-  struct ble_gatt_svc_def* gatt_svcs;
-  const char* profile_name;
+  auto register_svcs = [](struct ble_gatt_svc_def* svcs, const char* profile_name) -> int {
+    ESP_LOGI(TAG, "Registering GATT services for %s profile", profile_name);
+    int rc = ble_gatts_count_cfg(svcs);
+    if (rc == 0) {
+      rc = ble_gatts_add_svcs(svcs);
+    }
+    if (rc != 0) {
+      ESP_LOGE(TAG, "GATT registration for %s profile failed rc=%d", profile_name, rc);
+    }
+    return rc;
+  };
+
+  int rc;
   if (current_profile == BLEProfile::KEYBOARD) {
-    gatt_svcs = gatt_svcs_keyboard;
-    profile_name = "Keyboard";
+    rc = register_svcs(gatt_svcs_keyboard, "Keyboard");
+    if (rc != 0) {
+      ESP_LOGW(TAG,
+               "Keyboard GATT registration failed; falling back to Heart Sensor profile "
+               "to keep component operational");
+      rc = register_svcs(gatt_svcs_heart_sensor, "Heart Sensor");
+      if (rc == 0) {
+        // Persist fallback so next boot doesn't repeat the same failure path.
+        {
+          MutexGuard lock(state_mutex_);
+          ble_profile_ = BLEProfile::HEART_SENSOR;
+        }
+        nvs_handle_t nvs_handle;
+        if (nvs_open("irk_capture", NVS_READWRITE, &nvs_handle) == ESP_OK) {
+          esp_err_t set_err =
+              nvs_set_u8(nvs_handle, "ble_profile", static_cast<uint8_t>(BLEProfile::HEART_SENSOR));
+          esp_err_t commit_err = (set_err == ESP_OK) ? nvs_commit(nvs_handle) : set_err;
+          nvs_close(nvs_handle);
+          if (set_err != ESP_OK || commit_err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to persist fallback BLE profile (set=%d commit=%d)", set_err,
+                     commit_err);
+          }
+        } else {
+          ESP_LOGW(TAG, "Failed to open NVS for fallback profile persistence");
+        }
+      }
+    }
   } else {
-    gatt_svcs = gatt_svcs_heart_sensor;
-    profile_name = "Heart Sensor";
+    rc = register_svcs(gatt_svcs_heart_sensor, "Heart Sensor");
   }
 
-  ESP_LOGI(TAG, "Registering GATT services for %s profile", profile_name);
-
-  int rc = ble_gatts_count_cfg(gatt_svcs);
-  if (rc == 0) rc = ble_gatts_add_svcs(gatt_svcs);
   if (rc != 0) {
-    ESP_LOGE(TAG, "GATT registration failed rc=%d", rc);
+    ESP_LOGE(TAG, "No valid GATT profile could be registered; component will fail");
     this->mark_failed();
     return;
   }
