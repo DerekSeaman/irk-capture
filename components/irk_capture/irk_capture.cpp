@@ -24,7 +24,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.5.7";
+static constexpr char VERSION[] = "1.5.8";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -177,6 +177,7 @@ static constexpr uint16_t UUID_CHR_MODEL_NUMBER = 0x2A24;
 static constexpr uint16_t UUID_SVC_BATTERY = 0x180F;
 static constexpr uint16_t UUID_CHR_BATTERY_LEVEL = 0x2A19;
 static constexpr uint16_t UUID_SVC_HID = 0x1812;  // Human Interface Device (for Keyboard profile)
+static constexpr uint16_t UUID_CHR_HID_PROTOCOL_MODE = 0x2A4E;
 
 // BLE Appearance values
 static constexpr uint16_t APPEARANCE_HEART_RATE_SENSOR = 0x0340;
@@ -222,6 +223,7 @@ static const ble_uuid16_t UUID_CHR_BATT_LVL = BLE_UUID16_INIT(UUID_CHR_BATTERY_L
 
 // HID service for Keyboard profile
 static const ble_uuid16_t UUID_SVC_HID_BLE = BLE_UUID16_INIT(UUID_SVC_HID);
+static const ble_uuid16_t UUID_CHR_HID_PROTO = BLE_UUID16_INIT(UUID_CHR_HID_PROTOCOL_MODE);
 
 // Optional protected service/characteristic to force pairing via READ_ENC
 static const ble_uuid128_t UUID_SVC_PROT = BLE_UUID128_INIT(
@@ -237,6 +239,8 @@ int chr_read_batt(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_ac
                   void* arg);
 int chr_read_hr(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt* ctxt,
                 void* arg);
+int chr_read_hid_protocol(uint16_t conn_handle, uint16_t attr_handle,
+                          struct ble_gatt_access_ctxt* ctxt, void* arg);
 int chr_read_protected(uint16_t conn_handle, uint16_t attr_handle,
                        struct ble_gatt_access_ctxt* ctxt, void* arg);
 
@@ -696,6 +700,16 @@ static struct ble_gatt_chr_def batt_chrs[] = { {
                                                },
                                                { 0 } };
 
+// Minimal HID characteristic so HID service is valid on NimBLE builds that
+// reject empty-characteristic services.
+static struct ble_gatt_chr_def hid_chrs[] = { {
+                                                  .uuid = &UUID_CHR_HID_PROTO.u,
+                                                  .access_cb = chr_read_hid_protocol,
+                                                  .arg = nullptr,
+                                                  .flags = BLE_GATT_CHR_F_READ,
+                                              },
+                                              { 0 } };
+
 static struct ble_gatt_chr_def prot_chrs[] = { {
                                                    .uuid = &UUID_CHR_PROT.u,
                                                    .access_cb = chr_read_protected,
@@ -740,7 +754,7 @@ static struct ble_gatt_svc_def gatt_svcs_keyboard[] = {
       // HID service
       .type = BLE_GATT_SVC_TYPE_PRIMARY,
       .uuid = &UUID_SVC_HID_BLE.u,
-      .characteristics = nullptr,
+      .characteristics = hid_chrs,
   },
   {
       // Device Information service
@@ -799,6 +813,11 @@ int chr_read_hr(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctx
   size_t len;
   hr_measurement_sample(buf, &len);
   os_mbuf_append(ctxt->om, buf, len);
+  return 0;
+}
+int chr_read_hid_protocol(uint16_t, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
+  uint8_t protocol_mode = 0x01;  // Report protocol mode
+  os_mbuf_append(ctxt->om, &protocol_mode, 1);
   return 0;
 }
 int chr_read_protected(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt,
