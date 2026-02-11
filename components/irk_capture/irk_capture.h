@@ -181,15 +181,11 @@ class IRKCaptureComponent : public Component {
 
   // Profile management
   void set_ble_profile(BLEProfile profile);
-  BLEProfile get_ble_profile() {
-    return ble_profile_;
-  }
+  BLEProfile get_ble_profile();
 
   // Public actions
   void update_ble_name(const std::string& name);
-  std::string get_ble_name() {
-    return ble_name_;
-  }
+  std::string get_ble_name();
   void start_advertising();
   void stop_advertising();
   void refresh_mac();
@@ -288,6 +284,10 @@ class IRKCaptureComponent : public Component {
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
   //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state)
   SemaphoreHandle_t state_mutex_ { nullptr };
+
+  // Serializes BLE control operations that can be called from both NimBLE and
+  // ESPHome contexts (start/stop advertising, device-name updates, MAC changes).
+  SemaphoreHandle_t ble_op_mutex_ { nullptr };
 
   // Internal helpers
   bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out);

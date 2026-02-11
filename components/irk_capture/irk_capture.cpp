@@ -152,8 +152,6 @@ struct TimingConfig {
       800;  // Delay after disconnect for deferred IRK check (allows NVS flush)
   static constexpr uint32_t ENC_LATE_READ_DELAY_MS =
       5000;  // Extended delay for IRK check after failed encryption
-  static constexpr uint32_t IRK_MIN_POLL_INTERVAL_MS =
-      200;  // Minimum time between IRK polling attempts (prevents spam)
   static constexpr uint32_t SEC_RETRY_DELAY_MS =
       2000;  // Delay before retrying security after encryption failure
   static constexpr uint32_t SEC_TIMEOUT_MS = 20000;  // Timeout for encryption to complete (assumes
@@ -185,6 +183,14 @@ static constexpr uint16_t APPEARANCE_HEART_RATE_SENSOR = 0x0340;
 
 // NimBLE-specific error codes (not defined in public headers)
 static constexpr int NIMBLE_ERR_DHKEY_CHECK_FAILED = 1288;
+
+// Some GAP event constants are not exposed in all ESP-IDF/NimBLE packages.
+static constexpr int GAP_EVENT_L2CAP_UPDATE_REQ = 14;
+static constexpr int GAP_EVENT_IDENTITY_RESOLVED = 16;
+static constexpr int GAP_EVENT_PHY_UPDATE_COMPLETE = 18;
+static constexpr int GAP_EVENT_AUTHORIZE = 27;
+static constexpr int GAP_EVENT_SUBRATE_CHANGE = 34;
+static constexpr int GAP_EVENT_VS_HCI = 38;
 
 //======================== IRK lifecycle (for readers) ========================
 /*
@@ -351,6 +357,29 @@ class MutexGuard {
   // Disable copy and move
   MutexGuard(const MutexGuard&) = delete;
   MutexGuard& operator=(const MutexGuard&) = delete;
+
+ private:
+  SemaphoreHandle_t mutex_;
+};
+
+// Serialize BLE host control operations across ESPHome and NimBLE task
+// contexts.
+class BleOpGuard {
+ public:
+  explicit BleOpGuard(SemaphoreHandle_t mutex) : mutex_(mutex) {
+    if (mutex_) {
+      xSemaphoreTake(mutex_, portMAX_DELAY);
+    }
+  }
+
+  ~BleOpGuard() {
+    if (mutex_) {
+      xSemaphoreGive(mutex_);
+    }
+  }
+
+  BleOpGuard(const BleOpGuard&) = delete;
+  BleOpGuard& operator=(const BleOpGuard&) = delete;
 
  private:
   SemaphoreHandle_t mutex_;
@@ -779,19 +808,6 @@ int chr_read_protected(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ct
   return 0;
 }
 
-//======================== Store helper ========================
-
-static int read_peer_bond_by_conn(uint16_t conn_handle, struct ble_store_value_sec* out_bond) {
-  struct ble_gap_conn_desc desc;
-  int rc = ble_gap_conn_find(conn_handle, &desc);
-  if (rc != 0) return rc;
-
-  struct ble_store_key_sec key_sec {};
-  key_sec.peer_addr = desc.peer_id_addr;
-
-  return ble_store_read_peer_sec(&key_sec, out_bond);
-}
-
 //======================== BLE name sanitization ========================
 
 std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
@@ -862,7 +878,11 @@ void IRKCaptureSwitch::write_state(bool state) {
     parent_->start_advertising();
   else
     parent_->stop_advertising();
-  publish_state(state);
+  bool actual_state = parent_->is_advertising();
+  if (actual_state != state) {
+    ESP_LOGW(TAG, "Advertising request=%d but actual state=%d", (int) state, (int) actual_state);
+  }
+  publish_state(actual_state);
 }
 
 void IRKCaptureButton::press_action() {
@@ -1144,7 +1164,14 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
         std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
         publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
         // Tested working behavior: terminate immediately after successful ENC + IRK capture
-        ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        int term_rc;
+        {
+          BleOpGuard ble_lock(self->ble_op_mutex_);
+          term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        }
+        if (term_rc != 0) {
+          ESP_LOGW(TAG, "ble_gap_terminate after ENC capture rc=%d", term_rc);
+        }
       } else {
         ESP_LOGD(TAG, "Bond present but no IRK yet; scheduling late check");
         self->schedule_late_enc_check(d.peer_id_addr);
@@ -1153,8 +1180,18 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   } else {
     // Encryption failed - clear all bonds and terminate
     ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing all bonds", ev->enc_change.status);
-    ble_store_clear();  // Clear everything to force fresh pairing
-    ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    int clear_rc = ble_store_clear();  // Clear everything to force fresh pairing
+    if (clear_rc != 0) {
+      ESP_LOGW(TAG, "ble_store_clear after ENC failure rc=%d", clear_rc);
+    }
+    int term_rc;
+    {
+      BleOpGuard ble_lock(self->ble_op_mutex_);
+      term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    }
+    if (term_rc != 0) {
+      ESP_LOGW(TAG, "ble_gap_terminate after ENC failure rc=%d", term_rc);
+    }
 
     // For DHKey failures (status=1288), stop advertising briefly to force peer to reset
     // THREAD-SAFE: Suppression flag write must be protected
@@ -1260,28 +1297,28 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
     case BLE_GAP_EVENT_NOTIFY_TX:
       return 0;
 
-    case 14:  // BLE_GAP_EVENT_L2CAP_UPDATE_REQ
+    case GAP_EVENT_L2CAP_UPDATE_REQ:
       // Accept connection parameter updates
       return 0;
 
-    case 16:  // BLE_GAP_EVENT_IDENTITY_RESOLVED
+    case GAP_EVENT_IDENTITY_RESOLVED:
       // Identity resolved successfully (IRK working!)
       ESP_LOGD(TAG, "Peer identity resolved using IRK");
       return 0;
 
-    case 18:  // BLE_GAP_EVENT_PHY_UPDATE_COMPLETE
+    case GAP_EVENT_PHY_UPDATE_COMPLETE:
       // PHY layer updated (normal)
       return 0;
 
-    case 27:  // BLE_GAP_EVENT_AUTHORIZE
+    case GAP_EVENT_AUTHORIZE:
       // Authorization event (allow by returning 0)
       return 0;
 
-    case 34:  // BLE_GAP_EVENT_SUBRATE_CHANGE
+    case GAP_EVENT_SUBRATE_CHANGE:
       // BLE 5.2+ subrate change (normal)
       return 0;
 
-    case 38:  // BLE_GAP_EVENT_VS_HCI
+    case GAP_EVENT_VS_HCI:
       // Vendor-specific HCI event (can ignore)
       return 0;
 
@@ -1304,6 +1341,12 @@ void IRKCaptureComponent::setup() {
   state_mutex_ = xSemaphoreCreateMutex();
   if (!state_mutex_) {
     ESP_LOGE(TAG, "CRITICAL: Failed to create state mutex - thread safety compromised!");
+    this->mark_failed();
+    return;
+  }
+  ble_op_mutex_ = xSemaphoreCreateMutex();
+  if (!ble_op_mutex_) {
+    ESP_LOGE(TAG, "CRITICAL: Failed to create BLE op mutex - cannot serialize BLE host calls");
     this->mark_failed();
     return;
   }
@@ -1334,6 +1377,9 @@ void IRKCaptureComponent::setup() {
   last_publish_time_ = 0;
 
   this->setup_ble();
+  if (this->is_failed()) {
+    return;
+  }
 
   // Note: start_on_boot advertising is handled in on_ble_host_synced() callback
   // which fires when NimBLE host is ready (asynchronous)
@@ -1414,7 +1460,10 @@ void IRKCaptureComponent::loop() {
 
         // Clear all bonds since MAC change invalidates them
         ESP_LOGI(TAG, "Clearing all bond data before MAC refresh");
-        ble_store_clear();
+        int clear_rc = ble_store_clear();
+        if (clear_rc != 0) {
+          ESP_LOGW(TAG, "ble_store_clear during MAC rotation failed rc=%d", clear_rc);
+        }
 
         // Reset suppression flags since we're starting fresh with new MAC
         // THREAD-SAFE: Write to shared state under mutex
@@ -1438,14 +1487,21 @@ void IRKCaptureComponent::loop() {
     }
 
     // Attempt to set the pre-generated MAC address (using local copy to avoid race)
-    int rc = ble_hs_id_set_rnd(mac_copy);
+    int rc;
+    uint8_t own_addr_type = BLE_OWN_ADDR_PUBLIC;
+    int rc2 = 0;
+    {
+      BleOpGuard ble_lock(ble_op_mutex_);
+      rc = ble_hs_id_set_rnd(mac_copy);
+      if (rc == 0) {
+        rc2 = ble_hs_id_infer_auto(0, &own_addr_type);
+      }
+    }
     if (rc == 0) {
       ESP_LOGI(TAG, "New MAC (set_rnd): %02X:%02X:%02X:%02X:%02X:%02X", mac_copy[5], mac_copy[4],
                mac_copy[3], mac_copy[2], mac_copy[1], mac_copy[0]);
 
       // Re-infer own address type for next adv start
-      uint8_t own_addr_type;
-      int rc2 = ble_hs_id_infer_auto(0, &own_addr_type);
       ESP_LOGI(TAG, "Own address type after set_rnd: %u (0=PUBLIC,1=RANDOM)", own_addr_type);
       if (rc2 != 0) {
         ESP_LOGW(TAG, "ble_hs_id_infer_auto rc=%d after set_rnd", rc2);
@@ -1549,7 +1605,14 @@ void IRKCaptureComponent::loop() {
     if (ble_gap_conn_find(timeout_conn_handle, &d) == 0) {
       // Connection still alive - clean up bond and terminate
       ble_store_util_delete_peer(&d.peer_id_addr);
-      ble_gap_terminate(timeout_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+      int term_rc;
+      {
+        BleOpGuard ble_lock(ble_op_mutex_);
+        term_rc = ble_gap_terminate(timeout_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+      }
+      if (term_rc != 0) {
+        ESP_LOGW(TAG, "ble_gap_terminate after global timeout rc=%d", term_rc);
+      }
     } else {
       // Connection already dead (zombie) - just reset local state
       ESP_LOGD(TAG, "Connection already terminated, cleaning up local state");
@@ -1587,11 +1650,21 @@ void IRKCaptureComponent::loop() {
 
 void IRKCaptureComponent::setup_ble() {
   // NVS for key store
-  auto err = nvs_flash_init();
+  esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_LOGW(TAG, "NVS full or version mismatch - erasing");
-    nvs_flash_erase();
-    nvs_flash_init();
+    esp_err_t erase_err = nvs_flash_erase();
+    if (erase_err != ESP_OK) {
+      ESP_LOGE(TAG, "nvs_flash_erase failed (err=%d)", erase_err);
+      this->mark_failed();
+      return;
+    }
+    err = nvs_flash_init();
+  }
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "nvs_flash_init failed (err=%d)", err);
+    this->mark_failed();
+    return;
   }
 
   // NVS health check - verify storage actually works
@@ -1605,22 +1678,31 @@ void IRKCaptureComponent::setup_ble() {
       if (cerr == ESP_OK) {
         ESP_LOGI(TAG, "NVS health check passed");
       } else {
-        ESP_LOGE(TAG, "NVS commit failed (err=%d) - bond storage may not work!", cerr);
+        ESP_LOGE(TAG, "NVS commit failed (err=%d)", cerr);
+        this->mark_failed();
+        nvs_close(nvs_test_handle);
+        return;
       }
     } else {
-      ESP_LOGE(TAG, "NVS set_u32 failed (err=%d) - continuing", werr);
+      ESP_LOGE(TAG, "NVS set_u32 failed (err=%d)", werr);
+      this->mark_failed();
+      nvs_close(nvs_test_handle);
+      return;
     }
     // Clean up test data in same handle (best-effort)
-    nvs_erase_all(nvs_test_handle);
-    nvs_commit(nvs_test_handle);
+    esp_err_t erase_test_err = nvs_erase_all(nvs_test_handle);
+    if (erase_test_err != ESP_OK) {
+      ESP_LOGW(TAG, "NVS cleanup erase failed (err=%d)", erase_test_err);
+    }
+    esp_err_t cleanup_commit_err = nvs_commit(nvs_test_handle);
+    if (cleanup_commit_err != ESP_OK) {
+      ESP_LOGW(TAG, "NVS cleanup commit failed (err=%d)", cleanup_commit_err);
+    }
     nvs_close(nvs_test_handle);
   } else {
-    ESP_LOGE(TAG,
-             "NVS open failed (err=%d) - IRK capture will fail! Erasing and "
-             "retrying...",
-             err);
-    nvs_flash_erase();
-    nvs_flash_init();
+    ESP_LOGE(TAG, "NVS open failed (err=%d) - IRK capture requires working NVS", err);
+    this->mark_failed();
+    return;
   }
 
   // NimBLE host
@@ -1657,18 +1739,33 @@ void IRKCaptureComponent::setup_ble() {
   log_sm_config();
 
   // Key-value store for bonding/keys
-  ble_store_config_init();
+  int rc = ble_store_config_init();
+  if (rc != 0) {
+    ESP_LOGE(TAG, "ble_store_config_init failed rc=%d", rc);
+    this->mark_failed();
+    return;
+  }
 
   // Clear all bonds on boot for a "clean slate" - prevents bond table from
   // filling up and ensures privacy (no old IRKs persist across reboots or
   // device ownership changes)
-  ble_store_clear();
+  rc = ble_store_clear();
+  if (rc != 0) {
+    ESP_LOGE(TAG, "ble_store_clear on boot failed rc=%d", rc);
+    this->mark_failed();
+    return;
+  }
   ESP_LOGI(TAG, "Bond table cleared on boot - fresh pairing session guaranteed");
 
   // GAP/GATT and name
   ble_svc_gap_init();
   ble_svc_gatt_init();
-  ble_svc_gap_device_name_set(ble_name_.c_str());
+  rc = ble_svc_gap_device_name_set(ble_name_.c_str());
+  if (rc != 0) {
+    ESP_LOGE(TAG, "ble_svc_gap_device_name_set failed rc=%d", rc);
+    this->mark_failed();
+    return;
+  }
 
   // Register services
   this->register_gatt_services();
@@ -1690,11 +1787,17 @@ void IRKCaptureComponent::on_ble_host_synced() {
   esp_fill_random(rnd, sizeof(rnd));
   rnd[5] |= 0xC0;  // Set top two bits of MSB for static random address type
   rnd[0] &= 0xFE;  // Clear bit0 of LSB for unicast (not multicast)
-  int rc = ble_hs_id_set_rnd(rnd);
+  int rc;
+  {
+    BleOpGuard ble_lock(ble_op_mutex_);
+    rc = ble_hs_id_set_rnd(rnd);
+  }
   if (rc == 0) {
     ESP_LOGI(TAG, "Initial MAC (set_rnd): %02X:%02X:%02X:%02X:%02X:%02X", rnd[5], rnd[4], rnd[3],
              rnd[2], rnd[1], rnd[0]);
     log_mac("Effective");
+  } else {
+    ESP_LOGW(TAG, "Initial ble_hs_id_set_rnd failed rc=%d", rc);
   }
 
   // Start advertising if configured
@@ -1750,9 +1853,6 @@ void IRKCaptureComponent::start_advertising() {
     return;
   }
 
-  // Defensive stop - ensure clean GAP state before starting (fixes rc=21 BLE_HS_EALREADY)
-  ble_gap_adv_stop();
-
   // Get current profile (thread-safe)
   BLEProfile current_profile;
   std::string name_copy;
@@ -1762,6 +1862,7 @@ void IRKCaptureComponent::start_advertising() {
     name_copy = ble_name_;
   }
 
+  static const char* keyboard_name = "Logitech K380";
   struct ble_hs_adv_fields fields;
   memset(&fields, 0, sizeof(fields));
 
@@ -1776,8 +1877,6 @@ void IRKCaptureComponent::start_advertising() {
     // Keyboard profile: Logitech K380
     // Move name to scan response to stay within 31-byte advertising packet limit
     profile_name = "Keyboard";
-    static const char* keyboard_name = "Logitech K380";
-    ble_svc_gap_device_name_set(keyboard_name);
 
     // Advertising data: flags, appearance, HID service UUID (keep small)
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
@@ -1796,7 +1895,6 @@ void IRKCaptureComponent::start_advertising() {
   } else {
     // Heart Sensor profile (default): Use configured BLE name
     profile_name = "Heart Sensor";
-    ble_svc_gap_device_name_set(name_copy.c_str());
 
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t*) name_copy.c_str();
@@ -1809,47 +1907,65 @@ void IRKCaptureComponent::start_advertising() {
     fields.uuids16_is_complete = 1;
   }
 
-  int rc = ble_gap_adv_set_fields(&fields);
-  if (rc != 0) {
-    ESP_LOGE(TAG, "ble_gap_adv_set_fields rc=%d", rc);
-    return;
-  }
+  int rc = 0;
+  {
+    BleOpGuard ble_lock(ble_op_mutex_);
 
-  // Set scan response data if needed (Keyboard profile)
-  if (use_scan_response) {
-    rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
+    // Defensive stop - ensure clean GAP state before starting.
+    rc = ble_gap_adv_stop();
+    if (rc != 0 && rc != BLE_HS_EALREADY && rc != BLE_HS_EINVAL) {
+      ESP_LOGD(TAG, "ble_gap_adv_stop before start rc=%d", rc);
+    }
+
+    const char* target_name =
+        (current_profile == BLEProfile::KEYBOARD) ? keyboard_name : name_copy.c_str();
+    rc = ble_svc_gap_device_name_set(target_name);
     if (rc != 0) {
-      ESP_LOGE(TAG, "ble_gap_adv_rsp_set_fields rc=%d", rc);
-      return;
+      ESP_LOGE(TAG, "ble_svc_gap_device_name_set rc=%d", rc);
+    }
+
+    if (rc == 0) {
+      rc = ble_gap_adv_set_fields(&fields);
+      if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gap_adv_set_fields rc=%d", rc);
+      }
+    }
+
+    // Set scan response data if needed (Keyboard profile)
+    if (rc == 0 && use_scan_response) {
+      rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
+      if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gap_adv_rsp_set_fields rc=%d", rc);
+      }
+    }
+
+    if (rc == 0) {
+      ble_gap_adv_params advp {};
+      advp.conn_mode = BLE_GAP_CONN_MODE_UND;
+      advp.disc_mode = BLE_GAP_DISC_MODE_GEN;
+
+      // Faster advertising interval for quicker discovery in Samsung/Android Settings UI
+      // Units are 0.625ms: 0x00A0 = 100ms, 0x00F0 = 150ms (default NimBLE is ~1.28s)
+      advp.itvl_min = 0x00A0;
+      advp.itvl_max = 0x00F0;
+
+      // Use explicit RANDOM address type (our static random address set in setup_ble/refresh_mac)
+      // Avoids Samsung One UI 7 "Maximum Restrictions" filtering RPA addresses as tracking risks
+      constexpr uint8_t own_addr_type = BLE_OWN_ADDR_RANDOM;
+      rc = ble_gap_adv_start(own_addr_type, nullptr, BLE_HS_FOREVER, &advp,
+                             IRKCaptureComponent::gap_event_handler, this);
     }
   }
 
-  ble_gap_adv_params advp {};
-  advp.conn_mode = BLE_GAP_CONN_MODE_UND;
-  advp.disc_mode = BLE_GAP_DISC_MODE_GEN;
-
-  // Faster advertising interval for quicker discovery in Samsung/Android Settings UI
-  // Units are 0.625ms: 0x00A0 = 100ms, 0x00F0 = 150ms (default NimBLE is ~1.28s)
-  advp.itvl_min = 0x00A0;
-  advp.itvl_max = 0x00F0;
-
-  // Use explicit RANDOM address type (our static random address set in setup_ble/refresh_mac)
-  // Avoids Samsung One UI 7 "Maximum Restrictions" filtering RPA addresses as tracking risks
-  constexpr uint8_t own_addr_type = BLE_OWN_ADDR_RANDOM;
-
-  rc = ble_gap_adv_start(own_addr_type, nullptr, BLE_HS_FOREVER, &advp,
-                         IRKCaptureComponent::gap_event_handler, this);
-
   // Thread-safe state update (mutex released before BLE stack call above)
-  bool adv_success;
   {
     MutexGuard lock(state_mutex_);
     advertising_ = (rc == 0);
-    adv_success = advertising_;
   }
 
   if (rc != 0) {
-    ESP_LOGE(TAG, "ble_gap_adv_start rc=%d", rc);
+    ESP_LOGE(TAG, "Failed to start advertising rc=%d", rc);
+    if (advertising_switch_) advertising_switch_->publish_state(false);
   } else {
     // UI update outside lock (publish_state is internally thread-safe)
     if (advertising_switch_) advertising_switch_->publish_state(true);
@@ -1861,7 +1977,14 @@ void IRKCaptureComponent::start_advertising() {
 }
 
 void IRKCaptureComponent::stop_advertising() {
-  ble_gap_adv_stop();
+  int rc;
+  {
+    BleOpGuard ble_lock(ble_op_mutex_);
+    rc = ble_gap_adv_stop();
+  }
+  if (rc != 0 && rc != BLE_HS_EALREADY && rc != BLE_HS_EINVAL) {
+    ESP_LOGW(TAG, "ble_gap_adv_stop rc=%d", rc);
+  }
 
   // Thread-safe state update (after BLE stack call)
   {
@@ -1877,6 +2000,16 @@ void IRKCaptureComponent::stop_advertising() {
 bool IRKCaptureComponent::is_advertising() {
   MutexGuard lock(state_mutex_);
   return advertising_;
+}
+
+BLEProfile IRKCaptureComponent::get_ble_profile() {
+  MutexGuard lock(state_mutex_);
+  return ble_profile_;
+}
+
+std::string IRKCaptureComponent::get_ble_name() {
+  MutexGuard lock(state_mutex_);
+  return ble_name_;
 }
 
 //======================== MAC refresh (event-driven, non-blocking) ========================
@@ -1924,7 +2057,14 @@ void IRKCaptureComponent::refresh_mac() {
   // Terminate any active connection (non-blocking)
   if (conn_handle_copy != BLE_HS_CONN_HANDLE_NONE) {
     ESP_LOGI(TAG, "Terminating connection for MAC rotation");
-    ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+    int rc;
+    {
+      BleOpGuard ble_lock(ble_op_mutex_);
+      rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+    }
+    if (rc != 0) {
+      ESP_LOGW(TAG, "ble_gap_terminate during MAC rotation rc=%d", rc);
+    }
     // on_disconnect() will advance the state machine to READY_TO_ROTATE
   } else {
     // No connection - safe to rotate immediately
@@ -1945,7 +2085,15 @@ void IRKCaptureComponent::update_ble_name(const std::string& name) {
   }
 
   // Update GAP device name
-  ble_svc_gap_device_name_set(name.c_str());
+  int rc;
+  {
+    BleOpGuard ble_lock(ble_op_mutex_);
+    rc = ble_svc_gap_device_name_set(name.c_str());
+  }
+  if (rc != 0) {
+    ESP_LOGE(TAG, "ble_svc_gap_device_name_set failed rc=%d", rc);
+    return;
+  }
 
   // NOTE: devinfo_chrs[1].arg already points to 'this' (set in register_gatt_services)
   // GATT callback will read updated ble_name_ with mutex protection
@@ -1974,10 +2122,15 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     // Persist profile to NVS before restart
     nvs_handle_t nvs_handle;
     if (nvs_open("irk_capture", NVS_READWRITE, &nvs_handle) == ESP_OK) {
-      nvs_set_u8(nvs_handle, "ble_profile", static_cast<uint8_t>(profile));
-      nvs_commit(nvs_handle);
+      esp_err_t set_err = nvs_set_u8(nvs_handle, "ble_profile", static_cast<uint8_t>(profile));
+      esp_err_t commit_err = (set_err == ESP_OK) ? nvs_commit(nvs_handle) : set_err;
       nvs_close(nvs_handle);
-      ESP_LOGI(TAG, "Persisted BLE profile to NVS");
+      if (set_err == ESP_OK && commit_err == ESP_OK) {
+        ESP_LOGI(TAG, "Persisted BLE profile to NVS");
+      } else {
+        ESP_LOGW(TAG, "Failed to persist BLE profile to NVS (set=%d commit=%d)", set_err,
+                 commit_err);
+      }
     } else {
       ESP_LOGW(TAG, "Failed to persist BLE profile to NVS");
     }
@@ -2068,7 +2221,14 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
         }
         // Disconnect since we already have what we need
         // THREAD-SAFE: Use function parameter (already set under mutex at line 1771)
-        ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        int term_rc;
+        {
+          BleOpGuard ble_lock(ble_op_mutex_);
+          term_rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        }
+        if (term_rc != 0) {
+          ESP_LOGW(TAG, "ble_gap_terminate after IRK re-publish rc=%d", term_rc);
+        }
         return;  // Don't initiate security, we're done
       } else {
         // No IRK in bond - delete and try fresh pairing
@@ -2265,7 +2425,14 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
       conn_handle_copy = conn_handle_;
     }
     if (is_connected && conn_handle_copy != BLE_HS_CONN_HANDLE_NONE) {
-      ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+      int term_rc;
+      {
+        BleOpGuard ble_lock(ble_op_mutex_);
+        term_rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+      }
+      if (term_rc != 0) {
+        ESP_LOGW(TAG, "ble_gap_terminate after late ENC IRK capture rc=%d", term_rc);
+      }
     }
   } else {
     ESP_LOGD(TAG, "Bond present but no IRK - late ENC check");
@@ -2333,7 +2500,11 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
       // Disconnect to trigger fresh pairing on next connection
       // CRITICAL: If termination fails, the NimBLE stack may be wedged - force local cleanup
       // to prevent "zombie connection" state where UI shows connected but no data flows
-      int rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+      int rc;
+      {
+        BleOpGuard ble_lock(ble_op_mutex_);
+        rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+      }
       if (rc != 0) {
         ESP_LOGE(TAG,
                  "CRITICAL: ble_gap_terminate failed (rc=%d) - NimBLE stack may be wedged. "
@@ -2405,7 +2576,14 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
   if (try_get_irk(conn_handle_copy, irk_bytes, peer_id)) {
     std::string irk_hex = to_hex_rev(irk_bytes, sizeof(irk_bytes));
     publish_and_log_irk(this, peer_id, irk_hex, "POLL_CONNECTED");
-    ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+    int term_rc;
+    {
+      BleOpGuard ble_lock(ble_op_mutex_);
+      term_rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+    }
+    if (term_rc != 0) {
+      ESP_LOGW(TAG, "ble_gap_terminate after poll IRK capture rc=%d", term_rc);
+    }
     MutexGuard lock(state_mutex_);
     irk_gave_up_ = true;
   } else {
