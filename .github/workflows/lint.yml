@@ -33,12 +33,15 @@ jobs:
                 min-spaces-from-content: 2
 
       # 2. C++ Format Check
+      - name: Install clang-format-18
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang-format-18
+
       - name: C++ Format Check
-        uses: jidicula/clang-format-action@v4.16.0
-        with:
-          clang-format-version: '18'
-          check-path: 'components'
-          fallback-style: 'Google'
+        run: |
+          find components -name '*.cpp' -o -name '*.h' | \
+            xargs clang-format-18 --style=Google --dry-run --Werror
 
       # 3. Python Lint
       - name: Python Lint
