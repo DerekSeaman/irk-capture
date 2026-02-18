@@ -1,5 +1,7 @@
 # Release Notes v1.5.7
 
+This release note reflects changes from `v1.5.6` to `v1.5.7`.
+
 ## Boot Stability and GATT Reliability
 
 - **Fixed Keyboard profile boot crash**: The Keyboard BLE profile was causing GATT registration to fail at boot because NimBLE rejects HID services with no characteristics. Added a minimal `HID Protocol Mode` characteristic (`0x2A4E`) to make the HID service structurally valid.
@@ -16,7 +18,6 @@
 - **Fixed `irk_last_try_ms_` first-poll bypass**: The IRK poll interval guard was bypassed on the first poll because the timestamp initialized to 0. It is now set to `now_ms()` alongside `enc_ready_` when encryption completes.
 - **Fixed `mac_rotation_retries_` and `mac_rotation_ready_time_` unprotected writes**: These members are now reset inside existing `MutexGuard` blocks, consistent with the documented threading model.
 - **Made getters thread-safe**: `get_ble_profile()` and `get_ble_name()` now acquire `state_mutex_` before reading shared state.
-- **Fixed `host_synced_` cross-core visibility**: Uses `std::atomic<bool>` to ensure the NimBLE task's write is visible to the ESPHome main loop on dual-core ESP32 variants.
 
 ## Correctness Fixes
 
@@ -25,8 +26,6 @@
 - **Fixed BLE name length silent truncation**: The `name_len` field is now clamped to 29 bytes with a warning log before the `uint8_t` cast.
 - **Fixed `commit_err` misleading log**: NVS set and commit errors are now tracked with separate variables so the log accurately reports which operation failed.
 - **Advertising switch state now reflects reality**: The advertising switch publishes the actual runtime state after start/stop attempts rather than echoing only the requested state.
-- **NVS profile range validation**: Persisted BLE profile values are range-checked before `static_cast`, preventing undefined behavior from corrupted NVS data.
-- **BLE name whitespace trimming**: `sanitize_ble_name()` trims leading and trailing spaces after character filtering.
 
 ## Observability and Diagnostics
 
@@ -40,7 +39,6 @@
 
 - **Removed dead code**: Unused helper `read_peer_bond_by_conn()`, unused constant `IRK_MIN_POLL_INTERVAL_MS`, unused local `adv_success`.
 - **Replaced magic GAP event numbers with named constants** for readability and safer maintenance across ESP-IDF/NimBLE SDK variants.
-- **Added explicit standard library includes**: Added `<string>`, `<vector>` to header and `<cstring>` to implementation, removing reliance on transitive includes.
 
 ## Files Updated
 
@@ -48,5 +46,6 @@
 - `components/irk_capture/irk_capture.h`
 - `ESPHome Devices/irk-capture-base.yaml`
 - `ESPHome Devices/irk-capture-full.yaml`
-- `ESPHome Devices/irk-capture-device-remote.yaml`
-- `RELEASE_NOTES_v1.5.7.md` (this file; replaces `RELEASE_NOTES_v1.5.6.md`)
+- `RELEASE_NOTES_v1.5.7.md`
+- `RELEASE_NOTES_v1.5.6.md` (archived)
+- `RELEASE_NOTES_v1.5.5.md` (archived)
