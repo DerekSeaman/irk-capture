@@ -24,7 +24,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.5.10";
+static constexpr char VERSION[] = "1.5.11";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -625,7 +625,11 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   }  // Release mutex before slow logging/publishing operations
 
   // Handle auto-stop advertising (outside mutex to avoid deadlock)
-  if (should_stop_adv) {
+  // BUG5 FIX: Guard with is_advertising() to prevent a double stop_advertising() call.
+  // publish_and_log_irk() can be called from handle_gap_disconnect() which may have
+  // already stopped advertising; calling stop_advertising() twice fires publish_state(false)
+  // twice, causing spurious Home Assistant state updates.
+  if (should_stop_adv && self->is_advertising()) {
     self->stop_advertising();
     ESP_LOGI(TAG,
              "Auto-stopped advertising due to repeated reconnections. "
@@ -1158,6 +1162,10 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       MutexGuard lock(self->state_mutex_);
       self->enc_ready_ = true;
       self->enc_time_ = now_ms();
+      // BUG1 FIX: Initialize irk_last_try_ms_ to now so the ENC_TRY_INTERVAL_MS
+      // guard in poll_irk_if_due() is correctly enforced on the first poll attempt.
+      // Without this, (now - 0) is huge and the interval check is bypassed immediately.
+      self->irk_last_try_ms_ = now_ms();
     }
 
     // Immediate store read using identity address
@@ -1317,7 +1325,10 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
       return 0;
 
     case GAP_EVENT_L2CAP_UPDATE_REQ:
-      // Accept connection parameter updates
+      // BUG9 FIX: Log accepted parameter update requests for observability.
+      // Unconditional acceptance is intentional, but the log makes it visible
+      // in diagnostics if a misbehaving peer repeatedly requests updates.
+      ESP_LOGD(TAG, "L2CAP connection parameter update requested (accepted)");
       return 0;
 
     case GAP_EVENT_IDENTITY_RESOLVED:
@@ -1470,26 +1481,26 @@ void IRKCaptureComponent::loop() {
     }
 
     // Only log and clear bonds on first attempt (retry counter == 0)
+    // BUG3 FIX: mac_rotation_retries_ is read here from loop() (single task), safe to read
+    // without mutex, but mac_rotation_ready_time_ write is now inside the mutex block below.
     if (mac_rotation_retries_ == 0) {
       // First attempt: set up settling delay to let BLE stack fully stop
       if (mac_rotation_ready_time_ == 0) {
         ESP_LOGI(TAG, "MAC rotation: waiting %u ms for BLE stack to settle",
                  TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS);
-        mac_rotation_ready_time_ = now + TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS;
+        // BUG3 FIX: Write mac_rotation_ready_time_ under mutex for consistency
+        {
+          MutexGuard lock(state_mutex_);
+          mac_rotation_ready_time_ = now + TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS;
+          suppress_next_adv_ = false;
+          adv_restart_time_ = 0;
+        }
 
         // Clear all bonds since MAC change invalidates them
         ESP_LOGI(TAG, "Clearing all bond data before MAC refresh");
         int clear_rc = ble_store_clear();
         if (clear_rc != 0) {
           ESP_LOGW(TAG, "ble_store_clear during MAC rotation failed rc=%d", clear_rc);
-        }
-
-        // Reset suppression flags since we're starting fresh with new MAC
-        // THREAD-SAFE: Write to shared state under mutex
-        {
-          MutexGuard lock(state_mutex_);
-          suppress_next_adv_ = false;
-          adv_restart_time_ = 0;
         }
 
         // Log previous MAC before change
@@ -1529,14 +1540,16 @@ void IRKCaptureComponent::loop() {
       log_mac("Effective");
 
       // Reset pairing state and advance to completion - THREAD-SAFE
+      // BUG3 FIX: mac_rotation_retries_ and mac_rotation_ready_time_ moved inside
+      // the mutex block for consistency with the documented threading model.
       {
         MutexGuard lock(state_mutex_);
         enc_ready_ = false;
         enc_time_ = 0;
         mac_rotation_state_ = MacRotationState::ROTATION_COMPLETE;
+        mac_rotation_retries_ = 0;
+        mac_rotation_ready_time_ = 0;
       }
-      mac_rotation_retries_ = 0;
-      mac_rotation_ready_time_ = 0;
       ESP_LOGI(TAG, "MAC rotation complete, will restart advertising");
 
     } else if (rc == BLE_HS_EINVAL) {
@@ -1545,12 +1558,13 @@ void IRKCaptureComponent::loop() {
       if (mac_rotation_retries_ >= TimingConfig::MAC_ROTATION_MAX_RETRIES) {
         ESP_LOGE(TAG, "MAC rotation failed after %u retries - aborting", mac_rotation_retries_);
         // Abort rotation - THREAD-SAFE
+        // BUG3 FIX: retries/ready_time reset moved inside mutex for consistency
         {
           MutexGuard lock(state_mutex_);
           mac_rotation_state_ = MacRotationState::IDLE;
+          mac_rotation_retries_ = 0;
+          mac_rotation_ready_time_ = 0;
         }
-        mac_rotation_retries_ = 0;
-        mac_rotation_ready_time_ = 0;
         // Restart advertising with old MAC
         start_advertising();
       } else {
@@ -1562,12 +1576,13 @@ void IRKCaptureComponent::loop() {
     } else {
       ESP_LOGE(TAG, "ble_hs_id_set_rnd failed rc=%d - aborting MAC rotation", rc);
       // Abort rotation - THREAD-SAFE
+      // BUG3 FIX: retries/ready_time reset moved inside mutex for consistency
       {
         MutexGuard lock(state_mutex_);
         mac_rotation_state_ = MacRotationState::IDLE;
+        mac_rotation_retries_ = 0;
+        mac_rotation_ready_time_ = 0;
       }
-      mac_rotation_retries_ = 0;
-      mac_rotation_ready_time_ = 0;
       // Restart advertising with old MAC
       start_advertising();
     }
@@ -1818,6 +1833,14 @@ void IRKCaptureComponent::register_gatt_services() {
   devinfo_chrs[0].arg = (void*) this;  // Manufacturer Name
   devinfo_chrs[1].arg = (void*) this;  // Model Number
 
+  // BUG4 FIX: Explicitly zero the handle globals before any registration attempt.
+  // The Keyboard profile GATT table doesn't contain HR or Protected services, so
+  // if a Keyboard→Heart Sensor fallback occurs, g_hr_handle/g_prot_handle would
+  // retain stale values from a prior boot. Zeroing here makes the state explicit and
+  // predictable regardless of which registration path is taken.
+  g_hr_handle = 0;
+  g_prot_handle = 0;
+
   // Select GATT services based on current profile
   BLEProfile current_profile;
   {
@@ -1846,6 +1869,10 @@ void IRKCaptureComponent::register_gatt_services() {
                "to keep component operational");
       rc = register_svcs(gatt_svcs_heart_sensor, "Heart Sensor");
       if (rc == 0) {
+        // BUG4 FIX: Log handle state after fallback so it's clear in diagnostics.
+        // g_hr_handle and g_prot_handle are now valid (Heart Sensor profile populated them).
+        ESP_LOGW(TAG, "Keyboard->Heart Sensor fallback succeeded: g_hr_handle=%u g_prot_handle=%u",
+                 g_hr_handle, g_prot_handle);
         // Persist fallback so next boot doesn't repeat the same failure path.
         {
           MutexGuard lock(state_mutex_);
@@ -1853,13 +1880,19 @@ void IRKCaptureComponent::register_gatt_services() {
         }
         nvs_handle_t nvs_handle;
         if (nvs_open("irk_capture", NVS_READWRITE, &nvs_handle) == ESP_OK) {
+          // BUG10 FIX: Track set and commit errors separately so the log message
+          // accurately reports which operation failed (commit was "not attempted"
+          // if the set itself failed).
           esp_err_t set_err =
               nvs_set_u8(nvs_handle, "ble_profile", static_cast<uint8_t>(BLEProfile::HEART_SENSOR));
-          esp_err_t commit_err = (set_err == ESP_OK) ? nvs_commit(nvs_handle) : set_err;
+          esp_err_t commit_err = ESP_OK;
+          if (set_err == ESP_OK) {
+            commit_err = nvs_commit(nvs_handle);
+          }
           nvs_close(nvs_handle);
           if (set_err != ESP_OK || commit_err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to persist fallback BLE profile (set=%d commit=%d)", set_err,
-                     commit_err);
+            ESP_LOGW(TAG, "Failed to persist fallback BLE profile (set=%d commit=%s)", set_err,
+                     (set_err != ESP_OK) ? "not attempted" : esp_err_to_name(commit_err));
           }
         } else {
           ESP_LOGW(TAG, "Failed to open NVS for fallback profile persistence");
@@ -1937,7 +1970,18 @@ void IRKCaptureComponent::start_advertising() {
 
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t*) name_copy.c_str();
-    fields.name_len = (uint8_t) name_copy.size();
+    // BUG6 FIX: Clamp name length defensively before casting to uint8_t.
+    // sanitize_ble_name() enforces a 12-byte limit, but guard here in case that
+    // is ever bypassed. 29 bytes is the practical BLE adv name field maximum
+    // (31-byte packet minus 2 bytes for type+length overhead).
+    {
+      size_t raw_len = name_copy.size();
+      if (raw_len > 29) {
+        ESP_LOGW(TAG, "BLE name too long (%zu bytes), truncating to 29", raw_len);
+        raw_len = 29;
+      }
+      fields.name_len = (uint8_t) raw_len;
+    }
     fields.name_is_complete = 1;
     fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
     fields.appearance_is_present = 1;
@@ -2161,14 +2205,21 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     // Persist profile to NVS before restart
     nvs_handle_t nvs_handle;
     if (nvs_open("irk_capture", NVS_READWRITE, &nvs_handle) == ESP_OK) {
+      // BUG10 FIX: Track set and commit errors separately so the log message
+      // accurately reports which operation failed. The previous shorthand
+      // (commit_err = set failed ? set_err : nvs_commit()) caused the log to
+      // print the set-error code as if it were a commit error.
       esp_err_t set_err = nvs_set_u8(nvs_handle, "ble_profile", static_cast<uint8_t>(profile));
-      esp_err_t commit_err = (set_err == ESP_OK) ? nvs_commit(nvs_handle) : set_err;
+      esp_err_t commit_err = ESP_OK;
+      if (set_err == ESP_OK) {
+        commit_err = nvs_commit(nvs_handle);
+      }
       nvs_close(nvs_handle);
       if (set_err == ESP_OK && commit_err == ESP_OK) {
         ESP_LOGI(TAG, "Persisted BLE profile to NVS");
       } else {
-        ESP_LOGW(TAG, "Failed to persist BLE profile to NVS (set=%d commit=%d)", set_err,
-                 commit_err);
+        ESP_LOGW(TAG, "Failed to persist BLE profile to NVS (set=%d commit=%s)", set_err,
+                 (set_err != ESP_OK) ? "not attempted" : esp_err_to_name(commit_err));
       }
     } else {
       ESP_LOGW(TAG, "Failed to persist BLE profile to NVS");
@@ -2244,14 +2295,12 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
       } else if (rc != 0) {
         ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d during bond mismatch check", rc);
       } else if (bond.irk_present) {
-        // Re-publish the IRK we already have
+        // BUG7 FIX: Use publish_and_log_irk() instead of publish_irk_to_sensors() directly.
+        // The direct call bypassed deduplication, rate limiting (60s MIN_REPUBLISH_INTERVAL_MS),
+        // and the total_captures_ counter. A device repeatedly hitting this path would spam
+        // Home Assistant without any throttling. publish_and_log_irk() applies all guards.
         std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
-        char addr_str[18];
-        snprintf(addr_str, sizeof(addr_str), "%02X:%02X:%02X:%02X:%02X:%02X", d.peer_id_addr.val[5],
-                 d.peer_id_addr.val[4], d.peer_id_addr.val[3], d.peer_id_addr.val[2],
-                 d.peer_id_addr.val[1], d.peer_id_addr.val[0]);
-        publish_irk_to_sensors(irk_hex, addr_str);
-        ESP_LOGI(TAG, "Re-published existing IRK for already-paired device");
+        publish_and_log_irk(this, d.peer_id_addr, irk_hex, "RECONNECT_EXISTING");
         // Set flag to prevent immediate re-advertising (break the reconnect loop)
         // THREAD-SAFE: Suppression flag write must be protected
         {
@@ -2302,6 +2351,13 @@ void IRKCaptureComponent::on_disconnect() {
   // Thread-safe disconnection state update and MAC rotation handoff
   {
     MutexGuard lock(state_mutex_);
+    // BUG8 FIX: Log spurious double-disconnect events for diagnostic visibility.
+    // If on_disconnect() fires while connected_ is already false, a duplicate
+    // BLE_GAP_EVENT_DISCONNECT was delivered by NimBLE. The state resets below are
+    // idempotent so this is safe, but the log helps identify stack misbehavior.
+    if (!connected_) {
+      ESP_LOGD(TAG, "on_disconnect: already disconnected (spurious event - NimBLE duplicate?)");
+    }
     connected_ = false;
     conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
     pairing_start_time_ = 0;
@@ -2513,10 +2569,15 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     if (!sec_retry_done_copy && (now - sec_init_time_copy) > TimingConfig::SEC_RETRY_DELAY_MS) {
       uint32_t elapsed = now - sec_init_time_copy;
       ESP_LOGI(TAG, "Retrying security initiate after %u ms", elapsed);
+      // BUG2 FIX: Set sec_retry_done_ under mutex BEFORE calling ble_gap_security_initiate().
+      // Writing it after the BLE call is a race: a NimBLE callback could fire during the call
+      // and read sec_retry_done_ as false, causing a double retry.
+      {
+        MutexGuard lock(state_mutex_);
+        sec_retry_done_ = true;
+      }
       int rc = ble_gap_security_initiate(conn_handle_copy);
       ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
-      MutexGuard lock(state_mutex_);
-      sec_retry_done_ = true;
     }
 
     // If encryption still hasn't completed after timeout, assume peer forgot
