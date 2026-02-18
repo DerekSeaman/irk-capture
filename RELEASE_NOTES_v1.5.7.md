@@ -47,5 +47,3 @@ This release note reflects changes from `v1.5.6` to `v1.5.7`.
 - `ESPHome Devices/irk-capture-base.yaml`
 - `ESPHome Devices/irk-capture-full.yaml`
 - `RELEASE_NOTES_v1.5.7.md`
-- `RELEASE_NOTES_v1.5.6.md` (archived)
-- `RELEASE_NOTES_v1.5.5.md` (archived)
