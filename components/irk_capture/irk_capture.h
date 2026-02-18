@@ -122,7 +122,8 @@ class IRKCaptureComponent : public Component {
   friend class IRKCaptureButton;
   friend class IRKCaptureSelect;
 
-  // Friend functions for GAP event handlers and helpers (access private members)
+  // Friend functions for GAP event handlers and helpers (access private
+  // members)
   friend int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -264,8 +265,9 @@ class IRKCaptureComponent : public Component {
   uint32_t last_publish_time_ { 0 };      // Last IRK publish timestamp
   uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
 
-  // Host state — written once by NimBLE task (sync_cb), read by ESPHome main task
-  // Uses std::atomic for cross-core visibility without requiring state_mutex_
+  // Host state — written once by NimBLE task (sync_cb), read by ESPHome main
+  // task Uses std::atomic for cross-core visibility without requiring
+  // state_mutex_
   std::atomic<bool> host_synced_ { false };
 
   // Timer targets and cached peer ids
@@ -277,7 +279,8 @@ class IRKCaptureComponent : public Component {
   } timers_ {};
 
   // FreeRTOS mutex for thread-safe access to shared state
-  // Protects: timers_, conn_handle_, connected_, advertising_, pairing_start_time_,
+  // Protects: timers_, conn_handle_, connected_, advertising_,
+  // pairing_start_time_,
   //           ble_name_, manufacturer_name_, mac_rotation_state_, pending_mac_,
   //           suppress_next_adv_, adv_restart_time_, total_captures_,
   //           irk_cache_, last_publish_time_ (deduplication state),
@@ -286,7 +289,8 @@ class IRKCaptureComponent : public Component {
   SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Serializes BLE control operations that can be called from both NimBLE and
-  // ESPHome contexts (start/stop advertising, device-name updates, MAC changes).
+  // ESPHome contexts (start/stop advertising, device-name updates, MAC
+  // changes).
   SemaphoreHandle_t ble_op_mutex_ { nullptr };
 
   // Internal helpers

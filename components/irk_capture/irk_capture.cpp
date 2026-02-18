@@ -3,7 +3,6 @@
 // ESP32-only implementation - requires Bluetooth hardware
 #ifdef USE_ESP32
 
-#include <cstring>
 #include <esp_random.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -11,6 +10,8 @@
 #include <host/ble_store.h>
 #include <nvs_flash.h>
 #include <store/config/ble_store_config.h>
+
+#include <cstring>
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
@@ -51,7 +52,8 @@ button, text)
 THREAD SAFETY RULES:
 -    ALL reads/writes to shared state MUST use state_mutex_
 -    Protected by state_mutex_ (FreeRTOS mutex):
-     * timers_.last_peer_id / timers_.enc_peer_id (ble_addr_t multi-word structs)
+     * timers_.last_peer_id / timers_.enc_peer_id (ble_addr_t multi-word
+structs)
      * timers_.post_disc_due_ms / timers_.late_enc_due_ms (timer targets)
      * conn_handle_ (connection handle)
      * connected_ (connection state flag)
@@ -71,7 +73,8 @@ THREAD SAFETY RULES:
 -    RAII MutexGuard class ensures exception-safe lock/unlock
 -    Mutex MUST be released before calling BLE stack APIs (prevents deadlock)
 -    UI updates (publish_state) are safe outside mutex (internally thread-safe)
--    host_synced_ uses std::atomic<bool> (one-shot write from NimBLE, reads from main loop)
+-    host_synced_ uses std::atomic<bool> (one-shot write from NimBLE, reads from
+main loop)
 
 IMPORTANT: Do NOT rely on "aligned writes are atomic" - always use mutex for
 shared state to ensure:
@@ -160,7 +163,8 @@ struct TimingConfig {
       2000;  // How long to suppress advertising after IRK capture
   static constexpr uint32_t PAIRING_TOTAL_TIMEOUT_MS = 90000;  // Global pairing timeout (90s max)
   static constexpr uint32_t TIMEOUT_COOLDOWN_MS =
-      5000;  // Cooldown after pairing timeout before re-advertising (prevents rapid-fire loop)
+      5000;  // Cooldown after pairing timeout before re-advertising (prevents
+             // rapid-fire loop)
   static constexpr uint32_t MIN_REPUBLISH_INTERVAL_MS =
       60000;  // Min time between republishing same IRK (60s)
   static constexpr uint8_t MAC_ROTATION_MAX_RETRIES = 10;  // Max retries for MAC rotation
@@ -197,12 +201,12 @@ static constexpr int GAP_EVENT_VS_HCI = 38;
 /*
 Connect → Initiate security
 ENC_CHANGE → immediate IRK read from store; if available: publish & disconnect
-(tested working behavior). If ENC fails (status != 0), delete that peer's keys and retry
-security once (self-heal). DISCONNECT → immediate store read; schedule delayed
-read at +800ms; restart advertising While connected (post ENC) → poll every 1s
-starting at +2s, up to 45s, then disconnect when IRK captured All address
-reporting uses the peer identity address; IRK hex is reversed for parity with
-Arduino output.
+(tested working behavior). If ENC fails (status != 0), delete that peer's keys
+and retry security once (self-heal). DISCONNECT → immediate store read; schedule
+delayed read at +800ms; restart advertising While connected (post ENC) → poll
+every 1s starting at +2s, up to 45s, then disconnect when IRK captured All
+address reporting uses the peer identity address; IRK hex is reversed for parity
+with Arduino output.
 
 Why this lifecycle: Maintains compatibility (immediate disconnect after capture)
 while adding robustness for timing variations across different BLE peer
@@ -265,7 +269,8 @@ static inline bool deadline_reached(uint32_t now, uint32_t deadline) {
   return (int32_t) (now - deadline) >= 0;
 }
 
-// Hex formatter: reversed byte order (matches Arduino BLE library convention for IRK display)
+// Hex formatter: reversed byte order (matches Arduino BLE library convention
+// for IRK display)
 static std::string to_hex_rev(const uint8_t* data, size_t len) {
   std::string out;
   out.reserve(len * 2);
@@ -390,8 +395,10 @@ class BleOpGuard {
 };
 
 static void hr_measurement_sample(uint8_t* buf, size_t* len) {
-  buf[0] = 0x00;  // Flags byte: bit0=0 (UINT8 format), bit1-2=0 (sensor contact not supported),
-                  //             bit3=0 (no energy expended), bit4=0 (RR interval not present)
+  buf[0] = 0x00;  // Flags byte: bit0=0 (UINT8 format), bit1-2=0 (sensor contact
+                  // not supported),
+                  //             bit3=0 (no energy expended), bit4=0 (RR
+                  //             interval not present)
   buf[1] = (uint8_t) (60 + (esp_random() % 40));  // 60-99 bpm
   *len = 2;
 }
@@ -503,7 +510,8 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
  * @brief Checks if IRK should be published (deduplication + rate limiting)
  *
  * CRITICAL: Caller MUST hold state_mutex_ before calling this function.
- * This function modifies irk_cache_, last_publish_time_, and reads advertising_.
+ * This function modifies irk_cache_, last_publish_time_, and reads
+ * advertising_.
  *
  * MEMORY SAFETY: This function prevents duplicate entries in irk_cache_ by
  * checking if the IRK already exists before adding. Even if the same device
@@ -513,7 +521,8 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
  *
  * @param irk_hex IRK in hex string format
  * @param addr MAC address string
- * @param out_should_stop_adv [out] Set to true if caller should stop advertising (limit reached)
+ * @param out_should_stop_adv [out] Set to true if caller should stop
+ * advertising (limit reached)
  * @return true if should publish, false if duplicate/rate-limited
  */
 bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const std::string& addr,
@@ -530,16 +539,19 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
       entry.last_seen_ms = now;
       entry.capture_count++;
 
-      // SESSION LIMIT: Prevent unbounded memory growth from background reconnections
-      // iOS devices reconnect every 15min → 96 times/day → heap fragmentation
+      // SESSION LIMIT: Prevent unbounded memory growth from background
+      // reconnections iOS devices reconnect every 15min → 96 times/day → heap
+      // fragmentation
       if (entry.capture_count > 5) {
         ESP_LOGW(TAG,
-                 "IRK republish limit reached (%u captures). Device keeps reconnecting - "
+                 "IRK republish limit reached (%u captures). Device keeps "
+                 "reconnecting - "
                  "unpair from Bluetooth settings to stop.",
                  entry.capture_count);
 
         // Signal caller to stop advertising (break reconnection loop)
-        // THREAD-SAFE: We already hold state_mutex_, so we can read advertising_ directly
+        // THREAD-SAFE: We already hold state_mutex_, so we can read
+        // advertising_ directly
         out_should_stop_adv = advertising_;
         return false;  // Don't republish - prevents heap fragmentation
       }
@@ -557,7 +569,8 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
   }
 
   // New IRK - add to cache with FIFO eviction
-  // Cache cap derived from max(max_captures_, 10) to prevent unbounded memory growth
+  // Cache cap derived from max(max_captures_, 10) to prevent unbounded memory
+  // growth
   size_t cache_limit = (max_captures_ > 10) ? max_captures_ : 10;
   if (irk_cache_.size() >= cache_limit) {
     // Evict oldest (FIFO). Note: documented behavior; intentional to cap memory
@@ -595,8 +608,9 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   const std::string addr_str = addr_to_str(peer_id_addr);
 
   // THREAD-SAFE: Check deduplication AND increment counter under mutex
-  // CRITICAL: should_publish_irk() assumes caller holds mutex (non-recursive mutex!)
-  // All irk_cache_ operations, counter increments, and advertising checks happen atomically
+  // CRITICAL: should_publish_irk() assumes caller holds mutex (non-recursive
+  // mutex!) All irk_cache_ operations, counter increments, and advertising
+  // checks happen atomically
   uint8_t current_captures;
   bool max_reached = false;
   bool should_publish;
@@ -625,10 +639,11 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   }  // Release mutex before slow logging/publishing operations
 
   // Handle auto-stop advertising (outside mutex to avoid deadlock)
-  // BUG5 FIX: Guard with is_advertising() to prevent a double stop_advertising() call.
-  // publish_and_log_irk() can be called from handle_gap_disconnect() which may have
-  // already stopped advertising; calling stop_advertising() twice fires publish_state(false)
-  // twice, causing spurious Home Assistant state updates.
+  // BUG5 FIX: Guard with is_advertising() to prevent a double
+  // stop_advertising() call. publish_and_log_irk() can be called from
+  // handle_gap_disconnect() which may have already stopped advertising; calling
+  // stop_advertising() twice fires publish_state(false) twice, causing spurious
+  // Home Assistant state updates.
   if (should_stop_adv && self->is_advertising()) {
     self->stop_advertising();
     ESP_LOGI(TAG,
@@ -667,17 +682,17 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
 static uint16_t g_hr_handle;
 static uint16_t g_prot_handle;
 
-static struct ble_gatt_chr_def hr_chrs[] = {
-  {
-      .uuid = &UUID_CHR_HR_MEAS.u,
-      .access_cb = chr_read_hr,
-      .arg = nullptr,
-      // Heart rate characteristic: read requires encryption, notifications supported
-      .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_READ_ENC,
-      .val_handle = &g_hr_handle,
-  },
-  { 0 }
-};
+static struct ble_gatt_chr_def hr_chrs[] = { {
+                                                 .uuid = &UUID_CHR_HR_MEAS.u,
+                                                 .access_cb = chr_read_hr,
+                                                 .arg = nullptr,
+                                                 // Heart rate characteristic: read requires
+                                                 // encryption, notifications supported
+                                                 .flags = BLE_GATT_CHR_F_NOTIFY |
+                                                          BLE_GATT_CHR_F_READ_ENC,
+                                                 .val_handle = &g_hr_handle,
+                                             },
+                                             { 0 } };
 
 static struct ble_gatt_chr_def devinfo_chrs[] = {
   {
@@ -786,8 +801,8 @@ static struct ble_gatt_svc_def gatt_svcs_keyboard[] = {
 int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt, void* arg) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
 
-  // THREAD-SAFE: arg points to IRKCaptureComponent instance for both characteristics
-  // We determine which characteristic by UUID comparison
+  // THREAD-SAFE: arg points to IRKCaptureComponent instance for both
+  // characteristics We determine which characteristic by UUID comparison
   auto* self = static_cast<IRKCaptureComponent*>(arg);
 
   // Determine which characteristic is being read
@@ -836,7 +851,8 @@ int chr_read_protected(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ct
 std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
   // Validate and sanitize BLE name for runtime changes from Home Assistant
   std::string sanitized;
-  sanitized.reserve(12);  // 12 chars for Samsung S24/S25 compatibility with single-UUID advertising
+  sanitized.reserve(12);  // 12 chars for Samsung S24/S25 compatibility with
+                          // single-UUID advertising
 
   // Check for empty string
   if (name.empty()) {
@@ -844,7 +860,8 @@ std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
     return "IRK Capture";
   }
 
-  // Sanitize: allow only safe characters (alphanumeric, space, hyphen, underscore)
+  // Sanitize: allow only safe characters (alphanumeric, space, hyphen,
+  // underscore)
   for (char c : name) {
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' ||
         c == '-' || c == '_') {
@@ -855,7 +872,8 @@ std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
                (c >= 32 && c <= 126) ? c : '?');
     }
 
-    // Enforce 12-byte limit for Samsung S24/S25 compatibility (clean profile with single UUID)
+    // Enforce 12-byte limit for Samsung S24/S25 compatibility (clean profile
+    // with single UUID)
     if (sanitized.length() >= 12) {
       ESP_LOGW(TAG, "BLE name truncated to 12 bytes (Samsung compatibility)");
       break;
@@ -873,7 +891,9 @@ std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
 
   // Final validation: ensure we have at least one character
   if (sanitized.empty()) {
-    ESP_LOGW(TAG, "BLE name contained only invalid characters, using default 'IRK Capture'");
+    ESP_LOGW(TAG,
+             "BLE name contained only invalid characters, using default 'IRK "
+             "Capture'");
     return "IRK Capture";
   }
 
@@ -935,7 +955,9 @@ void IRKCaptureSelect::control(const std::string& value) {
   } else if (value == "Keyboard") {
     parent_->set_ble_profile(BLEProfile::KEYBOARD);
   } else {
-    ESP_LOGW(TAG, "Invalid BLE profile value: '%s' (expected 'Heart Sensor' or 'Keyboard')",
+    ESP_LOGW(TAG,
+             "Invalid BLE profile value: '%s' (expected 'Heart Sensor' or "
+             "'Keyboard')",
              value.c_str());
     return;  // Don't publish invalid state to Home Assistant
   }
@@ -1009,7 +1031,8 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   self->on_disconnect();
 
   // Use the connection descriptor embedded in the disconnect event directly
-  // (ble_gap_conn_find may fail after disconnect since NimBLE removes the descriptor)
+  // (ble_gap_conn_find may fail after disconnect since NimBLE removes the
+  // descriptor)
   const struct ble_gap_conn_desc& d = ev->disconnect.conn;
   {
     // Thread-safe cache for delayed retry
@@ -1163,8 +1186,9 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       self->enc_ready_ = true;
       self->enc_time_ = now_ms();
       // BUG1 FIX: Initialize irk_last_try_ms_ to now so the ENC_TRY_INTERVAL_MS
-      // guard in poll_irk_if_due() is correctly enforced on the first poll attempt.
-      // Without this, (now - 0) is huge and the interval check is bypassed immediately.
+      // guard in poll_irk_if_due() is correctly enforced on the first poll
+      // attempt. Without this, (now - 0) is huge and the interval check is
+      // bypassed immediately.
       self->irk_last_try_ms_ = now_ms();
     }
 
@@ -1190,7 +1214,8 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       } else if (bond.irk_present) {
         std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
         publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
-        // Tested working behavior: terminate immediately after successful ENC + IRK capture
+        // Tested working behavior: terminate immediately after successful ENC +
+        // IRK capture
         int term_rc;
         {
           BleOpGuard ble_lock(self->ble_op_mutex_);
@@ -1220,10 +1245,12 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       ESP_LOGW(TAG, "ble_gap_terminate after ENC failure rc=%d", term_rc);
     }
 
-    // For DHKey failures (status=1288), stop advertising briefly to force peer to reset
-    // THREAD-SAFE: Suppression flag write must be protected
+    // For DHKey failures (status=1288), stop advertising briefly to force peer
+    // to reset THREAD-SAFE: Suppression flag write must be protected
     if (ev->enc_change.status == NIMBLE_ERR_DHKEY_CHECK_FAILED) {
-      ESP_LOGW(TAG, "DHKey failure detected - suppressing advertising to force peer reset");
+      ESP_LOGW(TAG,
+               "DHKey failure detected - suppressing advertising to force peer "
+               "reset");
       MutexGuard lock(self->state_mutex_);
       self->suppress_next_adv_ = true;
     }
@@ -1376,12 +1403,15 @@ void IRKCaptureComponent::setup() {
   }
   ble_op_mutex_ = xSemaphoreCreateMutex();
   if (!ble_op_mutex_) {
-    ESP_LOGE(TAG, "CRITICAL: Failed to create BLE op mutex - cannot serialize BLE host calls");
+    ESP_LOGE(TAG,
+             "CRITICAL: Failed to create BLE op mutex - cannot serialize BLE "
+             "host calls");
     this->mark_failed();
     return;
   }
 
-  // Load persisted BLE profile from NVS (before BLE stack init so GATT is correct)
+  // Load persisted BLE profile from NVS (before BLE stack init so GATT is
+  // correct)
   nvs_handle_t nvs_handle;
   if (nvs_open("irk_capture", NVS_READONLY, &nvs_handle) == ESP_OK) {
     uint8_t profile_val = 0;
@@ -1400,7 +1430,8 @@ void IRKCaptureComponent::setup() {
   // Clear in-memory IRK cache for fresh session (complements ble_store_clear()
   // which is called later during BLE stack initialization)
   irk_cache_.clear();
-  // Derive cache capacity from max_captures_ (floor of 10 to handle deduplication of reconnections)
+  // Derive cache capacity from max_captures_ (floor of 10 to handle
+  // deduplication of reconnections)
   size_t cache_cap = (max_captures_ > 10) ? max_captures_ : 10;
   irk_cache_.reserve(cache_cap);
   total_captures_ = 0;
@@ -1446,7 +1477,8 @@ void IRKCaptureComponent::dump_config() {
   const char* profile_name =
       (current_profile == BLEProfile::KEYBOARD) ? "Keyboard" : "Heart Sensor";
 
-  // Single consolidated log line avoids UART buffer overflow without vTaskDelay hacks
+  // Single consolidated log line avoids UART buffer overflow without vTaskDelay
+  // hacks
   ESP_LOGCONFIG(TAG, "IRK Capture v%s: profile=%s name='%s' adv=%s", VERSION, profile_name,
                 effective_name, adv_state ? "YES" : "NO");
 }
@@ -1481,8 +1513,9 @@ void IRKCaptureComponent::loop() {
     }
 
     // Only log and clear bonds on first attempt (retry counter == 0)
-    // BUG3 FIX: mac_rotation_retries_ is read here from loop() (single task), safe to read
-    // without mutex, but mac_rotation_ready_time_ write is now inside the mutex block below.
+    // BUG3 FIX: mac_rotation_retries_ is read here from loop() (single task),
+    // safe to read without mutex, but mac_rotation_ready_time_ write is now
+    // inside the mutex block below.
     if (mac_rotation_retries_ == 0) {
       // First attempt: set up settling delay to let BLE stack fully stop
       if (mac_rotation_ready_time_ == 0) {
@@ -1516,7 +1549,8 @@ void IRKCaptureComponent::loop() {
       ESP_LOGI(TAG, "MAC rotation: BLE stack settled, performing MAC change");
     }
 
-    // Attempt to set the pre-generated MAC address (using local copy to avoid race)
+    // Attempt to set the pre-generated MAC address (using local copy to avoid
+    // race)
     int rc;
     uint8_t own_addr_type = BLE_OWN_ADDR_PUBLIC;
     int rc2 = 0;
@@ -1540,8 +1574,9 @@ void IRKCaptureComponent::loop() {
       log_mac("Effective");
 
       // Reset pairing state and advance to completion - THREAD-SAFE
-      // BUG3 FIX: mac_rotation_retries_ and mac_rotation_ready_time_ moved inside
-      // the mutex block for consistency with the documented threading model.
+      // BUG3 FIX: mac_rotation_retries_ and mac_rotation_ready_time_ moved
+      // inside the mutex block for consistency with the documented threading
+      // model.
       {
         MutexGuard lock(state_mutex_);
         enc_ready_ = false;
@@ -1666,7 +1701,8 @@ void IRKCaptureComponent::loop() {
              TimingConfig::TIMEOUT_COOLDOWN_MS / 1000);
   }
 
-  // THREAD-SAFE: Check connection state before proceeding with connection-specific work
+  // THREAD-SAFE: Check connection state before proceeding with
+  // connection-specific work
   bool is_connected;
   {
     MutexGuard lock(state_mutex_);
@@ -1833,11 +1869,12 @@ void IRKCaptureComponent::register_gatt_services() {
   devinfo_chrs[0].arg = (void*) this;  // Manufacturer Name
   devinfo_chrs[1].arg = (void*) this;  // Model Number
 
-  // BUG4 FIX: Explicitly zero the handle globals before any registration attempt.
-  // The Keyboard profile GATT table doesn't contain HR or Protected services, so
-  // if a Keyboard→Heart Sensor fallback occurs, g_hr_handle/g_prot_handle would
-  // retain stale values from a prior boot. Zeroing here makes the state explicit and
-  // predictable regardless of which registration path is taken.
+  // BUG4 FIX: Explicitly zero the handle globals before any registration
+  // attempt. The Keyboard profile GATT table doesn't contain HR or Protected
+  // services, so if a Keyboard→Heart Sensor fallback occurs,
+  // g_hr_handle/g_prot_handle would retain stale values from a prior boot.
+  // Zeroing here makes the state explicit and predictable regardless of which
+  // registration path is taken.
   g_hr_handle = 0;
   g_prot_handle = 0;
 
@@ -1865,13 +1902,17 @@ void IRKCaptureComponent::register_gatt_services() {
     rc = register_svcs(gatt_svcs_keyboard, "Keyboard");
     if (rc != 0) {
       ESP_LOGW(TAG,
-               "Keyboard GATT registration failed; falling back to Heart Sensor profile "
+               "Keyboard GATT registration failed; falling back to Heart "
+               "Sensor profile "
                "to keep component operational");
       rc = register_svcs(gatt_svcs_heart_sensor, "Heart Sensor");
       if (rc == 0) {
-        // BUG4 FIX: Log handle state after fallback so it's clear in diagnostics.
-        // g_hr_handle and g_prot_handle are now valid (Heart Sensor profile populated them).
-        ESP_LOGW(TAG, "Keyboard->Heart Sensor fallback succeeded: g_hr_handle=%u g_prot_handle=%u",
+        // BUG4 FIX: Log handle state after fallback so it's clear in
+        // diagnostics. g_hr_handle and g_prot_handle are now valid (Heart
+        // Sensor profile populated them).
+        ESP_LOGW(TAG,
+                 "Keyboard->Heart Sensor fallback succeeded: g_hr_handle=%u "
+                 "g_prot_handle=%u",
                  g_hr_handle, g_prot_handle);
         // Persist fallback so next boot doesn't repeat the same failure path.
         {
@@ -1880,9 +1921,9 @@ void IRKCaptureComponent::register_gatt_services() {
         }
         nvs_handle_t nvs_handle;
         if (nvs_open("irk_capture", NVS_READWRITE, &nvs_handle) == ESP_OK) {
-          // BUG10 FIX: Track set and commit errors separately so the log message
-          // accurately reports which operation failed (commit was "not attempted"
-          // if the set itself failed).
+          // BUG10 FIX: Track set and commit errors separately so the log
+          // message accurately reports which operation failed (commit was "not
+          // attempted" if the set itself failed).
           esp_err_t set_err =
               nvs_set_u8(nvs_handle, "ble_profile", static_cast<uint8_t>(BLEProfile::HEART_SENSOR));
           esp_err_t commit_err = ESP_OK;
@@ -1905,7 +1946,8 @@ void IRKCaptureComponent::register_gatt_services() {
 
   if (rc != 0) {
     ESP_LOGE(TAG,
-             "No valid GATT profile could be registered; continuing without custom GATT "
+             "No valid GATT profile could be registered; continuing without "
+             "custom GATT "
              "services to avoid boot failure");
     hr_char_handle_ = 0;
     prot_char_handle_ = 0;
@@ -1940,14 +1982,16 @@ void IRKCaptureComponent::start_advertising() {
 
   const char* profile_name;
 
-  // Scan response fields (used for Keyboard profile to fit name in separate packet)
+  // Scan response fields (used for Keyboard profile to fit name in separate
+  // packet)
   struct ble_hs_adv_fields rsp_fields;
   memset(&rsp_fields, 0, sizeof(rsp_fields));
   bool use_scan_response = false;
 
   if (current_profile == BLEProfile::KEYBOARD) {
     // Keyboard profile: Logitech K380
-    // Move name to scan response to stay within 31-byte advertising packet limit
+    // Move name to scan response to stay within 31-byte advertising packet
+    // limit
     profile_name = "Keyboard";
 
     // Advertising data: flags, appearance, HID service UUID (keep small)
@@ -2027,13 +2071,15 @@ void IRKCaptureComponent::start_advertising() {
       advp.conn_mode = BLE_GAP_CONN_MODE_UND;
       advp.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
-      // Faster advertising interval for quicker discovery in Samsung/Android Settings UI
-      // Units are 0.625ms: 0x00A0 = 100ms, 0x00F0 = 150ms (default NimBLE is ~1.28s)
+      // Faster advertising interval for quicker discovery in Samsung/Android
+      // Settings UI Units are 0.625ms: 0x00A0 = 100ms, 0x00F0 = 150ms (default
+      // NimBLE is ~1.28s)
       advp.itvl_min = 0x00A0;
       advp.itvl_max = 0x00F0;
 
-      // Use explicit RANDOM address type (our static random address set in setup_ble/refresh_mac)
-      // Avoids Samsung One UI 7 "Maximum Restrictions" filtering RPA addresses as tracking risks
+      // Use explicit RANDOM address type (our static random address set in
+      // setup_ble/refresh_mac) Avoids Samsung One UI 7 "Maximum Restrictions"
+      // filtering RPA addresses as tracking risks
       constexpr uint8_t own_addr_type = BLE_OWN_ADDR_RANDOM;
       rc = ble_gap_adv_start(own_addr_type, nullptr, BLE_HS_FOREVER, &advp,
                              IRKCaptureComponent::gap_event_handler, this);
@@ -2095,20 +2141,24 @@ std::string IRKCaptureComponent::get_ble_name() {
   return ble_name_;
 }
 
-//======================== MAC refresh (event-driven, non-blocking) ========================
+//======================== MAC refresh (event-driven, non-blocking)
+//========================
 
 void IRKCaptureComponent::refresh_mac() {
   ESP_LOGI(TAG, "MAC rotation requested (non-blocking event-driven)");
 
-  // Pre-generate the new MAC address before taking mutex (esp_fill_random is slow)
+  // Pre-generate the new MAC address before taking mutex (esp_fill_random is
+  // slow)
   uint8_t temp_mac[6];
   esp_fill_random(temp_mac, sizeof(temp_mac));
-  // NimBLE uses little-endian: temp_mac[5] is the MSB (displayed first in XX:XX:XX:XX:XX:XX)
-  // Force static-random: top two bits of MSB = 11 (0xC0 mask)
-  // Also ensure unicast: LSB bit0 of temp_mac[0] = 0 (the actual transmitted LSB)
+  // NimBLE uses little-endian: temp_mac[5] is the MSB (displayed first in
+  // XX:XX:XX:XX:XX:XX) Force static-random: top two bits of MSB = 11 (0xC0
+  // mask) Also ensure unicast: LSB bit0 of temp_mac[0] = 0 (the actual
+  // transmitted LSB)
   temp_mac[5] |= 0xC0;  // Set top two bits of MSB for static random address type
   temp_mac[0] &= 0xFE;  // Clear bit0 of LSB for unicast (not multicast)
-  // Note: all-zero is impossible after setting 0xC0 on MSB (temp_mac[5] >= 0xC0)
+  // Note: all-zero is impossible after setting 0xC0 on MSB (temp_mac[5] >=
+  // 0xC0)
   ESP_LOGD(TAG, "Pre-generated MAC: %02X:%02X:%02X:%02X:%02X:%02X", temp_mac[5], temp_mac[4],
            temp_mac[3], temp_mac[2], temp_mac[1], temp_mac[0]);
 
@@ -2161,7 +2211,8 @@ void IRKCaptureComponent::refresh_mac() {
 //======================== BLE name update ========================
 
 void IRKCaptureComponent::update_ble_name(const std::string& name) {
-  // THREAD-SAFE: Update name with mutex protection since GATT callback may read it
+  // THREAD-SAFE: Update name with mutex protection since GATT callback may read
+  // it
   {
     MutexGuard lock(state_mutex_);
     ble_name_ = name;
@@ -2178,12 +2229,14 @@ void IRKCaptureComponent::update_ble_name(const std::string& name) {
     return;
   }
 
-  // NOTE: devinfo_chrs[1].arg already points to 'this' (set in register_gatt_services)
-  // GATT callback will read updated ble_name_ with mutex protection
+  // NOTE: devinfo_chrs[1].arg already points to 'this' (set in
+  // register_gatt_services) GATT callback will read updated ble_name_ with
+  // mutex protection
 
   // Initiate non-blocking MAC rotation (event-driven state machine)
   // Sequence: refresh_mac() → on_disconnect() → loop() → start_advertising()
-  // The advertising will restart automatically with the new name after MAC rotation completes
+  // The advertising will restart automatically with the new name after MAC
+  // rotation completes
   this->refresh_mac();
 }
 
@@ -2239,9 +2292,11 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     }
 
     // GATT database cannot be dynamically changed in NimBLE - restart required
-    // Use ESPHome's safe_reboot to avoid watchdog timeout from blocking vTaskDelay
+    // Use ESPHome's safe_reboot to avoid watchdog timeout from blocking
+    // vTaskDelay
     ESP_LOGW(TAG,
-             "Profile change requires restart to update GATT database - scheduling safe reboot...");
+             "Profile change requires restart to update GATT database - "
+             "scheduling safe reboot...");
     App.safe_reboot();
   }
 }
@@ -2295,20 +2350,23 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
       } else if (rc != 0) {
         ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d during bond mismatch check", rc);
       } else if (bond.irk_present) {
-        // BUG7 FIX: Use publish_and_log_irk() instead of publish_irk_to_sensors() directly.
-        // The direct call bypassed deduplication, rate limiting (60s MIN_REPUBLISH_INTERVAL_MS),
-        // and the total_captures_ counter. A device repeatedly hitting this path would spam
-        // Home Assistant without any throttling. publish_and_log_irk() applies all guards.
+        // BUG7 FIX: Use publish_and_log_irk() instead of
+        // publish_irk_to_sensors() directly. The direct call bypassed
+        // deduplication, rate limiting (60s MIN_REPUBLISH_INTERVAL_MS), and the
+        // total_captures_ counter. A device repeatedly hitting this path would
+        // spam Home Assistant without any throttling. publish_and_log_irk()
+        // applies all guards.
         std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
         publish_and_log_irk(this, d.peer_id_addr, irk_hex, "RECONNECT_EXISTING");
-        // Set flag to prevent immediate re-advertising (break the reconnect loop)
-        // THREAD-SAFE: Suppression flag write must be protected
+        // Set flag to prevent immediate re-advertising (break the reconnect
+        // loop) THREAD-SAFE: Suppression flag write must be protected
         {
           MutexGuard lock(state_mutex_);
           suppress_next_adv_ = true;
         }
         // Disconnect since we already have what we need
-        // THREAD-SAFE: Use function parameter (already set under mutex at line 1771)
+        // THREAD-SAFE: Use function parameter (already set under mutex at line
+        // 1771)
         int term_rc;
         {
           BleOpGuard ble_lock(ble_op_mutex_);
@@ -2351,12 +2409,15 @@ void IRKCaptureComponent::on_disconnect() {
   // Thread-safe disconnection state update and MAC rotation handoff
   {
     MutexGuard lock(state_mutex_);
-    // BUG8 FIX: Log spurious double-disconnect events for diagnostic visibility.
-    // If on_disconnect() fires while connected_ is already false, a duplicate
-    // BLE_GAP_EVENT_DISCONNECT was delivered by NimBLE. The state resets below are
-    // idempotent so this is safe, but the log helps identify stack misbehavior.
+    // BUG8 FIX: Log spurious double-disconnect events for diagnostic
+    // visibility. If on_disconnect() fires while connected_ is already false, a
+    // duplicate BLE_GAP_EVENT_DISCONNECT was delivered by NimBLE. The state
+    // resets below are idempotent so this is safe, but the log helps identify
+    // stack misbehavior.
     if (!connected_) {
-      ESP_LOGD(TAG, "on_disconnect: already disconnected (spurious event - NimBLE duplicate?)");
+      ESP_LOGD(TAG,
+               "on_disconnect: already disconnected (spurious event - NimBLE "
+               "duplicate?)");
     }
     connected_ = false;
     conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
@@ -2368,8 +2429,9 @@ void IRKCaptureComponent::on_disconnect() {
     irk_gave_up_ = false;
     irk_last_try_ms_ = 0;
 
-    // MAC rotation handoff: advance state if rotation is pending (CRITICAL: must be inside mutex)
-    // Now that we're disconnected, the radio is idle and safe to rotate
+    // MAC rotation handoff: advance state if rotation is pending (CRITICAL:
+    // must be inside mutex) Now that we're disconnected, the radio is idle and
+    // safe to rotate
     if (mac_rotation_state_ == MacRotationState::REQUESTED) {
       ESP_LOGD(TAG, "MAC rotation: connection closed, advancing to READY_TO_ROTATE");
       mac_rotation_state_ = MacRotationState::READY_TO_ROTATE;
@@ -2546,8 +2608,9 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     conn_handle_copy = conn_handle_;
   }
 
-  // Tested working behavior: single retry after SEC_RETRY_DELAY_MS from initial initiate
-  // THREAD-SAFE: Snapshot pairing state under mutex for main-loop reads
+  // Tested working behavior: single retry after SEC_RETRY_DELAY_MS from initial
+  // initiate THREAD-SAFE: Snapshot pairing state under mutex for main-loop
+  // reads
   bool enc_ready_copy;
   bool sec_retry_done_copy;
   uint32_t sec_init_time_copy;
@@ -2569,9 +2632,10 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     if (!sec_retry_done_copy && (now - sec_init_time_copy) > TimingConfig::SEC_RETRY_DELAY_MS) {
       uint32_t elapsed = now - sec_init_time_copy;
       ESP_LOGI(TAG, "Retrying security initiate after %u ms", elapsed);
-      // BUG2 FIX: Set sec_retry_done_ under mutex BEFORE calling ble_gap_security_initiate().
-      // Writing it after the BLE call is a race: a NimBLE callback could fire during the call
-      // and read sec_retry_done_ as false, causing a double retry.
+      // BUG2 FIX: Set sec_retry_done_ under mutex BEFORE calling
+      // ble_gap_security_initiate(). Writing it after the BLE call is a race: a
+      // NimBLE callback could fire during the call and read sec_retry_done_ as
+      // false, causing a double retry.
       {
         MutexGuard lock(state_mutex_);
         sec_retry_done_ = true;
@@ -2598,8 +2662,9 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
                  TimingConfig::SEC_TIMEOUT_MS);
       }
       // Disconnect to trigger fresh pairing on next connection
-      // CRITICAL: If termination fails, the NimBLE stack may be wedged - force local cleanup
-      // to prevent "zombie connection" state where UI shows connected but no data flows
+      // CRITICAL: If termination fails, the NimBLE stack may be wedged - force
+      // local cleanup to prevent "zombie connection" state where UI shows
+      // connected but no data flows
       int rc;
       {
         BleOpGuard ble_lock(ble_op_mutex_);
@@ -2607,7 +2672,8 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
       }
       if (rc != 0) {
         ESP_LOGE(TAG,
-                 "CRITICAL: ble_gap_terminate failed (rc=%d) - NimBLE stack may be wedged. "
+                 "CRITICAL: ble_gap_terminate failed (rc=%d) - NimBLE stack "
+                 "may be wedged. "
                  "Forcing local state reset to prevent zombie connection.",
                  rc);
         // Force local cleanup so we don't stay stuck in CONNECTED state forever
