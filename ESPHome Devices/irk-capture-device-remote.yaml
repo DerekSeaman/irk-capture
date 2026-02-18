@@ -11,7 +11,7 @@ substitutions:
 packages:
   device:
     url: https://github.com/DerekSeaman/irk-capture
-    ref: dev
+    ref: main
     file: ESPHome Devices/irk-capture-base.yaml
     refresh: always
 
