@@ -34,7 +34,7 @@ jobs:
 
       # 2. C++ Format Check
       - name: C++ Format Check
-        uses: jidicula/clang-format-action@v4.11.0
+        uses: jidicula/clang-format-action@v4.16.0
         with:
           clang-format-version: '18'
           check-path: 'components'
