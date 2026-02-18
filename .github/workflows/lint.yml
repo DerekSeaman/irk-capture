@@ -41,7 +41,7 @@ jobs:
       - name: C++ Format Check
         run: |
           find components -name '*.cpp' -o -name '*.h' | \
-            xargs clang-format-18 --style=Google --dry-run --Werror
+            xargs clang-format-18 --style=file --dry-run --Werror
 
       # 3. Python Lint
       - name: Python Lint

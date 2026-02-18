@@ -67,7 +67,8 @@ class IRKCaptureText : public text::Text, public Component {
 // Text sensor for IRK/Address output
 class IRKCaptureTextSensor : public text_sensor::TextSensor, public Component {
  public:
-  void setup() override {}
+  void setup() override {
+  }
   void dump_config() override;
 };
 

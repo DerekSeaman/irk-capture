@@ -23,7 +23,7 @@ SpacesInContainerLiterals: true
 # ESP-IDF specific: Do not alphabetize headers
 SortIncludes: false
 
-# Clean up empty functions/blocks
-AllowShortFunctionsOnASingleLine: Empty
+# Never collapse function bodies to single line
+AllowShortFunctionsOnASingleLine: None
 KeepEmptyLinesAtTheStartOfBlocks: false
 ---
