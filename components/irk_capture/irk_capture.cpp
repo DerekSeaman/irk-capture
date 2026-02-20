@@ -1861,8 +1861,7 @@ void IRKCaptureComponent::on_ble_host_synced() {
   // Set initial random MAC address now that host is synced
   uint8_t rnd[6];
   esp_fill_random(rnd, sizeof(rnd));
-  rnd[5] |= 0xC0;  // Set top two bits of MSB for static random address type
-  rnd[0] &= 0xFE;  // Clear bit0 of LSB for unicast (not multicast)
+  rnd[5] |= 0xC0;  // Set top two bits of MSB for static random address type (BLE spec requirement)
   int rc;
   {
     BleOpGuard ble_lock(ble_op_mutex_);
@@ -2180,11 +2179,12 @@ void IRKCaptureComponent::refresh_mac() {
   uint8_t temp_mac[6];
   esp_fill_random(temp_mac, sizeof(temp_mac));
   // NimBLE uses little-endian: temp_mac[5] is the MSB (displayed first in
-  // XX:XX:XX:XX:XX:XX) Force static-random: top two bits of MSB = 11 (0xC0
-  // mask) Also ensure unicast: LSB bit0 of temp_mac[0] = 0 (the actual
-  // transmitted LSB)
-  temp_mac[5] |= 0xC0;  // Set top two bits of MSB for static random address type
-  temp_mac[0] &= 0xFE;  // Clear bit0 of LSB for unicast (not multicast)
+  // XX:XX:XX:XX:XX:XX). BLE Static Random Address requirement (Core Spec
+  // Vol 6, Part B, §1.3.2): top two bits of MSB must be 11. That is the
+  // only structural constraint — the unicast/multicast bit (IEEE 802) does
+  // not apply to BLE addressing.
+  temp_mac[5] |=
+      0xC0;  // Set top two bits of MSB for static random address type (BLE spec requirement)
   // Note: all-zero is impossible after setting 0xC0 on MSB (temp_mac[5] >=
   // 0xC0)
   ESP_LOGD(TAG, "Pre-generated MAC: %02X:%02X:%02X:%02X:%02X:%02X", temp_mac[5], temp_mac[4],
