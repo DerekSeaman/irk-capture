@@ -19,4 +19,4 @@ This release note reflects changes from `v1.5.7` to `v1.5.8`.
 - `components/irk_capture/irk_capture.cpp`
 - `ESPHome Devices/irk-capture-base.yaml`
 - `ESPHome Devices/irk-capture-full.yaml`
-- `RELEASE_NOTES_v1.5.7.md`
+- `RELEASE_NOTES_v1.5.8.md`
