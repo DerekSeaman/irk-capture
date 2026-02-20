@@ -373,18 +373,29 @@ class MutexGuard {
 
 // Serialize BLE host control operations across ESPHome and NimBLE task
 // contexts.
+//
+// Usage:
+//   BleOpGuard g(mutex_);                         // portMAX_DELAY (NimBLE callbacks)
+//   BleOpGuard g(mutex_, pdMS_TO_TICKS(200));     // timeout (ESPHome main loop)
+//   if (!g.acquired()) { ESP_LOGW(...); return; } // bail on timeout
 class BleOpGuard {
  public:
-  explicit BleOpGuard(SemaphoreHandle_t mutex) : mutex_(mutex) {
+  explicit BleOpGuard(SemaphoreHandle_t mutex, TickType_t timeout = portMAX_DELAY)
+      : mutex_(mutex), acquired_(false) {
     if (mutex_) {
-      xSemaphoreTake(mutex_, portMAX_DELAY);
+      acquired_ = (xSemaphoreTake(mutex_, timeout) == pdTRUE);
     }
   }
 
   ~BleOpGuard() {
-    if (mutex_) {
+    if (mutex_ && acquired_) {
       xSemaphoreGive(mutex_);
     }
+  }
+
+  // Returns false if the mutex was not acquired (timed out).
+  bool acquired() const {
+    return acquired_;
   }
 
   BleOpGuard(const BleOpGuard&) = delete;
@@ -392,6 +403,7 @@ class BleOpGuard {
 
  private:
   SemaphoreHandle_t mutex_;
+  bool acquired_;
 };
 
 static void hr_measurement_sample(uint8_t* buf, size_t* len) {
@@ -1555,7 +1567,11 @@ void IRKCaptureComponent::loop() {
     uint8_t own_addr_type = BLE_OWN_ADDR_PUBLIC;
     int rc2 = 0;
     {
-      BleOpGuard ble_lock(ble_op_mutex_);
+      BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+      if (!ble_lock.acquired()) {
+        ESP_LOGW(TAG, "MAC rotation: ble_op_mutex timeout, will retry next loop()");
+        return;
+      }
       rc = ble_hs_id_set_rnd(mac_copy);
       if (rc == 0) {
         rc2 = ble_hs_id_infer_auto(0, &own_addr_type);
@@ -1676,7 +1692,11 @@ void IRKCaptureComponent::loop() {
       ble_store_util_delete_peer(&d.peer_id_addr);
       int term_rc;
       {
-        BleOpGuard ble_lock(ble_op_mutex_);
+        BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+        if (!ble_lock.acquired()) {
+          ESP_LOGW(TAG, "Pairing timeout terminate: ble_op_mutex timeout, will retry next loop()");
+          return;
+        }
         term_rc = ble_gap_terminate(timeout_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
       }
       if (term_rc != 0) {
@@ -2036,7 +2056,11 @@ void IRKCaptureComponent::start_advertising() {
 
   int rc = 0;
   {
-    BleOpGuard ble_lock(ble_op_mutex_);
+    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+    if (!ble_lock.acquired()) {
+      ESP_LOGW(TAG, "start_advertising: ble_op_mutex timeout, will retry next loop()");
+      return;
+    }
 
     // Defensive stop - ensure clean GAP state before starting.
     rc = ble_gap_adv_stop();
@@ -2108,7 +2132,11 @@ void IRKCaptureComponent::start_advertising() {
 void IRKCaptureComponent::stop_advertising() {
   int rc;
   {
-    BleOpGuard ble_lock(ble_op_mutex_);
+    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+    if (!ble_lock.acquired()) {
+      ESP_LOGW(TAG, "stop_advertising: ble_op_mutex timeout, skipping");
+      return;
+    }
     rc = ble_gap_adv_stop();
   }
   if (rc != 0 && rc != BLE_HS_EALREADY && rc != BLE_HS_EINVAL) {
@@ -2192,7 +2220,11 @@ void IRKCaptureComponent::refresh_mac() {
     ESP_LOGI(TAG, "Terminating connection for MAC rotation");
     int rc;
     {
-      BleOpGuard ble_lock(ble_op_mutex_);
+      BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+      if (!ble_lock.acquired()) {
+        ESP_LOGW(TAG, "MAC rotation terminate: ble_op_mutex timeout, will retry next loop()");
+        return;
+      }
       rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
     }
     if (rc != 0) {
@@ -2221,7 +2253,11 @@ void IRKCaptureComponent::update_ble_name(const std::string& name) {
   // Update GAP device name
   int rc;
   {
-    BleOpGuard ble_lock(ble_op_mutex_);
+    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+    if (!ble_lock.acquired()) {
+      ESP_LOGW(TAG, "update_ble_name: ble_op_mutex timeout, name update skipped");
+      return;
+    }
     rc = ble_svc_gap_device_name_set(name.c_str());
   }
   if (rc != 0) {
