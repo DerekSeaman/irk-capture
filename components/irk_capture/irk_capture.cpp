@@ -2661,9 +2661,11 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     if (sec_init_time_copy == 0) {
       MutexGuard lock(state_mutex_);
       sec_init_time_ms_ = now;
-      // sec_init_time_copy intentionally not updated: (now - now) == 0 which
-      // is always < SEC_RETRY_DELAY_MS, so the retry check below is a no-op
-      // on this iteration regardless.
+      // Update the local copy too: the timeout and retry checks below both
+      // compute (now - sec_init_time_copy). Leaving sec_init_time_copy as 0
+      // would make (now - 0) appear to exceed SEC_TIMEOUT_MS immediately,
+      // causing a spurious encryption-timeout disconnect on the first call.
+      sec_init_time_copy = now;
     }
 
     // Retry security after configured delay

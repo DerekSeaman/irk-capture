@@ -10,9 +10,9 @@ This release note reflects changes from `v1.5.7` to `v1.5.8`.
 
 - **Removed inapplicable IEEE 802 unicast mask from BLE MAC generation**: The `& 0xFE` mask applied to `rnd[0]` (LSB of the BLE address) in both `on_ble_host_synced()` and `refresh_mac()` was an IEEE 802 Ethernet concept that does not apply to BLE static random addresses. Per BLE Core Spec Vol 6, Part B §1.3.2, only the two MSBs of the most significant octet must be set to `11` (enforced by `rnd[5] |= 0xC0`). The `& 0xFE` mask has been removed and comments updated to reference the correct spec section.
 
-## Code Cleanup
+## Bug Fix
 
-- **Removed redundant variable assignment in `retry_security_if_needed()`**: The line `sec_init_time_copy = now` immediately after `sec_init_time_ms_ = now` was a no-op — the subsequent `(now - sec_init_time_copy) < SEC_RETRY_DELAY_MS` check evaluates to `0 < delay`, which is always true on the same iteration. Removed the redundant assignment and added a comment explaining why updating `sec_init_time_copy` is unnecessary.
+- **Fixed spurious encryption timeout on first connect in `retry_security_if_needed()`**: When `sec_init_time_ms_` was 0 (first connection since boot/reset), the local snapshot `sec_init_time_copy` was left as 0 after setting `sec_init_time_ms_ = now`. The subsequent timeout check `(now - sec_init_time_copy) > SEC_TIMEOUT_MS` evaluated as `(uptime_ms - 0)`, which immediately exceeded `SEC_TIMEOUT_MS` (20 000 ms) on any device that had been running longer than 20 seconds. This caused every first pairing attempt to be aborted with a spurious "Encryption timeout" disconnect before the peer could respond. Fixed by also updating `sec_init_time_copy = now` after initializing `sec_init_time_ms_`.
 
 ## Files Updated
 
