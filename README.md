@@ -383,6 +383,26 @@ If the Developer Options fix doesn't work, or you're on a non-Samsung Android de
 5. The pairing dialog should appear, allowing the bonding process to complete
 6. Look for the captured IRK in the ESP32 logs or the ESPHome device page
 
+### GrapheneOS / Hardened Android — "Incorrect PIN or passkey" Error
+
+GrapheneOS (and some other hardened Android builds) enforces **mandatory authenticated pairing** for HID Keyboard devices. Because a Bluetooth keyboard could theoretically inject keystrokes, GrapheneOS requires a PIN or passkey confirmation before completing the bond. IRK Capture uses "Just Works" pairing (no PIN), so GrapheneOS rejects the Keyboard profile pairing and shows "Incorrect PIN or passkey" on the phone.
+
+**Symptoms:**
+- Phone shows "Incorrect PIN or passkey" during pairing
+- An IRK may appear in the logs and ESPHome device page, but pasting it into the Private BLE Device integration reports "The provided IRK does not match any BLE devices that Home Assistant can see"
+- After rotating the ESP32 MAC address and retrying, the connection fails with `ENC_CHANGE status=1035`
+
+The captured IRK is invalid for use in Home Assistant because GrapheneOS considers the bond incomplete and may immediately rotate to a new RPA key state, or the IRK is from a pairing that was aborted before HA's passive scanner could see the device advertising with it.
+
+**Solution: Switch to the Heart Sensor profile.**
+
+GrapheneOS does not enforce MITM-authenticated pairing for heart rate sensors, so Just Works pairing succeeds cleanly and the captured IRK will work correctly.
+
+1. On the ESPHome device page in Home Assistant, change **BLE Profile** to **"Heart Sensor"**
+2. Wait ~30 seconds for the ESP32 to reboot and begin advertising
+3. On your GrapheneOS phone, open Bluetooth settings and pair to the heart rate sensor device
+4. The IRK will be captured and published — use it in the Private BLE Device integration as normal
+
 ### Android Watches
 
 Many Android watches aggressively filter BLE devices, and by default neither the keyboard or heart sensor will be shown as a pairable device. However, the app "Gear Tracker II" (no affiliation) overcomes this aggressive BLE filtering and should allow you pair your watch to the ESP32 and extract the IRK.
