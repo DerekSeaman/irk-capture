@@ -418,6 +418,16 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 - Try pairing to the ESP32 again
 - If that still fails, power cycle your phone/watch/tablet, power cycle your ESP32, change the BLE Device Name, and try pairing again
 
+### Upgrading to a New Version
+
+When upgrading IRK Capture to a new version, always perform a clean build to ensure all component changes are fully compiled:
+
+1. In ESPHome Device Builder, open your IRK Capture device
+2. Click the three-dot menu (⋮) and select **"Clean Build Files"**
+3. After the clean completes, click **"Install"** to rebuild and flash
+
+Skipping the clean step can result in stale cached object files being linked against the new component source, which may cause unexpected behavior even if the flash appears to succeed.
+
 ### ESPHome Build Fails
 
 - Clean the build folder and retry
