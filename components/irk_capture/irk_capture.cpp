@@ -650,14 +650,25 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     }
   }  // Release mutex before slow logging/publishing operations
 
-  // Handle auto-stop advertising (outside mutex to avoid deadlock)
-  // BUG5 FIX: Guard with is_advertising() to prevent a double
-  // stop_advertising() call. publish_and_log_irk() can be called from
-  // handle_gap_disconnect() which may have already stopped advertising; calling
-  // stop_advertising() twice fires publish_state(false) twice, causing spurious
-  // Home Assistant state updates.
-  if (should_stop_adv && self->is_advertising()) {
-    self->stop_advertising();
+  // Handle auto-stop advertising due to reconnect-loop defense (capture_count > 5)
+  // Set suppress flag BEFORE checking is_advertising(): when called from
+  // handle_gap_disconnect(), advertising_ is already false (cleared on connect
+  // and on disconnect), so is_advertising() returns false. But the disconnect
+  // handler's restart logic runs AFTER this call and checks suppress_next_adv_
+  // to decide whether to restart. Without setting the flag unconditionally,
+  // the restart logic in handle_gap_disconnect() would call start_advertising()
+  // in continuous+unlimited mode, defeating the reconnect-loop defense.
+  if (should_stop_adv) {
+    {
+      MutexGuard lock(self->state_mutex_);
+      self->suppress_next_adv_ = true;
+    }
+    // BUG5 FIX: Guard stop_advertising() with is_advertising() to prevent
+    // double stop (spurious HA state updates). Only needed when advertising is
+    // actually running (e.g., called from timer paths like DISC_DELAYED).
+    if (self->is_advertising()) {
+      self->stop_advertising();
+    }
     ESP_LOGI(TAG,
              "Auto-stopped advertising due to repeated reconnections. "
              "Toggle 'BLE Advertising' switch to resume.");
@@ -1678,7 +1689,11 @@ void IRKCaptureComponent::loop() {
       if (elapsed > TimingConfig::PAIRING_TOTAL_TIMEOUT_MS) {
         should_timeout = true;
         timeout_conn_handle = conn_handle_;
-        pairing_start_time_ = 0;
+        // NOTE: Do NOT zero pairing_start_time_ here. It is cleared only after
+        // successful termination (or zombie cleanup) below. Zeroing it before
+        // the terminate call means a ble_op_mutex timeout would permanently
+        // lose the timeout event — the next loop() would skip this path because
+        // pairing_start_time_ == 0, leaving the connection stuck forever.
       }
     }
   }
@@ -1708,6 +1723,14 @@ void IRKCaptureComponent::loop() {
       MutexGuard lock(state_mutex_);
       connected_ = false;
       conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
+    }
+
+    // Clear pairing_start_time_ now that termination succeeded (or zombie was cleaned up).
+    // on_disconnect() also zeros this, but clear it here for the zombie path
+    // where no disconnect callback fires.
+    {
+      MutexGuard lock(state_mutex_);
+      pairing_start_time_ = 0;
     }
 
     // Cooldown timer: Prevent rapid-fire reconnection loop from failing device
@@ -2391,7 +2414,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
         ESP_LOGD(TAG, "Peer unbonded and no cached bond (ENOENT) - will pair fresh");
       } else if (rc != 0) {
         ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d during bond mismatch check", rc);
-      } else if (bond.irk_present && self->is_valid_irk(bond.irk)) {
+      } else if (bond.irk_present && is_valid_irk(bond.irk)) {
         // BUG7 FIX: Use publish_and_log_irk() instead of
         // publish_irk_to_sensors() directly. The direct call bypassed
         // deduplication, rate limiting (60s MIN_REPUBLISH_INTERVAL_MS), and the
