@@ -25,7 +25,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.5.8";
+static constexpr char VERSION[] = "1.5.9";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -623,7 +623,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   // CRITICAL: should_publish_irk() assumes caller holds mutex (non-recursive
   // mutex!) All irk_cache_ operations, counter increments, and advertising
   // checks happen atomically
-  uint8_t current_captures;
+  uint32_t current_captures;
   bool max_reached = false;
   bool should_publish;
   bool should_stop_adv = false;  // Output from deduplication check
@@ -1060,7 +1060,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     ESP_LOGD(TAG, "No bond for peer (ENOENT)");
   } else if (rc != 0) {
     ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d", rc);
-  } else if (bond.irk_present) {
+  } else if (bond.irk_present && self->is_valid_irk(bond.irk)) {
     std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
     publish_and_log_irk(self, d.peer_id_addr, irk_hex, "DISC_IMMEDIATE");
   } else {
@@ -1223,7 +1223,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       } else if (rc != 0) {
         ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d; scheduling late check", rc);
         self->schedule_late_enc_check(d.peer_id_addr);
-      } else if (bond.irk_present) {
+      } else if (bond.irk_present && self->is_valid_irk(bond.irk)) {
         std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
         publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
         // Tested working behavior: terminate immediately after successful ENC +
@@ -2341,11 +2341,13 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
 
 void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   // Thread-safe connection and pairing state update
-  bool adv_state;
+  bool was_advertising;
   {
     MutexGuard lock(state_mutex_);
     conn_handle_ = conn_handle;
     connected_ = true;
+    was_advertising = advertising_;
+    advertising_ = false;
     pairing_start_time_ = now_ms();
     enc_ready_ = false;
     enc_time_ = 0;
@@ -2353,13 +2355,17 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     sec_init_time_ms_ = 0;
     irk_gave_up_ = false;
     irk_last_try_ms_ = 0;
-    adv_state = advertising_;
+  }
+
+  // Update switch to reflect that BLE stack stopped advertising on connect
+  if (advertising_switch_) {
+    advertising_switch_->publish_state(false);
   }
 
   // Compact summary to increase chance at least one key line survives under log
   // pressure
   // enc_ready_ was just set to false under mutex above
-  ESP_LOGI(TAG, "Conn start: handle=%u enc_ready=0 adv=%d", conn_handle, (int) adv_state);
+  ESP_LOGI(TAG, "Conn start: handle=%u enc_ready=0 was_adv=%d", conn_handle, (int) was_advertising);
 
   ESP_LOGI(TAG, "Connected; handle=%u, initiating security", conn_handle);
   log_conn_desc(conn_handle);
@@ -2385,7 +2391,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
         ESP_LOGD(TAG, "Peer unbonded and no cached bond (ENOENT) - will pair fresh");
       } else if (rc != 0) {
         ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d during bond mismatch check", rc);
-      } else if (bond.irk_present) {
+      } else if (bond.irk_present && self->is_valid_irk(bond.irk)) {
         // BUG7 FIX: Use publish_and_log_irk() instead of
         // publish_irk_to_sensors() directly. The direct call bypassed
         // deduplication, rate limiting (60s MIN_REPUBLISH_INTERVAL_MS), and the
@@ -2573,7 +2579,7 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
     ESP_LOGD(TAG, "No bond for peer (ENOENT) - post-disc delayed check");
   } else if (rc != 0) {
     ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - post-disc delayed check", rc);
-  } else if (bond.irk_present) {
+  } else if (bond.irk_present && is_valid_irk(bond.irk)) {
     std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
     publish_and_log_irk(this, peer_id, irk_hex, "DISC_DELAYED");
   } else {
@@ -2604,7 +2610,7 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
     ESP_LOGD(TAG, "No bond for peer (ENOENT) - late ENC check");
   } else if (rc != 0) {
     ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - late ENC check", rc);
-  } else if (bond.irk_present) {
+  } else if (bond.irk_present && is_valid_irk(bond.irk)) {
     std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
     publish_and_log_irk(this, peer_id, irk_hex, "ENC_LATE");
 

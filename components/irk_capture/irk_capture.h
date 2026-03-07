@@ -262,7 +262,7 @@ class IRKCaptureComponent : public Component {
     uint8_t capture_count;
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
-  uint8_t total_captures_ { 0 };          // Total IRKs captured this session
+  uint32_t total_captures_ { 0 };         // Total IRKs captured this session
   uint32_t last_publish_time_ { 0 };      // Last IRK publish timestamp
   uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
 
