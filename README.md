@@ -59,7 +59,12 @@ I cover three methods for deploying your ESPHome device:
 - **Option 2 - Local Package:** Uses a base YAML file plus a device-specific YAML file. Best for managing multiple ESP32 device types. Requires accessing the Home Assistant filesystem to manually copy files into the esphome directory tree.
 - **Option 3 - Local Standalone:** A single self-contained YAML file with all configuration details. Only pulls the IRK Capture component from GitHub at build time.
 
-If you use either the Seeed ESP32-C3 or Seeed ESP32-C6, I've built dedicated IRK capture YAML files. You can find those IRK YAML files in my repos: [ESPHome-Seeed-Xiao-ESP32-c3-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c3-Config) and [ESPHome-Seeed-Xiao-ESP32-C6-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-C6-Config).
+If you use a Seeed XIAO ESP32 board, I've built dedicated IRK capture YAML files for each variant:
+
+- [ESPHome-Seeed-Xiao-ESP32-c3-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c3-Config) — Seeed XIAO ESP32-C3
+- [ESPHome-Seeed-Xiao-ESP32-c5-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c5-Config) — Seeed XIAO ESP32-C5 (Wi-Fi 6 dual-band)
+- [ESPHome-Seeed-Xiao-ESP32-C6-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-C6-Config) — Seeed XIAO ESP32-C6
+- [ESPHome-Seeed-Xiao-ESP32-s3-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-s3-Config) — Seeed XIAO ESP32-S3
 
 ### Using ESPHome Device Builder Package - Remote (Option 1)
 
