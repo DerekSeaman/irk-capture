@@ -22,15 +22,7 @@ jobs:
         uses: ibiqlik/action-yamllint@v3
         with:
           file_or_dir: "."
-          config_data: |
-            extends: default
-            rules:
-              line-length: disable
-              truthy:
-                allowed-values: ["true", "false", "on"]
-              document-start: disable
-              comments:
-                min-spaces-from-content: 2
+          config_file: ".yamllint"
 
       # 2. C++ Format Check
       - name: Install clang-format-18

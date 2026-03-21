@@ -2,6 +2,11 @@ extends: default
 
 rules:
   line-length: disable
-  indentation:
-    spaces: 2
-    indent-sequences: consistent
+  indentation: disable
+  document-start: disable
+  colons:
+    max-spaces-after: -1
+  truthy:
+    allowed-values: ["true", "false", "True", "False", "yes", "no", "on"]
+  comments:
+    min-spaces-from-content: 2
