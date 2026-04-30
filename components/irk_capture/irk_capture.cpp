@@ -25,7 +25,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.5.9";
+static constexpr char VERSION[] = "1.5.10";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -1075,7 +1075,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
     publish_and_log_irk(self, d.peer_id_addr, irk_hex, "DISC_IMMEDIATE");
   } else {
-    ESP_LOGD(TAG, "Bond present but no IRK in store post-disconnect");
+    log_no_irk_for_peer(d.peer_id_addr);
   }
 
   // Schedule an extra delayed post-disconnect check (800 ms)
@@ -2509,6 +2509,21 @@ void IRKCaptureComponent::on_disconnect() {
 
 //======================== IRK extraction ========================
 
+static void log_no_irk_for_peer(const ble_addr_t& peer_id) {
+  if (peer_id.type == BLE_ADDR_PUBLIC) {
+    ESP_LOGI(TAG, "*****************************************************");
+    ESP_LOGI(TAG, "No IRK available: %s uses a public (fixed) MAC address",
+             addr_to_str(peer_id).c_str());
+    ESP_LOGI(TAG,
+             "Public-address devices do not use BLE privacy - IRK does not exist for this device");
+    ESP_LOGI(TAG, "Use the fixed MAC address directly: %s", addr_to_str(peer_id).c_str());
+    ESP_LOGI(TAG, "*****************************************************");
+  } else {
+    ESP_LOGW(TAG, "Bond present but no IRK (peer did not distribute ID key)");
+    ESP_LOGW(TAG, "Peer key distribution may be incomplete or unsupported by device");
+  }
+}
+
 bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
                                       ble_addr_t& peer_id_out) {
   struct ble_store_value_sec bond {};
@@ -2547,8 +2562,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 
   // Defensive bounds check: Ensure IRK is present before copying
   if (!bond.irk_present) {
-    ESP_LOGW(TAG, "Bond present but no IRK (peer did not distribute ID key)");
-    ESP_LOGW(TAG, "Peer key distribution may be incomplete or unsupported by device");
+    log_no_irk_for_peer(desc.peer_id_addr);
     return false;
   }
 
@@ -2606,7 +2620,7 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
     std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
     publish_and_log_irk(this, peer_id, irk_hex, "DISC_DELAYED");
   } else {
-    ESP_LOGD(TAG, "Bond present but no IRK - post-disc delayed check");
+    log_no_irk_for_peer(peer_id);
   }
 }
 
@@ -2657,7 +2671,7 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
       }
     }
   } else {
-    ESP_LOGD(TAG, "Bond present but no IRK - late ENC check");
+    log_no_irk_for_peer(peer_id);
   }
 }
 
