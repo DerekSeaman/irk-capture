@@ -1049,6 +1049,21 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
  * Attempts immediate IRK read from NVS, schedules delayed read (+800ms),
  * and restarts advertising unless suppressed (IRK re-publish case).
  */
+static void log_no_irk_for_peer(const ble_addr_t& peer_id) {
+  if (peer_id.type == BLE_ADDR_PUBLIC) {
+    ESP_LOGI(TAG, "*****************************************************");
+    ESP_LOGI(TAG, "No IRK available: %s uses a public (fixed) MAC address",
+             addr_to_str(peer_id).c_str());
+    ESP_LOGI(TAG,
+             "Public-address devices do not use BLE privacy - IRK does not exist for this device");
+    ESP_LOGI(TAG, "Use the fixed MAC address directly: %s", addr_to_str(peer_id).c_str());
+    ESP_LOGI(TAG, "*****************************************************");
+  } else {
+    ESP_LOGW(TAG, "Bond present but no IRK (peer did not distribute ID key)");
+    ESP_LOGW(TAG, "Peer key distribution may be incomplete or unsupported by device");
+  }
+}
+
 int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)", ev->disconnect.reason, ev->disconnect.reason);
   self->on_disconnect();
@@ -2508,21 +2523,6 @@ void IRKCaptureComponent::on_disconnect() {
 }
 
 //======================== IRK extraction ========================
-
-static void log_no_irk_for_peer(const ble_addr_t& peer_id) {
-  if (peer_id.type == BLE_ADDR_PUBLIC) {
-    ESP_LOGI(TAG, "*****************************************************");
-    ESP_LOGI(TAG, "No IRK available: %s uses a public (fixed) MAC address",
-             addr_to_str(peer_id).c_str());
-    ESP_LOGI(TAG,
-             "Public-address devices do not use BLE privacy - IRK does not exist for this device");
-    ESP_LOGI(TAG, "Use the fixed MAC address directly: %s", addr_to_str(peer_id).c_str());
-    ESP_LOGI(TAG, "*****************************************************");
-  } else {
-    ESP_LOGW(TAG, "Bond present but no IRK (peer did not distribute ID key)");
-    ESP_LOGW(TAG, "Peer key distribution may be incomplete or unsupported by device");
-  }
-}
 
 bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
                                       ble_addr_t& peer_id_out) {
