@@ -25,7 +25,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.5.11";
+static constexpr char VERSION[] = "1.5.12";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -1091,6 +1091,11 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     publish_and_log_irk(self, d.peer_id_addr, irk_hex, "DISC_IMMEDIATE");
   } else {
     log_no_irk_for_peer(d.peer_id_addr);
+    // For public-address devices, publish a placeholder to HA so the sensors
+    // reflect the outcome rather than staying stale from a previous capture.
+    if (d.peer_id_addr.type == BLE_ADDR_PUBLIC) {
+      self->publish_irk_to_sensors("IRK not used", addr_to_str(d.peer_id_addr).c_str());
+    }
   }
 
   // Schedule an extra delayed post-disconnect check (800 ms)
