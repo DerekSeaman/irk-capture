@@ -25,7 +25,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.5.12";
+static constexpr char VERSION[] = "1.5.13";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -1275,6 +1275,11 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   } else {
     // Encryption failed - clear all bonds and terminate
     ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing all bonds", ev->enc_change.status);
+    if (ev->enc_change.status == 7) {
+      ESP_LOGW(TAG, "Status 7 (Command Not Supported) often means the peer sent a duplicate");
+      ESP_LOGW(TAG, "Security Request mid-handshake. Try pairing again - this should now be");
+      ESP_LOGW(TAG, "fixed. If it persists, try switching to the Keyboard BLE profile.");
+    }
     int clear_rc = ble_store_clear();  // Clear everything to force fresh pairing
     if (clear_rc != 0) {
       ESP_LOGW(TAG, "ble_store_clear after ENC failure rc=%d", clear_rc);
@@ -2480,12 +2485,14 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   // Proactively initiate pairing; peer should show pairing dialog now
   // THREAD-SAFE: Use function parameter (already set under mutex at line 1771)
   int rc = ble_gap_security_initiate(conn_handle);
-  if (rc == BLE_HS_EBUSY) {
-    // Peer is already initiating security - skip our retry to avoid conflicts
-    ESP_LOGD(TAG, "Peer already initiating security (EBUSY); skipping retry");
+  if (rc == BLE_HS_EBUSY || rc == BLE_HS_EALREADY) {
+    // Peer is already initiating security - skip our retry to avoid sending a
+    // duplicate Security Request PDU mid-handshake, which confuses some devices
+    // (e.g. Galaxy Watch Wear OS 5) and causes SMP error 0x07 "Command Not Supported"
+    ESP_LOGD(TAG, "Peer already initiating security (rc=%d); skipping retry", rc);
     MutexGuard lock(state_mutex_);
     sec_retry_done_ = true;  // Skip the 2-second retry since peer is handling it
-  } else if (rc != 0 && rc != BLE_HS_EALREADY) {
+  } else if (rc != 0) {
     ESP_LOGW(TAG, "ble_gap_security_initiate rc=%d", rc);
   }
 }
@@ -2729,7 +2736,16 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
         sec_retry_done_ = true;
       }
       int rc = ble_gap_security_initiate(conn_handle_copy);
-      ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
+      if (rc == BLE_HS_EALREADY || rc == BLE_HS_EBUSY) {
+        // Peer is mid-pairing - the extra Security Request we just sent was
+        // unnecessary but harmless on most devices. Log at DEBUG to avoid
+        // alarming users; the pairing handshake will complete on its own.
+        ESP_LOGD(TAG, "Retry: security already in progress (rc=%d); peer is handling it", rc);
+      } else if (rc != 0) {
+        ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
+      } else {
+        ESP_LOGI(TAG, "Retry security initiate sent");
+      }
     }
 
     // If encryption still hasn't completed after timeout, assume peer forgot
