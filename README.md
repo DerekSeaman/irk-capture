@@ -243,6 +243,7 @@ This ESPHome IRK capture component has been successfully tested with:
 - **Android devices:**
   - Samsung Galaxy S25+
   - Samsung Galaxy Watch7
+  - Samsung Galaxy Watch (Wear OS 5)
   - Google Pixel 9
   - Jailbroken Amazon Echo Show 5 with LineageOS 18.1
 
@@ -417,6 +418,8 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 ### IRK Not Captured After Pairing
 
 Not all devices use Bluetooth security when pairing to some accessories. For example, some Garmin watches are known to use a fixed BLE address, and thus do not have an IRK value. The ESP32 logs and the Home Assistant IRK sensor will indicate that no IRK was used.
+
+Samsung Galaxy Watch (Wear OS 5) previously failed pairing with SMP error 0x07 due to an incompatibility with LE Secure Connections. As of v1.5.14, the component uses legacy BLE pairing by default, which resolves this. IRK capture is fully preserved with legacy pairing.
 
 - After pairing, **forget/unpair the BLE device** from your device's Bluetooth settings
 - Turn Bluetooth OFF on your device
