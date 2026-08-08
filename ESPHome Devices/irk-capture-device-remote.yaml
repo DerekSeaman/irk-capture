@@ -1,8 +1,4 @@
 ---
-# Add this `packages:` section to your ESPHome Device Builder-generated device YAML.
-# The generated YAML already provides esphome.name/friendly_name, esp32.variant,
-# api.encryption.key, ota password, and wifi.ssid/password/ap — this package adds
-# the IRK Capture component and its advanced ESP32/BLE/network tuning on top.
 packages:
   device:
     url: https://github.com/DerekSeaman/irk-capture
