@@ -58,6 +58,10 @@ wifi:
   reboot_timeout: 10min
   ap:
     ap_timeout: 120s
+  on_disconnect:
+    then:
+      - lambda: |-
+          id(_wifi_disconnects_since_boot)++;
 
 # captive_portal: is enabled by the device YAML.
 
@@ -88,6 +92,12 @@ text_sensor:
       entity_category: diagnostic
     ip_address:
       name: "IP"
+      entity_category: diagnostic
+    mac_address:
+      name: "MAC"
+      entity_category: diagnostic
+    ssid:
+      name: "SSID"
       entity_category: diagnostic
 
   - platform: irk_capture
@@ -157,6 +167,22 @@ sensor:
     name: "Wi-Fi Signal"
     update_interval: 30s
     entity_category: diagnostic
+
+  - platform: template
+    name: "Wi-Fi Disconnects (since boot)"
+    id: wifi_disconnects_since_boot_sensor
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: |-
+      return id(_wifi_disconnects_since_boot);
+
+# Since-boot only; not restored across reboots
+globals:
+  - id: _wifi_disconnects_since_boot
+    type: int
+    restore_value: no
+    initial_value: '0'
 
 time:
   - platform: sntp
