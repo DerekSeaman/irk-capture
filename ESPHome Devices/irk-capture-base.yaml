@@ -6,9 +6,6 @@
 # esp32.variant (+ flash_size/board), api.encryption.key, ota password, and
 # wifi.ssid/password/ap. This package supplies everything else.
 
-substitutions:
-  ble_name: "IRK Capture"
-
 esp32:
   # NimBLE stack with ESP-IDF. Supports all ESP32 variants (ESP32, C3, C6, S3, etc.)
   # board/variant come from the device YAML.
@@ -78,7 +75,7 @@ external_components:
 # Configure the custom IRK capture component
 irk_capture:
   id: irk
-  ble_name: ${ble_name}
+  ble_name: "IRK Capture"
   start_on_boot: true
   continuous_mode: true
   max_captures: 10
