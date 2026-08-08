@@ -1,6 +1,6 @@
 # IRK Capture for ESPHome
 
-![Linting Status](https://github.com/DerekSeaman/irk-capture/actions/workflows/lint.yml/badge.svg)
+![Linting Status](https://github.com/DerekSeaman/irk-capture/actions/workflows/lint.yml/badge.svg) [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-donate-yellow?logo=buy-me-a-coffee&logoColor=white)](https://buymeacoffee.com/vdereks)
 
 This ESPHome package will capture Apple and Android Bluetooth Identity Resolving Keys (IRK) using an ESP32 running ESPHome. Use the captured IRKs with the [Private BLE Device](https://www.home-assistant.io/integrations/private_ble_device/) integration in Home Assistant for reliable room-level presence detection. I use the [Bermuda BLE Trilateration](https://github.com/agittins/bermuda?tab=readme-ov-file) integration with IRKs for room-level presence detection.
 
@@ -16,7 +16,7 @@ Capturing IRKs from devices can be very tricky, as the Bluetooth stack can very 
 
 The ESP32 uses a **random static address** for BLE advertising, which is regenerated each time the device boots. This address serves as both the advertised MAC address and the identity address for pairing. The "Generate New MAC" button also changes this address. However, if your phone or watch has previously paired with the ESP32, it may still have cached bond information. To ensure your device sees the ESP32 as completely new, either restart the ESP32 or use "Generate New MAC", and then **forget the pairing** on your phone/watch before attempting to pair again.
 
-## Blog Post: Track Who's in Each Room with ESPHome + Bermuda BLE
+## Track Who's in Each Room with ESPHome + Bermuda BLE
 
 For a complete guide for room-level presence detection using Bermuda BLE Trilateration with Home Assistant, check out my post: [Track Who's in Each Room with ESPHome + Bermuda BLE](https://www.derekseaman.com/2025/12/home-assistant-track-whos-in-each-room-with-esphome-bermuda-ble.html)
 
@@ -41,21 +41,22 @@ When your Apple or Android device pairs with the ESP32:
 
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESP-IDF framework** (required - this component does NOT support Arduino framework)
-- **ESPHome** 2024.x or newer - Tested with 2026.8.1
+- **ESPHome** 2026.7 or newer - Tested with 2026.7.4
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
 - **ESPHome Device Builder** (optional, but makes managing ESPHome devices in Home Assistant easier)
 
 ## Installation Instructions
 
-I’ve written a detailed blog post that covers the installation and usage of ESPHome Device Builder. It shows you how to build a device profile for your ESP32 and capture your device IRKs.You can find it here: 
+I’ve written a detailed blog post that covers the installation and usage of ESPHome Device Builder. It shows you how to build a device profile for your ESP32 and capture your device IRKs. You can find it here:
 [How-To: Using my ESPHome Bluetooth IRK Capture Package](https://www.derekseaman.com/2026/01/how-to-using-my-bluetooth-irk-capture-package.html)
 
 The super abbreviated installation instructions are as follows:
+
 - Build a new ESPHome device specific to your ESP32 board
 - Add the shown **packages:** section at the bottom
 - Connect your ESP32 device and flash it
 
-ESPHome Device builder will dynamically pull in the latest version of my IRK capture package. My blog post includes optional Seeed Studio XIAO S3, C3, C5 and C6 device profile enhancements. 
+ESPHome Device builder will dynamically pull in the latest version of my IRK capture package. My blog post includes optional Seeed Studio XIAO S3, C3, C5 and C6 device profile enhancements.
 
 ![Device YAML Configuration](docs/YAML-screenshot.jpg)
 
@@ -64,12 +65,12 @@ You can find the **packages:** content here: [irk-capture-device-remote.yaml](ht
 ## Usage Instructions
 
 Again, my blog post covers usage in detail. However, the super short version is as follows:
+
 - In Home Assistant go to Settings > ESPHome -> Your ESP32 IRK Capture Device
 - Select the appropriate BLE profile (Heart Sensor for Apple devices and Android watches, Keyboard for Android phones)
 - Pair your phone or watch with the advertising ESP32 device name
 - Watch the Sensors IRK value and it should display the captured IRK
-- Paste the captured IRK into the Private BLE Device integration in Home Assistant	
-
+- Paste the captured IRK into the Private BLE Device integration in Home Assistant
 
 ## Home Assistant Entities
 
@@ -112,9 +113,9 @@ This ESPHome IRK capture component has been successfully tested with:
 
 ## Troubleshooting Tips
 
-### The Provided IRK does not match any BLE devices that Home Assistant can see.
+### The Provided IRK does not match any BLE devices that Home Assistant can see
 
-This is most common on some Android devices and happens when you input the captured IRK into the Private BLE Device field. This happens because Home Assistant can’t see the corresponding BLE device that matches the IRK. Some Android devices only broadcast BLE beacons very infrequently. This means Home Assistant may not have recently seen the BLE device, thus it can’t match the IRK. Unfortunately the solution to this is very device and OS specific, and may not be solvable. I suggest Googling your device and see if any settings can be changed to increase the frequency of the BLE advertising. 
+This is most common on some Android devices and happens when you input the captured IRK into the Private BLE Device field. This happens because Home Assistant can’t see the corresponding BLE device that matches the IRK. Some Android devices only broadcast BLE beacons very infrequently. This means Home Assistant may not have recently seen the BLE device, thus it can’t match the IRK. Unfortunately the solution to this is very device and OS specific, and may not be solvable. I suggest Googling your device and see if any settings can be changed to increase the frequency of the BLE advertising.
 
 ### ESP32 Device Name Not Appearing in Bluetooth Settings
 
@@ -149,6 +150,7 @@ If the Developer Options fix doesn't work, or you're on a non-Samsung Android de
 GrapheneOS (and some other hardened Android builds) enforces **mandatory authenticated pairing** for HID Keyboard devices. Because a Bluetooth keyboard could theoretically inject keystrokes, GrapheneOS requires a PIN or passkey confirmation before completing the bond. IRK Capture uses "Just Works" pairing (no PIN), so GrapheneOS rejects the Keyboard profile pairing and shows "Incorrect PIN or passkey" on the phone.
 
 **Symptoms:**
+
 - Phone shows "Incorrect PIN or passkey" during pairing
 - An IRK may appear in the logs and ESPHome device page, but pasting it into the Private BLE Device integration reports "The provided IRK does not match any BLE devices that Home Assistant can see"
 - After rotating the ESP32 MAC address and retrying, the connection fails with `ENC_CHANGE status=1035`
