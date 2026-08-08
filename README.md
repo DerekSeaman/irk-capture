@@ -4,11 +4,7 @@
 
 This ESPHome package will capture Apple and Android Bluetooth Identity Resolving Keys (IRK) using an ESP32 running ESPHome. Use the captured IRKs with the [Private BLE Device](https://www.home-assistant.io/integrations/private_ble_device/) integration in Home Assistant for reliable room-level presence detection. I use the [Bermuda BLE Trilateration](https://github.com/agittins/bermuda?tab=readme-ov-file) integration with IRKs for room-level presence detection.
 
-> **⚠️ IMPORTANT:** This package **requires the ESP-IDF framework** and does **NOT** support the Arduino framework. The example YAML configurations include the required `framework: type: esp-idf` setting.
-
-This package uses the ESP-IDF framework for broad ESP32 board compatibility. The ESP-IDF framework is required for ESP32-C2, ESP32-C5, ESP32-C6, ESP32-C61, ESP32-H2, and ESP32-P4 variants, as these newer ESP32 variants are not supported by the Arduino framework.
-
-This ESPHome IRK capture package is only designed to capture IRKs and can NOT also act as a Bluetooth proxy. You can either flash this to a spare ESP32 device and keep it in a sock drawer when not being used, or temporarily flash this to an ESP32 then flash back to your generic Bluetooth proxy ESPHome configuration.
+This ESPHome IRK capture package is only designed to capture IRKs and can NOT pull double duty as a Bluetooth proxy. You can either flash this to a spare ESP32 device and keep it in a sock drawer when not being used, or temporarily flash this package to an ESP32 then flash back to your generic Bluetooth proxy ESPHome configuration. IRKs are generally permanent and do not change over time.
 
 ## What is a BLE IRK and Why Is It Needed?
 
@@ -41,172 +37,39 @@ When your Apple or Android device pairs with the ESP32:
 
 ![ESPHome IRK Capture Device](docs/screenshot-1.jpg)
 
-![ESPHome IRK Capture Logs](docs/screenshot-2.jpg)
-
 ## Requirements
 
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESP-IDF framework** (required - this component does NOT support Arduino framework)
-- **ESPHome** 2024.x or newer - Tested with 2025.12.7
+- **ESPHome** 2024.x or newer - Tested with 2026.8.1
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
 - **ESPHome Device Builder** (optional, but makes managing ESPHome devices in Home Assistant easier)
 
-## Installation
+## Installation Instructions
 
-I cover three methods for deploying your ESPHome device:
+I’ve written a detailed blog post that covers the installation and usage of ESPHome Device Builder. It shows you how to build a device profile for your ESP32 and capture your device IRKs.You can find it here: 
+[How-To: Using my ESPHome Bluetooth IRK Capture Package](https://www.derekseaman.com/2026/01/how-to-using-my-bluetooth-irk-capture-package.html)
 
-- **Option 1 - Remote (Recommended):** Pulls the YAML and IRK Capture components directly from GitHub. Simplest method with no local file downloads required. This is the recommended option, as it will always pull the latest version at build time.
-- **Option 2 - Local Package:** Uses a base YAML file plus a device-specific YAML file. Best for managing multiple ESP32 device types. Requires accessing the Home Assistant filesystem to manually copy files into the esphome directory tree.
-- **Option 3 - Local Standalone:** A single self-contained YAML file with all configuration details. Only pulls the IRK Capture component from GitHub at build time.
+The super abbreviated installation instructions are as follows:
+- Build a new ESPHome device specific to your ESP32 board
+- Add the shown **packages:** section at the bottom
+- Connect your ESP32 device and flash it
 
-If you use a Seeed XIAO ESP32 board, I've built dedicated IRK capture YAML files for each variant:
+ESPHome Device builder will dynamically pull in the latest version of my IRK capture package. My blog post includes optional Seeed Studio XIAO S3, C3, C5 and C6 device profile enhancements. 
 
-- [ESPHome-Seeed-Xiao-ESP32-c3-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c3-Config) — Seeed XIAO ESP32-C3
-- [ESPHome-Seeed-Xiao-ESP32-c5-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c5-Config) — Seeed XIAO ESP32-C5 (Wi-Fi 6 dual-band)
-- [ESPHome-Seeed-Xiao-ESP32-C6-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-C6-Config) — Seeed XIAO ESP32-C6
-- [ESPHome-Seeed-Xiao-ESP32-s3-Config](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-s3-Config) — Seeed XIAO ESP32-S3
+![Device YAML Configuration](docs/YAML-screenshot.jpg)
 
-### Using ESPHome Device Builder Package - Remote (Option 1)
+You can find the **packages:** content here: [irk-capture-device-remote.yaml](https://github.com/DerekSeaman/irk-capture/blob/main/ESPHome%20Devices/irk-capture-device-remote.yaml)
 
-This is the simplest installation method. It pulls the component directly from GitHub without requiring any local file downloads.
+## Usage Instructions
 
-1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
-2. Delete all of the pre-populated YAML from the dummy device.
-3. Create your device YAML using [irk-capture-device-remote.yaml](ESPHome%20Devices/irk-capture-device-remote.yaml) as a template and replace the OTA and API keys with the ones ESPHome generated.
-   - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type. Refer to the list below for the January 2026 list of esp32_variant options, which must match your board type.
-   - For example, an ESP32 Huzzah32 Feather would be: `esp32_board: featheresp32`, `esp32_variant: esp32`
+Again, my blog post covers usage in detail. However, the super short version is as follows:
+- In Home Assistant go to Settings > ESPHome -> Your ESP32 IRK Capture Device
+- Select the appropriate BLE profile (Heart Sensor for Apple devices and Android watches, Keyboard for Android phones)
+- Pair your phone or watch with the advertising ESP32 device name
+- Watch the Sensors IRK value and it should display the captured IRK
+- Paste the captured IRK into the Private BLE Device integration in Home Assistant	
 
-     ![ESP32 Variants](docs/ESP-variants.jpg)
-   - Change the `device_name` and `friendly_name` as desired.
-   - Modify the Wi-Fi secrets references as needed to match your secrets file.
-
-4. **Review your ESPHome Builder Secrets File and modify the Wi-Fi values as needed:**
-
-   ```yaml
-   wifi_ssid: "Your WiFi Network"
-   wifi_password: "your_wifi_password"
-   wifi_captive: "fallback_password"
-   ```
-
-5. Below is an example of a complete device YAML file:
-
-   ![Remote Example](docs/remote-example.jpg)
-
-6. **Flash to your ESP32:**
-   - In ESPHome, click "Install" and choose your connection method. If you select serial, make sure you are using a browser that supports direct serial port access such as Chrome, Edge, or Brave. Not compatible with Firefox or Safari. Depending on PC OS and ESP32 device, you may need to install serial port drivers. Refer to the ESP32 flasher pop-up windows for links to various ESP32 driver packages.
-   - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
-
-### Using ESPHome Device Builder Package - Local (Option 2)
-
-1. **In the Home Assistant filesystem create the 'common' directory under esphome, if not already present:**
-
-   ```text
-   /config/esphome/
-   ├── common/
-   │   └── irk-capture-base.yaml
-   └── your-device-name.yaml
-   ```
-
-2. **Copy the base configuration:**
-   - Download [irk-capture-base.yaml](ESPHome%20Devices/irk-capture-base.yaml) from this repository
-   - Place it in `/config/esphome/common/` on your Home Assistant installation
-
-3. **Create your device YAML:**
-   - Create a new dummy device in ESPHome, and save the unique API and OTA keys.
-   - Delete all of the pre-populated YAML from the dummy device.
-   - Paste the [irk-capture-device.yaml](ESPHome%20Devices/irk-capture-device.yaml) contents into the ESPHome device builder and replace the OTA and API keys with the ones ESPHome generated.
-   - Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type. Refer to the list below for the January 2026 list of esp32_variant options, which must match your board type.
-   - For example, an ESP32 Huzzah32 Feather would be: `esp32_board: featheresp32`, `esp32_variant: esp32`
-
-     ![ESP32 Variants](docs/ESP-variants.jpg)
-   - Change the `device_name` and `friendly_name` as desired.
-   - You should only modify the substitutions shown below:
-
-   ```yaml
-   substitutions:
-     device_name: esphome-irk-capture          # Change: Unique name for your device (lowercase, hyphens only)
-     friendly_name: IRK Capture                # Change: Human-readable name shown in Home Assistant
-     api_key: "ZmFrZWFwaWtleWZha2VleGFtcGxlZmFrZWtleQ=="  # Change: Generated with ESPHome new device wizard
-     ota_password: "ChangeMe!2025"             # Change: Generated with the ESPHome new device wizard
-     esp32_variant: esp32c3                    # Change: Your ESP32 variant (esp32, esp32c3, esp32c6, esp32s3, etc.)
-     esp32_board: seeed_xiao_esp32c3           # Change: Your board type (see ESPHome board list)
-     ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
-   ```
-
-4. **Review your ESPHome Builder Secrets File and modify the Wi-Fi values as needed:**
-
-   ```yaml
-   wifi_ssid: "Your WiFi Network"
-   wifi_password: "your_wifi_password"
-   wifi_captive: "fallback_password"
-   ```
-
-5. **Flash to your ESP32:**
-   - In ESPHome, click "Install" and choose your connection method. If you select serial, make sure you are using a browser that supports direct serial port access such as Chrome, Edge, or Brave. Not compatible with Firefox or Safari. Depending on PC OS and ESP32 device, you may need to install serial port drivers. Refer to the ESP32 flasher pop-up windows for links to various ESP32 driver packages.
-   - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
-
-### Using a Standalone ESPHome Device - Local (Option 3)
-
-1. Create a new dummy device in ESPHome, and save the unique API and OTA keys.
-2. Delete all of the pre-populated YAML from the dummy device.
-3. Copy the contents of the [irk-capture-full.yaml](https://github.com/DerekSeaman/irk-capture/blob/main/ESPHome%20Devices/irk-capture-full.yaml) into the ESPHome device builder and replace the OTA and API keys with the ones ESPHome generated.
-4. Modify the YAML parameters `esp32_variant` and `esp32_board` as needed to match your ESP32 device and board type. Refer to the list below for the January 2026 list of esp32_variant options, which must match your board type.
-   - For example, an ESP32 Huzzah32 Feather would be: `esp32_board: featheresp32`, `esp32_variant: esp32`
-
-     ![ESP32 Variants](docs/ESP-variants.jpg)
-5. Change the `device_name` and `friendly_name` as desired.
-6. You should only modify the substitutions shown below:
-
-   ```yaml
-   substitutions:
-     device_name: esphome-irk-capture          # Change: Unique name for your device (lowercase, hyphens only)
-     friendly_name: IRK Capture                # Change: Human-readable name shown in Home Assistant
-     api_key: "ZmFrZWFwaWtleWZha2VleGFtcGxlZmFrZWtleQ=="  # Change: Generated with ESPHome new device wizard
-     ota_password: "ChangeMe!2025"             # Change: Generated with the ESPHome new device wizard
-     esp32_variant: esp32c3                    # Change: Your ESP32 variant (esp32, esp32c3, esp32c6, esp32s3, etc.)
-     esp32_board: seeed_xiao_esp32c3           # Change: Your board type (see ESPHome board list)
-     ble_name: "IRK Capture"                   # Change: BLE advertising name (max 12 characters, shown in Bluetooth settings)
-   ```
-
-7. **Review your ESPHome Builder Secrets File and modify the Wi-Fi values as needed:**
-
-   ```yaml
-   wifi_ssid: "Your WiFi Network"
-   wifi_password: "your_wifi_password"
-   wifi_captive: "fallback_password"
-   ```
-
-8. **Flash to your ESP32:**
-   - In ESPHome, click "Install" and choose your connection method. If you select serial, make sure you are using a browser that supports direct serial port access such as Chrome, Edge, or Brave. Not compatible with Firefox or Safari. Depending on PC OS and ESP32 device, you may need to install serial port drivers. Refer to the ESP32 flasher pop-up windows for links to various ESP32 driver packages.
-   - IMPORTANT: After the flashing is complete, either power cycle your ESP32 or do a 'Restart Device' from the ESPHome interface. This will randomize the BLE MAC address.
-
-### Optional Configuration Parameters (Not recommended to change)
-
-You can modify these parameters in your device YAML configuration to control multi-device capture behavior:
-
-```yaml
-irk_capture:
-  id: irk
-  start_on_boot: true
-  continuous_mode: true   # Optional: Keep advertising after IRK capture (default: true)
-  max_captures: 10        # Optional: Maximum IRKs to capture before auto-stop (default: 10, 0=unlimited)
-```
-
-**Configuration Options:**
-
-- **`continuous_mode`** (default: `true`):
-  - `true`: Keeps advertising after IRK capture to allow multiple device pairing
-  - `false`: Stops advertising after capturing one IRK (single-device mode)
-
-- **`max_captures`** (default: `10`):
-  - `1-255`: Capture up to N IRKs before auto-stopping
-  - `0`: Unlimited captures (not recommended for production)
-
-**Important Notes:**
-
-- If `continuous_mode: false` and `max_captures > 1`, ESPHome will reject the configuration (conflict)
-- For single-device capture, set `continuous_mode: false` and `max_captures: 1`
-- After capturing multiple IRKs, restart your ESP32 device between captures to avoid pairing conflicts
 
 ## Home Assistant Entities
 
@@ -235,10 +98,10 @@ After flashing and connecting to Home Assistant, the following entities will be 
 
 This ESPHome IRK capture component has been successfully tested with:
 
-- **Apple OS 26 family:**
-  - iPhone
-  - Apple Watch
-  - iPad
+- **Apple OS 26 and 27 family:**
+  - iPhone 17 Pro
+  - Apple Watch Ultra 3
+  - iPad Pro M5
 
 - **Android devices:**
   - Samsung Galaxy S25+
@@ -247,119 +110,11 @@ This ESPHome IRK capture component has been successfully tested with:
   - Google Pixel 9
   - Jailbroken Amazon Echo Show 5 with LineageOS 18.1
 
-## Usage Instructions
-
-### Getting Started
-
-1. **Enable BLE advertising:**
-   - In Home Assistant, open ESPHome and find your IRK Capture device
-   - Power on your ESP32 board with the IRK Capture build
-   - Optional, but recommended, open the real time logs for your ESP32 device
-
-2. **Select the appropriate BLE Profile:**
-   - For **Apple devices** (iPhone, iPad, Apple Watch): Select **"Heart Sensor"** profile
-   - For **Android phones** (Samsung, Pixel, etc.): Select **"Keyboard"** profile. Exception: GrapheneOS and other hardened Android builds — use **"Heart Sensor"** instead (see Troubleshooting)
-   - For **Android watches**: Select **"Heart Sensor"** profile and then follow the instructions below to enable discovering of the heart rate sensor via a third party app from the Play store
-
-   - **Note:** Changing profiles will automatically reboot the ESP32 to apply the new GATT services. Wait approximately 30 seconds after the reboot before attempting to pair. If you are viewing logs wirelessly in ESPHome, you may need to reconnect to the ESP32 after the reboot to see current logs. When the Effective MAC sensor updates with a new address, the device is ready to capture IRKs.
-
-### Capturing an IRK from Apple Devices
-
-1. **Ensure the "Heart Sensor" profile is selected** in the BLE Profile dropdown on the ESPHome device page
-
-2. **Open Bluetooth settings** on your Apple device
-
-3. **Look for the advertised device:**
-   - Default name: "IRK Capture" (or whatever you set as `ble_name`)
-   - It will appear under available devices - See troubleshooting section if it's not listed
-
-4. **Tap on the device name to pair:**
-   - If prompted, tap "Pair" or "Connect"
-   - No PIN is required for this pairing
-   - Depending on the device/OS, pairing may not complete or show as not connected. This can be normal.
-
-5. **View the captured IRK:**
-   - **Option 1:** Check the ESP32 logs in ESPHome Device Builder
-   - **Option 2:** View the "IRK" text sensor in Home Assistant (on your IRK Capture device page)
-   - The IRK will be in format: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
-
-6. **Forget the pairing (important):**
-   - After successfully capturing the IRK, go to your device's Bluetooth settings
-   - Forget or unpair the "IRK Capture" device (or whatever name you used)
-   - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
-   - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' (or full power cycle of your ESP32) between each capture to avoid potential issues
-
-### Capturing an IRK from Android Phones
-
-1. **Ensure the "Keyboard" profile is selected** in the BLE Profile dropdown on the ESPHome device page
-   - The ESP32 will reboot to apply the new GATT services
-   - After reboot, the BLE Device Name will be "Logitech K380" and a new MAC address will be generated
-
-2. **Open Bluetooth settings** on your Android device
-
-3. **Look for "Logitech K380"** under Available Devices
-   - If you don't see it, see the Troubleshooting section for Samsung One UI 7 devices
-
-4. **Tap on "Logitech K380" to pair:**
-   - If prompted, tap "Pair"
-   - No PIN is required for this pairing
-
-5. **View the captured IRK:**
-   - **Option 1:** Check the ESP32 logs in ESPHome Device Builder
-   - **Option 2:** View the "IRK" text sensor in Home Assistant (on your IRK Capture device page)
-   - The IRK will be in format: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
-
-6. **Forget the pairing (important):**
-   - After successfully capturing the IRK, go to your device's Bluetooth settings
-   - Forget or unpair the "Logitech K380" device
-   - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
-   - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' (or full power cycle of your ESP32) between each capture to avoid potential issues
-
-### Capturing an IRK from Android Watches
-
-1. **Install the app "[Gear Tracker II](https://play.google.com/store/apps/details?id=com.limegreenv.geartracker)"** on your Android watch
-
-2. **Ensure the "Heart Sensor" profile is selected** in the BLE Profile dropdown on the ESPHome device page
-
-3. **Open the Gear Tracker II app** on your watch and pair to the advertised ESP32 device name
-
-4. **Tap on the device name to pair:**
-   - If prompted, tap "Pair" or "Connect"
-   - No PIN is required for this pairing
-   - Depending on the device/OS, pairing may not complete or show as not connected. This can be normal.
-
-5. **View the captured IRK:**
-   - **Option 1:** Check the ESP32 logs in ESPHome Device Builder
-   - **Option 2:** View the "IRK" text sensor in Home Assistant (on your IRK Capture device page)
-   - The IRK will be in format: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
-
-6. **Forget the pairing (important):**
-   - After successfully capturing the IRK, go to your device's Bluetooth settings
-   - Forget or unpair the "IRK Capture" device (or whatever name you used)
-   - This prevents your device from automatically reconnecting and allows the ESP32 to capture IRKs from other devices
-   - If you need to capture IRKs from multiple devices, I suggest a 'Restart Device' (or full power cycle of your ESP32) between each capture to avoid potential issues
-
-### Installing Private BLE Device Integration
-
-In order to use the captured IRKs with Home Assistant, you need to install the Private BLE integration. This will let you paste your IRKs into the integration and will enable tracking of the 'random' Bluetooth MAC addresses.
-
-1. **Go to Home Assistant:**
-   - Navigate to Settings → Devices & Services
-
-2. **Add the Private BLE Device integration:**
-   - Click "+ ADD INTEGRATION"
-   - Search for "Private BLE Device"
-   - Click to add
-
-3. **Enter the captured IRK:**
-   - Paste the complete IRK string
-   - Example: `a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6`
-
-4. **Complete setup:**
-   - Give the device a friendly name (e.g., "Derek's iPhone")
-   - The device will now be tracked for presence detection
-
 ## Troubleshooting Tips
+
+### The Provided IRK does not match any BLE devices that Home Assistant can see.
+
+This is most common on some Android devices and happens when you input the captured IRK into the Private BLE Device field. This happens because Home Assistant can’t see the corresponding BLE device that matches the IRK. Some Android devices only broadcast BLE beacons very infrequently. This means Home Assistant may not have recently seen the BLE device, thus it can’t match the IRK. Unfortunately the solution to this is very device and OS specific, and may not be solvable. I suggest Googling your device and see if any settings can be changed to increase the frequency of the BLE advertising. 
 
 ### ESP32 Device Name Not Appearing in Bluetooth Settings
 
@@ -419,8 +174,6 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 
 Not all devices use Bluetooth security when pairing to some accessories. For example, some Garmin watches are known to use a fixed BLE address, and thus do not have an IRK value. The ESP32 logs and the Home Assistant IRK sensor will indicate that no IRK was used.
 
-Samsung Galaxy Watch (Wear OS 5) previously failed pairing with SMP error 0x07 due to an incompatibility with LE Secure Connections. As of v1.5.14, the component uses legacy BLE pairing by default, which resolves this. IRK capture is fully preserved with legacy pairing.
-
 - After pairing, **forget/unpair the BLE device** from your device's Bluetooth settings
 - Turn Bluetooth OFF on your device
 - Modify the BLE Device Name on the ESPHome device page
@@ -433,41 +186,10 @@ Samsung Galaxy Watch (Wear OS 5) previously failed pairing with SMP error 0x07 d
 When upgrading IRK Capture to a new version, always perform a clean build to ensure all component changes are fully compiled:
 
 1. In ESPHome Device Builder, open your IRK Capture device
-2. Click the three-dot menu (⋮) and select **"Clean Build Files"**
+2. Click the three-dot menu (⋮) in the lower right and select **"Clean Build Files"**
 3. After the clean completes, click **"Install"** to rebuild and flash
 
 Skipping the clean step can result in stale cached object files being linked against the new component source, which may cause unexpected behavior even if the flash appears to succeed.
-
-### ESPHome Build Fails
-
-- Clean the build folder and retry
-- Ensure you're using ESPHome 2024.x or newer (tested with ESPHome 2025.12.7)
-- Verify your `esp32_variant` and `esp32_board` substitutions match your hardware
-- Check that all required secrets are defined in `secrets.yaml`
-
-### Advanced Troubleshooting
-
-- For additional troubleshooting logs, connect to your ESP32 device and view the logs during a capture session.
-- To enable DEBUG level logging, add this to your ESPHome YAML:
-
-  ```yaml
-  logger:
-    level: DEBUG
-    logs:
-      irk_capture: DEBUG
-  ```
-
-  DEBUG logging covers:
-  - **Connection Details** - Peer addresses, connection parameters (interval, latency, supervision timeout), role info
-  - **GAP Events** - State transitions, unhandled event types
-  - **Bond/IRK Status** - Whether bonds exist, IRK availability in NVS store
-  - **Deduplication** - When duplicate IRKs are suppressed, cache management (eviction, additions)
-  - **GATT Operations** - DevInfo reads, characteristic handles
-  - **Advertising State** - Start/stop, device name being advertised
-  - **MAC Rotation** - Pre-generated MAC values, state machine transitions
-  - **Security/Pairing** - Bond security flags, peer identity resolution, security retry status
-  - **Timer Operations** - Post-disconnect and late encryption timer checks
-  - **Heart Rate Notifications** - Notify return codes
 
 ### ESPHome Log Sample
 
