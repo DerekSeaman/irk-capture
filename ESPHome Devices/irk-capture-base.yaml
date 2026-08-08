@@ -22,17 +22,17 @@ esp32:
       CONFIG_BT_NIMBLE_ROLE_CENTRAL: "n"
       CONFIG_BT_NIMBLE_ROLE_OBSERVER: "n"
 
-      # Security (bonding + legacy pairing; SC disabled at compile level for Galaxy Watch compatibility)
+      # Security (bonding + LESC)
       CONFIG_BT_NIMBLE_SECURITY_ENABLE: "y"
       CONFIG_BT_NIMBLE_SM_LEGACY: "y"
-      CONFIG_BT_NIMBLE_SM_SC: "n"
+      CONFIG_BT_NIMBLE_SM_SC: "y"
 
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
   project:
     name: "derekseaman.irk-capture"
-    version: "1.5.15"
+    version: "1.5.12"
 
 # IMPORTANT: Do NOT include esp32_ble:, esp32_ble_tracker:, or bluetooth_proxy: here.
 # The irk_capture component fully initializes and manages NimBLE itself.
