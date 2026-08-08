@@ -42,11 +42,31 @@ jobs:
           options: "--check --verbose"
           src: "./components"
 
-      # 4. NEW: Markdown Lint
+      # 4. Markdown Lint
       - name: Markdown Lint
         uses: DavidAnson/markdownlint-cli2-action@v22
         with:
-          # Lints all .md files in the repo
+          # Lints all .md files in the repo. Do NOT auto-fix: with fix enabled,
+          # fixable violations are silently corrected in the ephemeral checkout
+          # (never committed) and CI passes green, hiding real problems.
           globs: "**/*.md"
-          # Optional: can auto-fix simple issues like trailing spaces
-          fix: true
+
+  # Compile the component so C++ API drift, invalid code generation, or ESP-IDF
+  # incompatibility fail CI (config/lint checks alone cannot catch these).
+  compile:
+    name: ESPHome Compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ESPHome
+        run: pip install esphome
+
+      - name: Compile test configuration
+        run: esphome compile tests/test-irk-capture.yaml

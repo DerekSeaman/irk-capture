@@ -73,7 +73,9 @@ structs)
      * irk_gave_up_, irk_last_try_ms_ (IRK polling state)
 -    RAII MutexGuard class ensures exception-safe lock/unlock
 -    Mutex MUST be released before calling BLE stack APIs (prevents deadlock)
--    UI updates (publish_state) are safe outside mutex (internally thread-safe)
+-    Entity publish_state() is NOT safe to call from the NimBLE task. BLE-context
+     code stages values into the pending_* fields (under state_mutex_) and the
+     ESPHome main loop() publishes them via flush_pending_publishes_()
 -    host_synced_ uses std::atomic<bool> (one-shot write from NimBLE, reads from
 main loop)
 
@@ -204,9 +206,9 @@ static constexpr int GAP_EVENT_VS_HCI = 38;
 Connect → Initiate security
 ENC_CHANGE (success) → immediate IRK read from store; if available: publish &
 disconnect (tested working behavior); otherwise schedule a late read at +5s.
-ENC_CHANGE (failure) → clear ALL bonds and terminate the connection to force
-fresh pairing on reconnect; on a DHKey check failure, additionally suppress the
-next advertising cycle to prod the peer into resetting.
+ENC_CHANGE (failure) → delete the failing peer's bond and terminate the
+connection to force fresh pairing on reconnect; on a DHKey check failure,
+additionally suppress the next advertising cycle to prod the peer into resetting.
 (Separately, retry_security_if_needed() initiates security once more if
 encryption has not completed ~2s after connect — this is timeout-driven, not a
 response to an ENC_CHANGE failure.)
@@ -570,10 +572,12 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
                  "unpair from Bluetooth settings to stop.",
                  entry.capture_count);
 
-        // Signal caller to stop advertising (break reconnection loop)
-        // THREAD-SAFE: We already hold state_mutex_, so we can read
-        // advertising_ directly
-        out_should_stop_adv = advertising_;
+        // Signal caller to break the reconnection loop unconditionally. This
+        // must NOT be gated on advertising_: captures happen while connected or
+        // just-disconnected, when advertising_ is already false, so gating here
+        // would silently disable the defense. The caller uses this to set
+        // suppress_next_adv_ (and stop advertising if it happens to be active).
+        out_should_stop_adv = true;
         return false;  // Don't republish - prevents heap fragmentation
       }
 
@@ -1145,7 +1149,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   if (should_stop_adv) {
     // Don't restart - max captures reached
     ESP_LOGI(TAG, "Capture limit reached - stopping advertising");
-    if (self->advertising_switch_) self->advertising_switch_->publish_state(false);
+    self->stage_advertising_publish_(false);
   } else if (!suppressed) {
     // Normal case: restart advertising (will set flag with mutex internally)
     if (self->continuous_mode_) {
@@ -1163,7 +1167,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       self->adv_restart_time_ = now_ms() + TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS;
     }
 
-    if (self->advertising_switch_) self->advertising_switch_->publish_state(false);
+    self->stage_advertising_publish_(false);
   }
   return 0;
 }
@@ -1287,11 +1291,18 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       }
     }
   } else {
-    // Encryption failed - clear all bonds and terminate
-    ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing all bonds", ev->enc_change.status);
-    int clear_rc = ble_store_clear();  // Clear everything to force fresh pairing
-    if (clear_rc != 0) {
-      ESP_LOGW(TAG, "ble_store_clear after ENC failure rc=%d", clear_rc);
+    // Encryption failed - delete ONLY this peer's bond (not all bonds) and
+    // terminate. Clearing the entire store on any failure lets a single
+    // misbehaving/hostile peer wipe bond state for every other device, so we
+    // scope the cleanup to the failing peer to force it to pair fresh.
+    struct ble_gap_conn_desc d {};
+    if (ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
+      ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; clearing bond for %s", ev->enc_change.status,
+               addr_to_str(d.peer_id_addr).c_str());
+      ble_store_util_delete_peer(&d.peer_id_addr);
+    } else {
+      ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; conn desc not found, no bond cleared",
+               ev->enc_change.status);
     }
     int term_rc;
     {
@@ -1545,6 +1556,9 @@ void IRKCaptureComponent::loop() {
   if (now - last_loop_ < TimingConfig::LOOP_MIN_INTERVAL_MS) return;
   last_loop_ = now;
 
+  // Drain entity publishes staged by the NimBLE task (see flush impl).
+  flush_pending_publishes_();
+
   // Timers for IRK checks
   handle_post_disconnect_timer(now);
   handle_late_enc_timer(now);
@@ -1749,7 +1763,15 @@ void IRKCaptureComponent::loop() {
         term_rc = ble_gap_terminate(timeout_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
       }
       if (term_rc != 0) {
-        ESP_LOGW(TAG, "ble_gap_terminate after global timeout rc=%d", term_rc);
+        // Terminate failed and no disconnect callback will fire, so force local
+        // cleanup to avoid a zombie connection stuck in CONNECTED forever (same
+        // strategy as retry_security_if_needed's timeout path). Only after this
+        // is it safe to clear pairing_start_time_ below.
+        ESP_LOGW(TAG, "ble_gap_terminate after global timeout rc=%d - forcing local cleanup",
+                 term_rc);
+        MutexGuard lock(state_mutex_);
+        connected_ = false;
+        conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
       }
     } else {
       // Connection already dead (zombie) - just reset local state
@@ -1759,9 +1781,9 @@ void IRKCaptureComponent::loop() {
       conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
     }
 
-    // Clear pairing_start_time_ now that termination succeeded (or zombie was cleaned up).
-    // on_disconnect() also zeros this, but clear it here for the zombie path
-    // where no disconnect callback fires.
+    // Clear pairing_start_time_ now that we have terminated, forced local
+    // cleanup, or cleaned up a zombie. on_disconnect() also zeros this, but
+    // clear it here for paths where no disconnect callback fires.
     {
       MutexGuard lock(state_mutex_);
       pairing_start_time_ = 0;
@@ -1946,11 +1968,11 @@ void IRKCaptureComponent::register_gatt_services() {
   devinfo_chrs[1].arg = (void*) this;  // Model Number
 
   // BUG4 FIX: Explicitly zero the handle globals before any registration
-  // attempt. The Keyboard profile GATT table doesn't contain HR or Protected
-  // services, so if a Keyboard→Heart Sensor fallback occurs,
-  // g_hr_handle/g_prot_handle would retain stale values from a prior boot.
-  // Zeroing here makes the state explicit and predictable regardless of which
-  // registration path is taken.
+  // attempt. The Keyboard profile GATT table has no HR service (it does include
+  // the Protected service), so g_hr_handle would retain a stale value from a
+  // prior boot if a Keyboard→Heart Sensor fallback occurs. Zeroing both here
+  // makes the state explicit and predictable regardless of which registration
+  // path is taken.
   g_hr_handle = 0;
   g_prot_handle = 0;
 
@@ -2174,10 +2196,10 @@ void IRKCaptureComponent::start_advertising() {
 
   if (rc != 0) {
     ESP_LOGE(TAG, "Failed to start advertising rc=%d", rc);
-    if (advertising_switch_) advertising_switch_->publish_state(false);
+    stage_advertising_publish_(false);
   } else {
-    // UI update outside lock (publish_state is internally thread-safe)
-    if (advertising_switch_) advertising_switch_->publish_state(true);
+    // Stage switch update; drained on the main task in loop().
+    stage_advertising_publish_(true);
     ESP_LOGD(TAG, "Advertising with profile: %s", profile_name);
 
     // Publish the effective MAC address to the sensor
@@ -2205,8 +2227,8 @@ void IRKCaptureComponent::stop_advertising() {
     advertising_ = false;
   }
 
-  // UI update outside lock (publish_state is internally thread-safe)
-  if (advertising_switch_) advertising_switch_->publish_state(false);
+  // Stage switch update; drained on the main task in loop().
+  stage_advertising_publish_(false);
   ESP_LOGD(TAG, "Advertising stopped");
 }
 
@@ -2275,19 +2297,37 @@ void IRKCaptureComponent::refresh_mac() {
   // Terminate any active connection (non-blocking)
   if (conn_handle_copy != BLE_HS_CONN_HANDLE_NONE) {
     ESP_LOGI(TAG, "Terminating connection for MAC rotation");
-    int rc;
+    int rc = 0;
+    bool terminate_started = false;
     {
       BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
-      if (!ble_lock.acquired()) {
-        ESP_LOGW(TAG, "MAC rotation terminate: ble_op_mutex timeout, will retry next loop()");
-        return;
+      if (ble_lock.acquired()) {
+        rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
+        terminate_started = (rc == 0);
+      } else {
+        ESP_LOGW(TAG, "MAC rotation terminate: ble_op_mutex timeout");
       }
-      rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
     }
-    if (rc != 0) {
-      ESP_LOGW(TAG, "ble_gap_terminate during MAC rotation rc=%d", rc);
+    if (terminate_started) {
+      // on_disconnect() will advance the state machine to READY_TO_ROTATE
+    } else {
+      // Neither the mutex nor the terminate succeeded, so no disconnect callback
+      // will fire and the state machine would hang in REQUESTED forever (loop()
+      // only handles READY_TO_ROTATE / ROTATION_COMPLETE). Abort the rotation
+      // and restore advertising instead of getting stuck.
+      if (rc != 0) {
+        ESP_LOGW(TAG, "ble_gap_terminate during MAC rotation rc=%d", rc);
+      }
+      ESP_LOGW(TAG, "MAC rotation aborted (could not disconnect); restoring advertising");
+      {
+        MutexGuard lock(state_mutex_);
+        mac_rotation_state_ = MacRotationState::IDLE;
+        mac_rotation_retries_ = 0;
+        mac_rotation_ready_time_ = 0;
+        suppress_next_adv_ = false;
+      }
+      start_advertising();
     }
-    // on_disconnect() will advance the state machine to READY_TO_ROTATE
   } else {
     // No connection - safe to rotate immediately
     ESP_LOGD(TAG, "No active connection, ready to rotate MAC");
@@ -2414,10 +2454,9 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     irk_last_try_ms_ = 0;
   }
 
-  // Update switch to reflect that BLE stack stopped advertising on connect
-  if (advertising_switch_) {
-    advertising_switch_->publish_state(false);
-  }
+  // Update switch to reflect that BLE stack stopped advertising on connect.
+  // Staged here (on_connect runs in the NimBLE task) and drained in loop().
+  stage_advertising_publish_(false);
 
   // Compact summary to increase chance at least one key line survives under log
   // pressure
@@ -2680,7 +2719,18 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
       is_connected = connected_;
       conn_handle_copy = conn_handle_;
     }
+    // Only terminate if the CURRENT connection is still the same peer this late
+    // check was scheduled for. In continuous mode the original peer may have
+    // disconnected and a different device connected during the delay; without
+    // this guard we would drop that unrelated device.
+    bool same_peer = false;
     if (is_connected && conn_handle_copy != BLE_HS_CONN_HANDLE_NONE) {
+      struct ble_gap_conn_desc cur {};
+      same_peer = (ble_gap_conn_find(conn_handle_copy, &cur) == 0) &&
+                  cur.peer_id_addr.type == peer_id.type &&
+                  memcmp(cur.peer_id_addr.val, peer_id.val, sizeof(peer_id.val)) == 0;
+    }
+    if (same_peer) {
       int term_rc;
       {
         BleOpGuard ble_lock(ble_op_mutex_);
@@ -2876,8 +2926,12 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
 //======================== Public publish utility ========================
 
 void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str) {
-  if (irk_sensor_) irk_sensor_->publish_state(irk_hex);
-  if (address_sensor_) address_sensor_->publish_state(addr_str);
+  // Stage only; the ESPHome main loop() performs the actual publish_state().
+  // Callers may run in the NimBLE task, where publish_state() is unsafe.
+  MutexGuard lock(state_mutex_);
+  pending_irk_hex_ = irk_hex;
+  pending_irk_addr_ = addr_str;
+  pending_irk_pub_ = true;
 }
 
 void IRKCaptureComponent::publish_effective_mac() {
@@ -2888,9 +2942,46 @@ void IRKCaptureComponent::publish_effective_mac() {
     char mac_str[18];
     snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X", mac[5], mac[4], mac[3],
              mac[2], mac[1], mac[0]);
-    effective_mac_sensor_->publish_state(mac_str);
-    ESP_LOGD(TAG, "Published effective MAC: %s", mac_str);
+    // Stage only; drained on the main task in loop().
+    {
+      MutexGuard lock(state_mutex_);
+      pending_effmac_ = mac_str;
+      pending_effmac_pub_ = true;
+    }
+    ESP_LOGD(TAG, "Staged effective MAC: %s", mac_str);
   }
+}
+
+void IRKCaptureComponent::stage_advertising_publish_(bool value) {
+  MutexGuard lock(state_mutex_);
+  pending_adv_val_ = value;
+  pending_adv_pub_ = true;
+}
+
+void IRKCaptureComponent::flush_pending_publishes_() {
+  // Runs on the ESPHome main task. Copy staged values out under the mutex, then
+  // publish outside it (publish_state can be slow and must not hold the lock).
+  bool adv_pub, adv_val, irk_pub, effmac_pub;
+  std::string irk_hex, irk_addr, effmac;
+  {
+    MutexGuard lock(state_mutex_);
+    adv_pub = pending_adv_pub_;
+    adv_val = pending_adv_val_;
+    pending_adv_pub_ = false;
+    irk_pub = pending_irk_pub_;
+    pending_irk_pub_ = false;
+    irk_hex.swap(pending_irk_hex_);
+    irk_addr.swap(pending_irk_addr_);
+    effmac_pub = pending_effmac_pub_;
+    pending_effmac_pub_ = false;
+    effmac.swap(pending_effmac_);
+  }
+  if (adv_pub && advertising_switch_) advertising_switch_->publish_state(adv_val);
+  if (irk_pub) {
+    if (irk_sensor_) irk_sensor_->publish_state(irk_hex);
+    if (address_sensor_) address_sensor_->publish_state(irk_addr);
+  }
+  if (effmac_pub && effective_mac_sensor_) effective_mac_sensor_->publish_state(effmac);
 }
 
 }  // namespace irk_capture

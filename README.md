@@ -62,6 +62,12 @@ ESPHome Device builder will dynamically pull in the latest version of my IRK cap
 
 You can find the **packages:** content here: [irk-capture-device-remote.yaml](https://github.com/DerekSeaman/irk-capture/blob/main/ESPHome%20Devices/irk-capture-device-remote.yaml)
 
+> **Note on updates and pinning:** the default `ref: main` with `refresh: always`
+> means every clean build pulls the latest code from this repository, so you
+> always get fixes automatically. If you prefer reproducible builds (recommended
+> for security-sensitive deployments), change `ref: main` to a released tag such
+> as `ref: v1.6.0` — the build will then stay pinned until you bump it yourself.
+
 ## Usage Instructions
 
 Again, my blog post covers usage in detail. However, the super short version is as follows:
@@ -199,10 +205,10 @@ Below is a sample log showing a successful IRK capture:
 
 ```text
 [16:15:01.812][D][switch:065]: 'BLE Advertising': Sending state ON
-[16:15:01.814][D][irk_capture:1690]: Advertising as 'IRK Cap' (Heart Rate Sensor)
+[16:15:01.814][D][irk_capture:1690]: Advertising with profile: Heart Sensor
 [16:15:01.861][D][sensor:135]: 'Wi‑Fi RSSI': Sending state -30.00000 dBm with 0 decimals of accuracy
 [16:15:16.669][I][irk_capture:866][nimble_host]: Connection established successfully
-[16:15:16.669][I][irk_capture:1832][nimble_host]: Conn start: handle=0 enc_ready=0 adv=1
+[16:15:16.669][I][irk_capture:1832][nimble_host]: Conn start: handle=0 enc_ready=0 was_adv=1
 [16:15:16.669][I][irk_capture:1835][nimble_host]: Connected; handle=0, initiating security
 [16:15:16.669][I][irk_capture:362][nimble_host]: sec: enc=0 bonded=0 auth=0 key_size=0
 [16:15:16.669][I][irk_capture:366][nimble_host]: peer ota=4A:1B:2C:3D:4E:5F type=1
@@ -211,7 +217,7 @@ Below is a sample log showing a successful IRK capture:
 [16:15:16.672][D][irk_capture:376][nimble_host]: role=slave our_ota=C0:FF:EE:12:34:56
 [16:15:16.685][D][irk_capture:1856][nimble_host]: Peer unbonded and no cached bond (ENOENT) - will pair fresh
 [16:15:18.724][I][irk_capture:2105]: Retrying security initiate after 2050 ms
-[16:15:18.727][W][irk_capture:2107]: Retry security initiate rc=2
+[16:15:18.727][D][irk_capture:2107]: Retry security initiate rc=2
 [16:15:19.121][D][irk_capture:1195][nimble_host]: Peer identity resolved using IRK
 [16:15:19.121][I][irk_capture:988][nimble_host]: ENC_CHANGE status=0 (0x00)
 [16:15:19.121][I][irk_capture:1045][nimble_host]: Encryption established; attempting immediate IRK capture

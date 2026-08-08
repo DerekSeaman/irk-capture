@@ -266,6 +266,18 @@ class IRKCaptureComponent : public Component {
   uint32_t last_publish_time_ { 0 };      // Last IRK publish timestamp
   uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
 
+  // Deferred entity publishing. ESPHome entity publish_state() is not safe to
+  // call from the NimBLE task, so BLE-context code stages values here (under
+  // state_mutex_) and the main-task loop() drains them via
+  // flush_pending_publishes_().
+  bool pending_adv_pub_ { false };
+  bool pending_adv_val_ { false };
+  bool pending_irk_pub_ { false };
+  std::string pending_irk_hex_;
+  std::string pending_irk_addr_;
+  bool pending_effmac_pub_ { false };
+  std::string pending_effmac_;
+
   // Host state — written once by NimBLE task (sync_cb), read by ESPHome main
   // task Uses std::atomic for cross-core visibility without requiring
   // state_mutex_
@@ -286,7 +298,8 @@ class IRKCaptureComponent : public Component {
   //           suppress_next_adv_, adv_restart_time_, total_captures_,
   //           irk_cache_, last_publish_time_ (deduplication state),
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
-  //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state)
+  //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
+  //           pending_adv_/pending_irk_/pending_effmac_ (deferred-publish queue)
   SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Serializes BLE control operations that can be called from both NimBLE and
@@ -315,6 +328,11 @@ class IRKCaptureComponent : public Component {
   void retry_security_if_needed(uint32_t now);
   void notify_hr_if_due(uint32_t now);
   void poll_irk_if_due(uint32_t now);
+
+  // Deferred entity publishing (see pending_* fields). Staged from any context,
+  // drained only on the ESPHome main task in loop().
+  void stage_advertising_publish_(bool value);
+  void flush_pending_publishes_();
 };
 
 }  // namespace irk_capture
