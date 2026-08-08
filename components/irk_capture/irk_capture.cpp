@@ -53,7 +53,7 @@ button, text)
 THREAD SAFETY RULES:
 -    ALL reads/writes to shared state MUST use state_mutex_
 -    Protected by state_mutex_ (FreeRTOS mutex):
-     * timers_.last_peer_id / timers_.enc_peer_id (ble_addr_t multi-word
+     * timers_.post_disc_peer_id / timers_.enc_peer_id (ble_addr_t multi-word
 structs)
      * timers_.post_disc_due_ms / timers_.late_enc_due_ms (timer targets)
      * conn_handle_ (connection handle)
@@ -320,7 +320,7 @@ RAII wrapper for FreeRTOS mutex to ensure exception-safe locking.
 Used to protect shared state accessed by both NimBLE task and ESPHome main task.
 
 Protected state:
-- timers_.last_peer_id / timers_.enc_peer_id (ble_addr_t multi-word structs)
+- timers_.post_disc_peer_id / timers_.enc_peer_id (ble_addr_t multi-word structs)
 - timers_.post_disc_due_ms / timers_.late_enc_due_ms (timer targets)
 - conn_handle_ (connection state)
 - advertising_ (advertising state)
@@ -334,7 +334,7 @@ released.
 BAD (blocks NimBLE task during slow UART logging):
   {
     MutexGuard lock(state_mutex_);
-    peer_id = timers_.last_peer_id;
+    peer_id = timers_.post_disc_peer_id;
     ESP_LOGD(TAG, "Peer: %s", addr_to_str(peer_id).c_str()); // SLOW - UART
 bottleneck!
   }
@@ -343,7 +343,7 @@ GOOD (minimal lock hold time):
   ble_addr_t peer_id_copy;
   {
     MutexGuard lock(state_mutex_);
-    peer_id_copy = timers_.last_peer_id;  // Fast memory copy
+    peer_id_copy = timers_.post_disc_peer_id;  // Fast memory copy
   }  // Lock released immediately
   ESP_LOGD(TAG, "Peer: %s", addr_to_str(peer_id_copy).c_str());  // Safe - no
 lock held
@@ -683,9 +683,9 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     if (self->is_advertising()) {
       self->stop_advertising();
     }
-    ESP_LOGI(TAG,
-             "Auto-stopped advertising due to repeated reconnections. "
-             "Toggle 'BLE Advertising' switch to resume.");
+    // Neutral wording: the disconnect handler may auto-resume advertising after
+    // a short cooldown, while a stop from a delayed-timer path may stay off.
+    ESP_LOGI(TAG, "Reconnect limit reached; suppressing advertising to break the reconnect loop.");
   }
 
   // Skip publishing duplicate (deduplication happened under mutex)
@@ -1091,13 +1091,9 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
 
   // Use the connection descriptor embedded in the disconnect event directly
   // (ble_gap_conn_find may fail after disconnect since NimBLE removes the
-  // descriptor)
+  // descriptor). The post-disconnect timer's peer is set by
+  // schedule_post_disconnect_check() below, so no separate cache is needed here.
   const struct ble_gap_conn_desc& d = ev->disconnect.conn;
-  {
-    // Thread-safe cache for delayed retry
-    MutexGuard lock(self->state_mutex_);
-    self->timers_.last_peer_id = d.peer_id_addr;
-  }
 
   struct ble_store_value_sec bond {};
   struct ble_store_key_sec key {};
@@ -1729,7 +1725,8 @@ void IRKCaptureComponent::loop() {
 
   // Global pairing timeout (90s max) - thread-safe check
   bool should_timeout = false;
-  uint16_t timeout_conn_handle;
+  uint16_t timeout_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+  uint32_t terminate_retry_ms_copy = 0;
   {
     MutexGuard lock(state_mutex_);
     if (connected_ && pairing_start_time_ != 0) {
@@ -1737,21 +1734,40 @@ void IRKCaptureComponent::loop() {
       if (elapsed > TimingConfig::PAIRING_TOTAL_TIMEOUT_MS) {
         should_timeout = true;
         timeout_conn_handle = conn_handle_;
-        // NOTE: Do NOT zero pairing_start_time_ here. It is cleared only after
-        // successful termination (or zombie cleanup) below. Zeroing it before
-        // the terminate call means a ble_op_mutex timeout would permanently
-        // lose the timeout event — the next loop() would skip this path because
-        // pairing_start_time_ == 0, leaving the connection stuck forever.
+        terminate_retry_ms_copy = timeout_terminate_retry_ms_;
+        // NOTE: Do NOT zero pairing_start_time_ here. It is cleared only once the
+        // connection is confirmed gone (successful terminate -> on_disconnect, or
+        // a zombie with no live descriptor). Zeroing it earlier would drop the
+        // timeout event and could strand a still-live connection.
       }
     }
   }
 
-  if (should_timeout) {
-    ESP_LOGW(TAG, "Pairing timeout after 90+ seconds - resetting connection");
-    // Zombie protection: Only terminate if connection still exists
+  // Invariant: never report the connection closed locally while NimBLE still
+  // reports it open. On terminate failure we retry (throttled ~1/sec) instead of
+  // falsifying state, and reboot as a last resort if the host is truly wedged.
+  if (should_timeout &&
+      (terminate_retry_ms_copy == 0 || deadline_reached(now, terminate_retry_ms_copy))) {
     struct ble_gap_conn_desc d {};
-    if (ble_gap_conn_find(timeout_conn_handle, &d) == 0) {
-      // Connection still alive - clean up bond and terminate
+    if (ble_gap_conn_find(timeout_conn_handle, &d) != 0) {
+      // Connection no longer exists (already gone / zombie). No disconnect
+      // callback will run, so clean up local state and schedule the advertising
+      // cooldown here.
+      ESP_LOGD(TAG, "Pairing timeout: connection already gone, cleaning up local state");
+      {
+        MutexGuard lock(state_mutex_);
+        connected_ = false;
+        conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
+        pairing_start_time_ = 0;
+        timeout_terminate_attempts_ = 0;
+        timeout_terminate_retry_ms_ = 0;
+        adv_restart_time_ = now + TimingConfig::TIMEOUT_COOLDOWN_MS;
+      }
+      ESP_LOGI(TAG, "Cooldown: advertising will restart in %" PRIu32 " seconds",
+               TimingConfig::TIMEOUT_COOLDOWN_MS / 1000);
+    } else {
+      // Connection still alive - clear its bond and terminate.
+      ESP_LOGW(TAG, "Pairing timeout after 90+ seconds - terminating connection");
       ble_store_util_delete_peer(&d.peer_id_addr);
       int term_rc;
       {
@@ -1762,42 +1778,31 @@ void IRKCaptureComponent::loop() {
         }
         term_rc = ble_gap_terminate(timeout_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
       }
-      if (term_rc != 0) {
-        // Terminate failed and no disconnect callback will fire, so force local
-        // cleanup to avoid a zombie connection stuck in CONNECTED forever (same
-        // strategy as retry_security_if_needed's timeout path). Only after this
-        // is it safe to clear pairing_start_time_ below.
-        ESP_LOGW(TAG, "ble_gap_terminate after global timeout rc=%d - forcing local cleanup",
-                 term_rc);
-        MutexGuard lock(state_mutex_);
-        connected_ = false;
-        conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
+      if (term_rc == 0 || term_rc == BLE_HS_EALREADY) {
+        // Disconnect is underway; on_disconnect() owns state cleanup and the
+        // advertising restart. Do NOT touch connection state here.
+        ESP_LOGI(TAG, "Pairing timeout: termination initiated, awaiting disconnect");
+        return;
       }
-    } else {
-      // Connection already dead (zombie) - just reset local state
-      ESP_LOGD(TAG, "Connection already terminated, cleaning up local state");
-      MutexGuard lock(state_mutex_);
-      connected_ = false;
-      conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
+      // Genuine terminate failure while the descriptor still exists: retry
+      // rather than lie about the connection state.
+      uint8_t attempts;
+      {
+        MutexGuard lock(state_mutex_);
+        timeout_terminate_attempts_++;
+        timeout_terminate_retry_ms_ = now + 1000;  // ~1 retry/sec
+        attempts = timeout_terminate_attempts_;
+      }
+      ESP_LOGW(TAG, "ble_gap_terminate after global timeout rc=%d (attempt %u/5)", term_rc,
+               attempts);
+      if (attempts >= 5) {
+        ESP_LOGE(TAG,
+                 "Unable to terminate timed-out BLE connection after 5 attempts; rebooting to "
+                 "guarantee controller/host teardown");
+        App.safe_reboot();
+      }
+      return;
     }
-
-    // Clear pairing_start_time_ now that we have terminated, forced local
-    // cleanup, or cleaned up a zombie. on_disconnect() also zeros this, but
-    // clear it here for paths where no disconnect callback fires.
-    {
-      MutexGuard lock(state_mutex_);
-      pairing_start_time_ = 0;
-    }
-
-    // Cooldown timer: Prevent rapid-fire reconnection loop from failing device
-    // Gives "bad" device time to move away or stop attempting connection
-    // THREAD-SAFE: Write to shared state under mutex
-    {
-      MutexGuard lock(state_mutex_);
-      adv_restart_time_ = now + TimingConfig::TIMEOUT_COOLDOWN_MS;
-    }
-    ESP_LOGI(TAG, "Cooldown: advertising will restart in %" PRIu32 " seconds",
-             TimingConfig::TIMEOUT_COOLDOWN_MS / 1000);
   }
 
   // THREAD-SAFE: Check connection state before proceeding with
@@ -2452,6 +2457,8 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     sec_init_time_ms_ = 0;
     irk_gave_up_ = false;
     irk_last_try_ms_ = 0;
+    timeout_terminate_attempts_ = 0;
+    timeout_terminate_retry_ms_ = 0;
   }
 
   // Update switch to reflect that BLE stack stopped advertising on connect.
@@ -2467,15 +2474,11 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   log_conn_desc(conn_handle);
   log_sm_config();
 
-  // Cache peer identity address for delayed post-disconnect checks
+  // Inspect the connection descriptor for bond-state mismatch handling. The
+  // post-disconnect timer owns its own peer id (set at disconnect time), so
+  // nothing is cached here.
   struct ble_gap_conn_desc d;
   if (ble_gap_conn_find(conn_handle, &d) == 0) {
-    // Thread-safe peer ID snapshot
-    {
-      MutexGuard lock(state_mutex_);
-      timers_.last_peer_id = d.peer_id_addr;
-    }
-
     // Check for bond state mismatch: peer thinks it's unbonded but we have bond
     // data
     if (!d.sec_state.bonded) {
@@ -2523,11 +2526,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
       }
     }
   } else {
-    {
-      MutexGuard lock(state_mutex_);
-      memset(&timers_.last_peer_id, 0, sizeof(timers_.last_peer_id));
-    }
-    ESP_LOGD(TAG, "on_connect: ble_gap_conn_find failed; cleared cached last_peer_id");
+    ESP_LOGD(TAG, "on_connect: ble_gap_conn_find failed; skipping bond-mismatch check");
   }
 
   // Proactively initiate pairing; peer should show pairing dialog now
@@ -2567,6 +2566,8 @@ void IRKCaptureComponent::on_disconnect() {
     sec_init_time_ms_ = 0;
     irk_gave_up_ = false;
     irk_last_try_ms_ = 0;
+    timeout_terminate_attempts_ = 0;
+    timeout_terminate_retry_ms_ = 0;
 
     // MAC rotation handoff: advance state if rotation is pending (CRITICAL:
     // must be inside mutex) Now that we're disconnected, the radio is idle and
@@ -2642,7 +2643,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 
 void IRKCaptureComponent::schedule_post_disconnect_check(const ble_addr_t& peer_id) {
   MutexGuard lock(state_mutex_);
-  timers_.last_peer_id = peer_id;
+  timers_.post_disc_peer_id = peer_id;
   timers_.post_disc_due_ms = now_ms() + TimingConfig::POST_DISC_DELAY_MS;
 }
 
@@ -2659,11 +2660,11 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
     MutexGuard lock(state_mutex_);
     if (!timers_.post_disc_due_ms || !deadline_reached(now, timers_.post_disc_due_ms)) return;
     timers_.post_disc_due_ms = 0;  // consume
-    peer_id = timers_.last_peer_id;
+    peer_id = timers_.post_disc_peer_id;
   }
 
   if (addr_is_zero(peer_id)) {
-    ESP_LOGD(TAG, "Post-disc timer fired but last_peer_id is zero (skipping)");
+    ESP_LOGD(TAG, "Post-disc timer fired but post_disc_peer_id is zero (skipping)");
     return;
   }
 

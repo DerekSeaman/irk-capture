@@ -283,13 +283,21 @@ class IRKCaptureComponent : public Component {
   // state_mutex_
   std::atomic<bool> host_synced_ { false };
 
-  // Timer targets and cached peer ids
+  // Timer targets and their owned peer ids. Each peer id belongs to exactly one
+  // timer and is set only when that timer is scheduled, so it stays immutable
+  // until the timer consumes it (no other path may overwrite it mid-flight).
   struct Timers {
     uint32_t post_disc_due_ms { 0 };
     uint32_t late_enc_due_ms { 0 };
-    ble_addr_t last_peer_id {};
+    ble_addr_t post_disc_peer_id {};
     ble_addr_t enc_peer_id {};
   } timers_ {};
+
+  // Bounded retry state for the global pairing-timeout termination path. Lets us
+  // retry ble_gap_terminate() without falsely reporting the connection closed
+  // while NimBLE still holds it.
+  uint8_t timeout_terminate_attempts_ { 0 };
+  uint32_t timeout_terminate_retry_ms_ { 0 };
 
   // FreeRTOS mutex for thread-safe access to shared state
   // Protects: timers_, conn_handle_, connected_, advertising_,
