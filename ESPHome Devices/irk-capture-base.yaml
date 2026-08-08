@@ -1,12 +1,17 @@
 ---
 # Generic ESP32 IRK Capture Package
 # This package provides IRK capture functionality for ESP32 devices
-# Device YAML must provide substitutions: device_name, friendly_name, api_key, ota_password, esp32_variant, esp32_board, ble_name
+# Intended to be added as a `packages:` entry to an ESPHome Device Builder-generated
+# device YAML. The device YAML must already provide: esphome.name, esphome.friendly_name,
+# esp32.variant (+ flash_size/board), api.encryption.key, ota password, and
+# wifi.ssid/password/ap. This package supplies everything else.
+
+substitutions:
+  ble_name: "IRK Capture"
 
 esp32:
   # NimBLE stack with ESP-IDF. Supports all ESP32 variants (ESP32, C3, C6, S3, etc.)
-  board: ${esp32_board}
-  variant: ${esp32_variant}
+  # board/variant come from the device YAML.
   framework:
     type: esp-idf
     version: recommended
@@ -28,8 +33,7 @@ esp32:
       CONFIG_BT_NIMBLE_SM_SC: "y"
 
 esphome:
-  name: ${device_name}
-  friendly_name: ${friendly_name}
+  # name/friendly_name come from the device YAML.
   project:
     name: "derekseaman.irk-capture"
     version: "1.5.12"
@@ -42,30 +46,23 @@ logger:
   baud_rate: 115200
 
 api:
-  encryption:
-    key: ${api_key}
+  # encryption.key comes from the device YAML.
   reboot_timeout: 15min
 
-ota:
-  - platform: esphome
-    password: ${ota_password}
-    version: 2
+# ota: is owned entirely by the device YAML. Package `packages:` merges lists by
+# concatenation (not override), so defining an `ota:` entry here would duplicate
+# the device YAML's OTA platform instead of extending it.
 
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  domain: .local
-  use_address: ${device_name}.local
+  # ssid/password/ap.ssid/ap.password come from the device YAML.
   power_save_mode: NONE
   fast_connect: true
   enable_on_boot: true
   reboot_timeout: 10min
   ap:
-    ssid: "${friendly_name} Fallback"
-    password: !secret wifi_captive
     ap_timeout: 120s
 
-captive_portal:
+# captive_portal: is enabled by the device YAML.
 
 mdns:
 

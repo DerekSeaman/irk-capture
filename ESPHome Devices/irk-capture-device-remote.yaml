@@ -1,24 +1,11 @@
 ---
-substitutions:
-  device_name: esphome-irk-capture
-  friendly_name: IRK Capture
-  api_key: "ZmFrZWFwaWtleWZha2VleGFtcGxlZmFrZWtleQ=="
-  ota_password: "ChangeMe!2025"
-  esp32_variant: esp32          # Any ESP32 variant (esp32, esp32c3, esp32c6, esp32s3, etc.)
-  esp32_board: featheresp32     # Set to your board ID (e.g., featheresp32, esp32dev)
-  ble_name: "IRK Capture"
-
+# Add this `packages:` section to your ESPHome Device Builder-generated device YAML.
+# The generated YAML already provides esphome.name/friendly_name, esp32.variant,
+# api.encryption.key, ota password, and wifi.ssid/password/ap — this package adds
+# the IRK Capture component and its advanced ESP32/BLE/network tuning on top.
 packages:
   device:
     url: https://github.com/DerekSeaman/irk-capture
     ref: main
     file: ESPHome Devices/irk-capture-base.yaml
     refresh: always
-
-# Override the package's WiFi configuration with your secrets
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  ap:
-    ssid: "${friendly_name} Fallback"
-    password: !secret wifi_captive
