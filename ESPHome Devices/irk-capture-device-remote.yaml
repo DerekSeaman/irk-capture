@@ -1,4 +1,3 @@
----
 packages:
   device:
     url: https://github.com/DerekSeaman/irk-capture
