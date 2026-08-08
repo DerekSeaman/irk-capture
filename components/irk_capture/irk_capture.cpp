@@ -11,6 +11,7 @@
 #include <nvs_flash.h>
 #include <store/config/ble_store_config.h>
 
+#include <cinttypes>
 #include <cstring>
 
 #include "esphome/core/application.h"
@@ -159,8 +160,9 @@ struct TimingConfig {
       2000;  // Delay before retrying security after encryption failure
   static constexpr uint32_t SEC_TIMEOUT_MS = 20000;  // Timeout for encryption to complete (assumes
                                                      // peer forgot pairing)
-  static constexpr uint32_t ADV_SUPPRESS_DURATION_MS =
-      2000;  // How long to suppress advertising after IRK capture
+  static constexpr uint32_t ADV_SUPPRESS_RESTART_DELAY_MS =
+      5000;  // Delay before auto-restarting advertising after a suppression
+             // (reconnect-loop break / IRK re-publish)
   static constexpr uint32_t PAIRING_TOTAL_TIMEOUT_MS = 90000;  // Global pairing timeout (90s max)
   static constexpr uint32_t TIMEOUT_COOLDOWN_MS =
       5000;  // Cooldown after pairing timeout before re-advertising (prevents
@@ -200,13 +202,20 @@ static constexpr int GAP_EVENT_VS_HCI = 38;
 //======================== IRK lifecycle (for readers) ========================
 /*
 Connect → Initiate security
-ENC_CHANGE → immediate IRK read from store; if available: publish & disconnect
-(tested working behavior). If ENC fails (status != 0), delete that peer's keys
-and retry security once (self-heal). DISCONNECT → immediate store read; schedule
-delayed read at +800ms; restart advertising While connected (post ENC) → poll
-every 1s starting at +2s, up to 45s, then disconnect when IRK captured All
-address reporting uses the peer identity address; IRK hex is reversed for parity
-with Arduino output.
+ENC_CHANGE (success) → immediate IRK read from store; if available: publish &
+disconnect (tested working behavior); otherwise schedule a late read at +5s.
+ENC_CHANGE (failure) → clear ALL bonds and terminate the connection to force
+fresh pairing on reconnect; on a DHKey check failure, additionally suppress the
+next advertising cycle to prod the peer into resetting.
+(Separately, retry_security_if_needed() initiates security once more if
+encryption has not completed ~2s after connect — this is timeout-driven, not a
+response to an ENC_CHANGE failure.)
+DISCONNECT → immediate store read; schedule delayed read at +800ms; restart
+advertising.
+While connected (post ENC) → poll every 1s starting at +1s, up to 45s, then
+disconnect when IRK captured.
+All address reporting uses the peer identity address; IRK hex is reversed for
+parity with Arduino output.
 
 Why this lifecycle: Maintains compatibility (immediate disconnect after capture)
 while adding robustness for timing variations across different BLE peer
@@ -570,7 +579,8 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
 
       // Rate limit republishing to Home Assistant (60s minimum)
       if ((now - last_publish_time_) < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
-        ESP_LOGD(TAG, "Suppressing duplicate IRK (published %u ms ago)", now - last_publish_time_);
+        ESP_LOGD(TAG, "Suppressing duplicate IRK (published %" PRIu32 " ms ago)",
+                 now - last_publish_time_);
         return false;
       }
 
@@ -683,7 +693,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   log_banner(context_tag);
   ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
   ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
-  ESP_LOGI(TAG, "Total captures this session: %u", current_captures);
+  ESP_LOGI(TAG, "Total captures this session: %" PRIu32, current_captures);
   if (max_reached) {
     if (!self->continuous_mode_) {
       ESP_LOGI(TAG, "Single capture mode: advertising will stop after disconnect");
@@ -835,7 +845,14 @@ int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt
   std::string value_copy;
   {
     MutexGuard lock(self->state_mutex_);
-    value_copy = is_manufacturer ? self->manufacturer_name_ : self->ble_name_;
+    if (is_manufacturer) {
+      value_copy = self->manufacturer_name_;
+    } else {
+      // Model Number: reflect the effective advertised identity so GATT stays
+      // consistent with the advertised name (Keyboard profile poses as a
+      // "Logitech K380", so ble_name_ would otherwise leak the real device name).
+      value_copy = (self->ble_profile_ == BLEProfile::KEYBOARD) ? "Logitech K380" : self->ble_name_;
+    }
   }
 
   ESP_LOGD(TAG, "DevInfo read (%s): value='%s'", is_manufacturer ? "Manufacturer" : "Model",
@@ -1126,11 +1143,8 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   }
 
   if (should_stop_adv) {
-    ESP_LOGI(TAG, "Capture limit reached - stopping advertising");
-  }
-
-  if (should_stop_adv) {
     // Don't restart - max captures reached
+    ESP_LOGI(TAG, "Capture limit reached - stopping advertising");
     if (self->advertising_switch_) self->advertising_switch_->publish_state(false);
   } else if (!suppressed) {
     // Normal case: restart advertising (will set flag with mutex internally)
@@ -1145,8 +1159,8 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     // THREAD-SAFE: Reset suppression flag and set timer atomically
     {
       MutexGuard lock(self->state_mutex_);
-      self->suppress_next_adv_ = false;           // Reset for next time
-      self->adv_restart_time_ = now_ms() + 5000;  // Schedule restart
+      self->suppress_next_adv_ = false;  // Reset for next time
+      self->adv_restart_time_ = now_ms() + TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS;
     }
 
     if (self->advertising_switch_) self->advertising_switch_->publish_state(false);
@@ -1562,7 +1576,7 @@ void IRKCaptureComponent::loop() {
     if (mac_rotation_retries_ == 0) {
       // First attempt: set up settling delay to let BLE stack fully stop
       if (mac_rotation_ready_time_ == 0) {
-        ESP_LOGI(TAG, "MAC rotation: waiting %u ms for BLE stack to settle",
+        ESP_LOGI(TAG, "MAC rotation: waiting %" PRIu32 " ms for BLE stack to settle",
                  TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS);
         // BUG3 FIX: Write mac_rotation_ready_time_ under mutex for consistency
         {
@@ -1760,7 +1774,7 @@ void IRKCaptureComponent::loop() {
       MutexGuard lock(state_mutex_);
       adv_restart_time_ = now + TimingConfig::TIMEOUT_COOLDOWN_MS;
     }
-    ESP_LOGI(TAG, "Cooldown: advertising will restart in %u seconds",
+    ESP_LOGI(TAG, "Cooldown: advertising will restart in %" PRIu32 " seconds",
              TimingConfig::TIMEOUT_COOLDOWN_MS / 1000);
   }
 
@@ -2450,8 +2464,8 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
           suppress_next_adv_ = true;
         }
         // Disconnect since we already have what we need
-        // THREAD-SAFE: Use function parameter (already set under mutex at line
-        // 1771)
+        // THREAD-SAFE: use the conn_handle parameter (already stored to
+        // conn_handle_ under mutex at the top of on_connect)
         int term_rc;
         {
           BleOpGuard ble_lock(ble_op_mutex_);
@@ -2478,7 +2492,8 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   }
 
   // Proactively initiate pairing; peer should show pairing dialog now
-  // THREAD-SAFE: Use function parameter (already set under mutex at line 1771)
+  // THREAD-SAFE: use the conn_handle parameter (already stored to conn_handle_
+  // under mutex at the top of on_connect)
   int rc = ble_gap_security_initiate(conn_handle);
   if (rc == BLE_HS_EBUSY) {
     // Peer is already initiating security - skip our retry to avoid conflicts
@@ -2719,7 +2734,7 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     // Retry security after configured delay
     if (!sec_retry_done_copy && (now - sec_init_time_copy) > TimingConfig::SEC_RETRY_DELAY_MS) {
       uint32_t elapsed = now - sec_init_time_copy;
-      ESP_LOGI(TAG, "Retrying security initiate after %u ms", elapsed);
+      ESP_LOGI(TAG, "Retrying security initiate after %" PRIu32 " ms", elapsed);
       // BUG2 FIX: Set sec_retry_done_ under mutex BEFORE calling
       // ble_gap_security_initiate(). Writing it after the BLE call is a race: a
       // NimBLE callback could fire during the call and read sec_retry_done_ as
@@ -2729,7 +2744,13 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
         sec_retry_done_ = true;
       }
       int rc = ble_gap_security_initiate(conn_handle_copy);
-      ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
+      // rc==0 (started), EALREADY/EBUSY (peer already pairing) are all benign;
+      // only a genuine error deserves a warning.
+      if (rc == 0 || rc == BLE_HS_EALREADY || rc == BLE_HS_EBUSY) {
+        ESP_LOGD(TAG, "Retry security initiate rc=%d", rc);
+      } else {
+        ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
+      }
     }
 
     // If encryption still hasn't completed after timeout, assume peer forgot
@@ -2739,13 +2760,15 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
       struct ble_gap_conn_desc d {};
       if (ble_gap_conn_find(conn_handle_copy, &d) == 0) {
         ESP_LOGW(TAG,
-                 "Encryption timeout after %u ms; clearing bond for %s to "
+                 "Encryption timeout after %" PRIu32
+                 " ms; clearing bond for %s to "
                  "force fresh pairing.",
                  TimingConfig::SEC_TIMEOUT_MS, addr_to_str(d.peer_id_addr).c_str());
         ble_store_util_delete_peer(&d.peer_id_addr);
       } else {
         ESP_LOGW(TAG,
-                 "Encryption timeout after %u ms; conn desc not found during "
+                 "Encryption timeout after %" PRIu32
+                 " ms; conn desc not found during "
                  "cleanup.",
                  TimingConfig::SEC_TIMEOUT_MS);
       }
@@ -2842,7 +2865,7 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
     irk_gave_up_ = true;
   } else {
     if ((now - enc_time_copy) > TimingConfig::ENC_GIVE_UP_AFTER_MS) {
-      ESP_LOGW(TAG, "IRK not found after %u ms post-encryption",
+      ESP_LOGW(TAG, "IRK not found after %" PRIu32 " ms post-encryption",
                TimingConfig::ENC_GIVE_UP_AFTER_MS);
       MutexGuard lock(state_mutex_);
       irk_gave_up_ = true;

@@ -9,25 +9,14 @@
 esp32:
   # NimBLE stack with ESP-IDF. Supports all ESP32 variants (ESP32, C3, C6, S3, etc.)
   # board/variant come from the device YAML.
+  # NOTE: All Bluetooth/NimBLE sdkconfig options are set by the irk_capture
+  # component itself (components/irk_capture/__init__.py) and are the single
+  # source of truth. Do NOT re-declare them here: the component applies its
+  # values after the esp32 platform, so any values set here would be silently
+  # overridden.
   framework:
     type: esp-idf
     version: recommended
-    sdkconfig_options:
-      # Enable Bluetooth and NimBLE, disable Bluedroid
-      CONFIG_BT_ENABLED: "y"
-      CONFIG_BT_BLUEDROID_ENABLED: "n"
-      CONFIG_BT_NIMBLE_ENABLED: "y"
-
-      # Roles (peripheral/broadcaster sufficient)
-      CONFIG_BT_NIMBLE_ROLE_PERIPHERAL: "y"
-      CONFIG_BT_NIMBLE_ROLE_BROADCASTER: "y"
-      CONFIG_BT_NIMBLE_ROLE_CENTRAL: "n"
-      CONFIG_BT_NIMBLE_ROLE_OBSERVER: "n"
-
-      # Security (bonding + LESC)
-      CONFIG_BT_NIMBLE_SECURITY_ENABLE: "y"
-      CONFIG_BT_NIMBLE_SM_LEGACY: "y"
-      CONFIG_BT_NIMBLE_SM_SC: "y"
 
 esphome:
   # name/friendly_name come from the device YAML.

@@ -5,7 +5,7 @@ from esphome.components import esp32
 
 DEPENDENCIES = ["esp32"]
 AUTO_LOAD = ["text_sensor", "switch", "button", "text", "select"]
-CODEOWNERS = ["@esphome"]
+CODEOWNERS = ["@DerekSeaman"]
 
 CONF_IRK_CAPTURE_ID = "irk_capture_id"
 CONF_BLE_NAME = "ble_name"
@@ -76,7 +76,14 @@ async def to_code(config):
     cg.add(var.set_continuous_mode(config[CONF_CONTINUOUS_MODE]))
     cg.add(var.set_max_captures(config[CONF_MAX_CAPTURES]))
 
-    # Enable NimBLE in ESP-IDF
+    # NimBLE / Bluetooth sdkconfig — SINGLE SOURCE OF TRUTH.
+    # These are applied after the esp32 platform processes the user's YAML
+    # sdkconfig_options, so values set here win. Do NOT also declare them in
+    # device/base YAML: a YAML value would be silently overridden by these.
+    # All four NimBLE roles are compiled in; the component only advertises and
+    # accepts connections (peripheral/broadcaster), but central/observer are
+    # left enabled to match NimBLE's default role set and avoid link-time
+    # surprises.
     esp32.add_idf_sdkconfig_option("CONFIG_BT_ENABLED", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_BLUEDROID_ENABLED", False)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_ENABLED", True)
