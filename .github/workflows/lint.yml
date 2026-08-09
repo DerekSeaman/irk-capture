@@ -65,16 +65,20 @@ jobs:
         include:
           - name: minimum / ESP32
             esphome: esphome==2026.7.4
-            config: tests/test-irk-capture.yaml
+            board: esp32dev
+            variant: esp32
           - name: latest / ESP32
             esphome: esphome
-            config: tests/test-irk-capture.yaml
+            board: esp32dev
+            variant: esp32
           - name: latest / ESP32-C3
             esphome: esphome
-            config: tests/test-irk-capture-esp32-c3.yaml
+            board: esp32-c3-devkitm-1
+            variant: esp32c3
           - name: latest / ESP32-C6
             esphome: esphome
-            config: tests/test-irk-capture-esp32-c6.yaml
+            board: esp32-c6-devkitc-1
+            variant: esp32c6
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5
@@ -87,5 +91,59 @@ jobs:
       - name: Install ESPHome
         run: python -m pip install "${{ matrix.esphome }}"
 
-      - name: Compile test configuration
-        run: esphome compile "${{ matrix.config }}"
+      # The compile config is generated here rather than committed, so the repo
+      # tree stays free of test scaffolding. It pulls the component from the
+      # checkout (external_components: local) and exercises every entity platform.
+      - name: Generate test configuration
+        run: |
+          cat > "${RUNNER_TEMP}/irk-capture-ci.yaml" <<'EOF'
+          esphome:
+            name: irk-capture-ci
+          esp32:
+            board: ${{ matrix.board }}
+            variant: ${{ matrix.variant }}
+            framework:
+              type: esp-idf
+          logger:
+          external_components:
+            - source:
+                type: local
+                path: ${{ github.workspace }}/components
+              components: [irk_capture]
+          irk_capture:
+            id: irk
+            ble_name: "IRK Test"
+          text_sensor:
+            - platform: irk_capture
+              irk_capture_id: irk
+              last_irk:
+                name: "IRK"
+              last_address:
+                name: "Device MAC"
+              effective_mac:
+                name: "Effective MAC"
+          switch:
+            - platform: irk_capture
+              irk_capture_id: irk
+              advertising:
+                name: "BLE Advertising"
+          button:
+            - platform: irk_capture
+              irk_capture_id: irk
+              new_mac:
+                name: "Generate New MAC"
+          text:
+            - platform: irk_capture
+              irk_capture_id: irk
+              ble_name:
+                name: "BLE Device Name"
+                mode: text
+          select:
+            - platform: irk_capture
+              irk_capture_id: irk
+              ble_profile:
+                name: "BLE Profile"
+          EOF
+
+      - name: Compile
+        run: esphome compile "${RUNNER_TEMP}/irk-capture-ci.yaml"
