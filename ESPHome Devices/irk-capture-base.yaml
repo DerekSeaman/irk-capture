@@ -6,6 +6,11 @@
 # esp32.variant (+ flash_size/board), api.encryption.key, ota password, and
 # wifi.ssid/password/ap. This package supplies everything else.
 
+substitutions:
+  # One ref controls both the package YAML and the nested external component.
+  # Override this only when intentionally opting into another release or main.
+  irk_capture_ref: v1.6.1
+
 esp32:
   # NimBLE stack with ESP-IDF. Supports all ESP32 variants (ESP32, C3, C6, S3, etc.)
   # board/variant come from the device YAML.
@@ -22,7 +27,7 @@ esphome:
   # name/friendly_name come from the device YAML.
   project:
     name: "derekseaman.irk-capture"
-    version: "1.6.0"
+    version: "1.6.1"
 
 # IMPORTANT: Do NOT include esp32_ble:, esp32_ble_tracker:, or bluetooth_proxy: here.
 # The irk_capture component fully initializes and manages NimBLE itself.
@@ -61,9 +66,9 @@ external_components:
   - source:
       type: git
       url: https://github.com/DerekSeaman/irk-capture
-      ref: main
+      ref: ${irk_capture_ref}
     components: [irk_capture]
-    refresh: always
+    refresh: 1d
 
 # Configure the custom IRK capture component
 irk_capture:
@@ -101,7 +106,7 @@ text_sensor:
       name: "Effective MAC"
       id: effective_mac
 
-# BLE advertising on/off (drives start/stop advertising)
+# Persistent BLE advertising intent (pauses automatically while connected)
 switch:
   - platform: irk_capture
     irk_capture_id: irk

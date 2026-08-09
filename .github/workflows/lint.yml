@@ -7,6 +7,9 @@ name: Professional Linting
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Code Quality Check
@@ -54,8 +57,21 @@ jobs:
   # Compile the component so C++ API drift, invalid code generation, or ESP-IDF
   # incompatibility fail CI (config/lint checks alone cannot catch these).
   compile:
-    name: ESPHome Compile
+    name: ESPHome Compile (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: minimum / ESP32
+            esphome: esphome==2026.7.4
+            config: tests/test-irk-capture.yaml
+          - name: latest / ESP32
+            esphome: esphome
+            config: tests/test-irk-capture.yaml
+          - name: latest / ESP32-C3
+            esphome: esphome
+            config: tests/test-irk-capture-esp32-c3.yaml
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5
@@ -66,7 +82,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install ESPHome
-        run: pip install esphome
+        run: python -m pip install "${{ matrix.esphome }}"
 
       - name: Compile test configuration
-        run: esphome compile tests/test-irk-capture.yaml
+        run: esphome compile "${{ matrix.config }}"

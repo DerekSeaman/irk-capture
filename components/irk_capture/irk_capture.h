@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <string>
 #include <vector>
@@ -34,7 +35,7 @@ class IRKCaptureComponent;
 
 // BLE advertising profile options
 enum class BLEProfile : uint8_t {
-  HEART_SENSOR = 0,  // Heart Rate Sensor (default)
+  HEART_SENSOR = 0,  // Heart Rate Sensor
   KEYBOARD = 1,      // Logitech K380 Keyboard
 };
 
@@ -148,6 +149,7 @@ class IRKCaptureComponent : public Component {
   }
   void set_start_on_boot(bool start) {
     start_on_boot_ = start;
+    advertising_requested_ = start;
   }
   void set_continuous_mode(bool enable) {
     continuous_mode_ = enable;
@@ -190,13 +192,15 @@ class IRKCaptureComponent : public Component {
   std::string get_ble_name();
   void start_advertising();
   void stop_advertising();
+  void set_advertising_requested(bool requested);
   void refresh_mac();
-  bool is_advertising();      // Thread-safe check of advertising state
-  void on_ble_host_synced();  // Called when NimBLE host is ready
+  bool is_advertising();            // Thread-safe check of actual advertising state
+  bool is_advertising_requested();  // Thread-safe check of the user's desired state
+  void on_ble_host_synced();        // Called when NimBLE host is ready
 
   // GAP events
   void on_connect(uint16_t conn_handle);
-  void on_disconnect();
+  bool on_disconnect(uint16_t conn_handle);
   // GAP event handler (static trampoline)
   static int gap_event_handler(struct ble_gap_event* event, void* arg);
 
@@ -224,7 +228,8 @@ class IRKCaptureComponent : public Component {
   uint16_t conn_handle_ { BLE_HS_CONN_HANDLE_NONE };
   uint16_t hr_char_handle_ { 0 };
   uint16_t prot_char_handle_ { 0 };
-  bool advertising_ { false };
+  bool advertising_ { false };           // Actual NimBLE advertising state
+  bool advertising_requested_ { true };  // Persistent user intent across connections
   uint32_t last_loop_ { 0 };
   uint32_t last_notify_ { 0 };
   bool connected_ { false };
@@ -234,6 +239,10 @@ class IRKCaptureComponent : public Component {
   uint32_t enc_time_ { 0 };
   bool sec_retry_done_ { false };
   uint32_t sec_init_time_ms_ { 0 };
+  bool sec_timeout_terminate_pending_ { false };
+  bool sec_timeout_bond_cleared_ { false };
+  uint8_t sec_timeout_terminate_attempts_ { 0 };
+  uint32_t sec_timeout_terminate_retry_ms_ { 0 };
   bool suppress_next_adv_ { false };  // Prevent immediate re-advertising after IRK re-publish
   uint32_t adv_restart_time_ { 0 };   // Time to auto-restart advertising after suppression
 
@@ -259,7 +268,7 @@ class IRKCaptureComponent : public Component {
     std::string mac_addr;
     uint32_t first_seen_ms;
     uint32_t last_seen_ms;
-    uint8_t capture_count;
+    uint16_t capture_count;
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
   uint32_t total_captures_ { 0 };         // Total IRKs captured this session
@@ -278,34 +287,40 @@ class IRKCaptureComponent : public Component {
   bool pending_effmac_pub_ { false };
   std::string pending_effmac_;
 
-  // Host state — written once by NimBLE task (sync_cb), read by ESPHome main
-  // task Uses std::atomic for cross-core visibility without requiring
-  // state_mutex_
+  // Host state — written by NimBLE reset/sync callbacks and read by the ESPHome
+  // main task. Atomic storage provides cross-core visibility without requiring
+  // state_mutex_.
   std::atomic<bool> host_synced_ { false };
 
-  // Timer targets and their owned peer ids. Each peer id belongs to exactly one
-  // timer and is set only when that timer is scheduled, so it stays immutable
-  // until the timer consumes it (no other path may overwrite it mid-flight).
-  struct Timers {
-    uint32_t post_disc_due_ms { 0 };
-    uint32_t late_enc_due_ms { 0 };
-    ble_addr_t post_disc_peer_id {};
-    ble_addr_t enc_peer_id {};
-  } timers_ {};
+  // Delayed bond-store reads are queued per peer so a later connection cannot
+  // overwrite an earlier peer's pending check. The queue is fixed-size to avoid
+  // runtime heap allocation on embedded targets.
+  static constexpr size_t PEER_TIMER_CAPACITY = 8;
+  struct PeerTimer {
+    uint32_t due_ms { 0 };
+    ble_addr_t peer_id {};
+  };
+  std::array<PeerTimer, PEER_TIMER_CAPACITY> post_disc_timers_ {};
+  std::array<PeerTimer, PEER_TIMER_CAPACITY> late_enc_timers_ {};
 
   // Bounded retry state for the global pairing-timeout termination path. Lets us
   // retry ble_gap_terminate() without falsely reporting the connection closed
   // while NimBLE still holds it.
   uint8_t timeout_terminate_attempts_ { 0 };
   uint32_t timeout_terminate_retry_ms_ { 0 };
+  bool timeout_terminate_pending_ { false };
+  bool timeout_bond_cleared_ { false };
+  bool timeout_cooldown_on_disconnect_ { false };
 
   // FreeRTOS mutex for thread-safe access to shared state
-  // Protects: timers_, conn_handle_, connected_, advertising_,
-  // pairing_start_time_,
+  // Protects: timer queues, conn_handle_, connected_, advertising_,
+  //           advertising_requested_,
+  //           pairing_start_time_,
   //           ble_name_, manufacturer_name_, mac_rotation_state_, pending_mac_,
   //           suppress_next_adv_, adv_restart_time_, total_captures_,
   //           irk_cache_, last_publish_time_ (deduplication state),
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
+  //           security/global timeout termination retry state,
   //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
   //           pending_adv_/pending_irk_/pending_effmac_ (deferred-publish queue)
   SemaphoreHandle_t state_mutex_ { nullptr };
@@ -318,7 +333,7 @@ class IRKCaptureComponent : public Component {
   // Internal helpers
   bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out);
   void setup_ble();
-  void register_gatt_services();
+  bool register_gatt_services();
   std::string sanitize_ble_name(const std::string& name);
 
   // IRK validation and deduplication helpers

@@ -1,6 +1,10 @@
+substitutions:
+  # Pin package YAML and component source together for reproducible builds.
+  irk_capture_ref: v1.6.1
+
 packages:
   device:
     url: https://github.com/DerekSeaman/irk-capture
-    ref: main
+    ref: ${irk_capture_ref}
     file: ESPHome Devices/irk-capture-base.yaml
-    refresh: always
+    refresh: 1d

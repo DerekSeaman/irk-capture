@@ -5,6 +5,7 @@ from esphome.components import esp32
 
 DEPENDENCIES = ["esp32"]
 AUTO_LOAD = ["text_sensor", "switch", "button", "text", "select"]
+CONFLICTS_WITH = ["esp32_ble", "esp32_ble_tracker", "bluetooth_proxy"]
 CODEOWNERS = ["@DerekSeaman"]
 
 CONF_IRK_CAPTURE_ID = "irk_capture_id"
@@ -65,6 +66,7 @@ CONFIG_SCHEMA = cv.All(
         }
     ).extend(cv.COMPONENT_SCHEMA),
     validate_continuous_mode_config,  # Cross-field validation
+    cv.only_with_framework(["esp-idf"]),
 )
 
 
@@ -94,8 +96,11 @@ async def to_code(config):
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SECURITY_ENABLE", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SM_LEGACY", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SM_SC", True)
+    # The C++ state machine intentionally owns one connection handle and one
+    # pairing session. Enforce that invariant in NimBLE as well.
+    esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_MAX_CONNECTIONS", 1)
 
     # Increase NimBLE host stack size for stability with ESP_LOG calls
     # Default: 4096 bytes. Increased to 5120 for safety margin with debug logging.
     # Stack overflow risk: ESP_LOG calls in gap_event callbacks are stack-heavy
-    esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_TASK_STACK_SIZE", 5120)
+    esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE", 5120)

@@ -56,17 +56,17 @@ The super abbreviated installation instructions are as follows:
 - Add the shown **packages:** section at the bottom
 - Connect your ESP32 device and flash it
 
-ESPHome Device builder will dynamically pull in the latest version of my IRK capture package. My blog post includes optional Seeed Studio XIAO S3, C3, C5 and C6 device profile enhancements.
+ESPHome Device Builder pulls the release pinned by `irk_capture_ref`. My blog post includes optional Seeed Studio XIAO S3, C3, C5 and C6 device profile enhancements.
 
 ![Device YAML Configuration](docs/YAML-screenshot.jpg)
 
 You can find the **packages:** content here: [irk-capture-device-remote.yaml](https://github.com/DerekSeaman/irk-capture/blob/main/ESPHome%20Devices/irk-capture-device-remote.yaml)
 
-> **Note on updates and pinning:** the default `ref: main` with `refresh: always`
-> means every clean build pulls the latest code from this repository, so you
-> always get fixes automatically. If you prefer reproducible builds (recommended
-> for security-sensitive deployments), change `ref: main` to a released tag such
-> as `ref: v1.6.0` — the build will then stay pinned until you bump it yourself.
+> **Note on updates and pinning:** `irk_capture_ref` defaults to the `v1.6.1`
+> release and controls both the package YAML and nested component source, so
+> clean builds are reproducible. Bump that single substitution when adopting a
+> newer release. To opt into unreleased changes, set it to `main`; this is less
+> reproducible and is not recommended for security-sensitive deployments.
 
 ## Usage Instructions
 
@@ -84,8 +84,8 @@ After flashing and connecting to Home Assistant, the following entities will be 
 
 | Entity | Type | Description |
 | :--- | :--- | :--- |
-| **BLE Advertising** | Switch | Turn Bluetooth advertising on/off (starts ON by default) |
-| **BLE Device Name** | Text Input | Change the advertised Bluetooth name (default: "IRK Capture") |
+| **BLE Advertising** | Switch | Keep Bluetooth advertising enabled between connections (starts ON by default) |
+| **BLE Device Name** | Text Input | Change the Heart Sensor profile name (default: "IRK Capture"); Keyboard is fixed to "Logitech K380" |
 | **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple) or "Keyboard" (Android). Changing profiles triggers a reboot. |
 | **Generate New MAC** | Button | Generate a new random MAC address for the ESP32 |
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
