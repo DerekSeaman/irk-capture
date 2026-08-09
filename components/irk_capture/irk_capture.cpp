@@ -1449,6 +1449,31 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
       return 0;
 #endif
 
+#ifdef BLE_GAP_EVENT_PARING_COMPLETE
+    case BLE_GAP_EVENT_PARING_COMPLETE:
+      // NimBLE intentionally emits this before persisting keys and before the
+      // ENC_CHANGE callback. Keep it diagnostic-only so ENC_CHANGE remains the
+      // single owner of IRK capture, failure cleanup, and termination.
+      if (ev->pairing_complete.status == 0) {
+        ESP_LOGD(TAG, "Pairing complete: handle=%u", ev->pairing_complete.conn_handle);
+      } else {
+        ESP_LOGW(TAG, "Pairing failed: handle=%u status=%d (0x%X)",
+                 ev->pairing_complete.conn_handle, ev->pairing_complete.status,
+                 ev->pairing_complete.status);
+      }
+      return 0;
+#endif
+
+#ifdef BLE_GAP_EVENT_DATA_LEN_CHG
+    case BLE_GAP_EVENT_DATA_LEN_CHG:
+      // Routine controller negotiation; useful only for deep diagnostics.
+      ESP_LOGV(TAG, "Data length changed: handle=%u tx=%u/%uus rx=%u/%uus",
+               ev->data_len_chg.conn_handle, ev->data_len_chg.max_tx_octets,
+               ev->data_len_chg.max_tx_time, ev->data_len_chg.max_rx_octets,
+               ev->data_len_chg.max_rx_time);
+      return 0;
+#endif
+
 #ifdef BLE_GAP_EVENT_PHY_UPDATE_COMPLETE
     case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
       // PHY layer updated (normal)
