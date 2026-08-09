@@ -18,11 +18,9 @@ esp32:
     type: esp-idf
     version: recommended
 
-esphome:
-  # name/friendly_name come from the device YAML.
-  project:
-    name: "derekseaman.irk-capture"
-    version: "1.6.1"
+# esphome.name / friendly_name come from the device YAML. No esphome.project is
+# set here on purpose: a hardcoded project version shows as a stale firmware
+# version in Home Assistant, and this component tracks main rather than releases.
 
 # IMPORTANT: Do NOT include esp32_ble:, esp32_ble_tracker:, or bluetooth_proxy: here.
 # The irk_capture component fully initializes and manages NimBLE itself.
