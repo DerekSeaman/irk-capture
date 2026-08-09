@@ -209,9 +209,9 @@ Below is a sample log showing a successful IRK capture:
 [16:15:16.669][I][irk_capture:368][nimble_host]: peer id =A1:B2:C3:D4:E5:F6 type=0
 [16:15:16.669][D][irk_capture:372][nimble_host]: conn params: interval=24 latency=0 supervision_timeout=500
 [16:15:16.672][D][irk_capture:376][nimble_host]: role=slave our_ota=C0:FF:EE:12:34:56
-[16:15:16.685][D][irk_capture:1856][nimble_host]: Peer unbonded and no cached bond (ENOENT) - will pair fresh
 [16:15:18.724][I][irk_capture:2105]: Retrying security initiate after 2050 ms
 [16:15:18.727][D][irk_capture:2107]: Retry security initiate rc=2
+[16:15:19.117][D][irk_capture:1458][nimble_host]: Pairing complete: handle=0
 [16:15:19.121][D][irk_capture:1195][nimble_host]: Peer identity resolved using IRK
 [16:15:19.121][I][irk_capture:988][nimble_host]: ENC_CHANGE status=0 (0x00)
 [16:15:19.121][I][irk_capture:1045][nimble_host]: Encryption established; attempting immediate IRK capture

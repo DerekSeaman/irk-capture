@@ -1337,8 +1337,8 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
  * @param self Pointer to IRKCaptureComponent instance (unused, but kept for
  * consistency)
  * @param ev GAP event structure containing repeat pairing details
- * @return BLE_GAP_REPEAT_PAIRING_RETRY (instructs NimBLE to delete bond and
- * retry pairing)
+ * @return BLE_GAP_REPEAT_PAIRING_RETRY after a successful stale-bond deletion;
+ * BLE_GAP_REPEAT_PAIRING_IGNORE if recovery cannot be prepared safely
  *
  * This event occurs when a peer device has forgotten our bond but we still have
  * theirs stored. We delete our stale bond data and return RETRY to allow NimBLE
@@ -1346,22 +1346,28 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
  * bond states between devices.
  */
 int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* ev) {
+  (void) self;
   // Portable: get the current connection descriptor from the handle
   struct ble_gap_conn_desc d {};
   int rc = ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d);
   if (rc == 0) {
     const ble_addr_t* peer = &d.peer_id_addr;
     ESP_LOGW(TAG,
-             "Repeat pairing from %02X:%02X:%02X:%02X:%02X:%02X (clearing all "
-             "bond data)",
+             "Repeat pairing from %02X:%02X:%02X:%02X:%02X:%02X (clearing "
+             "stale peer bond)",
              peer->val[5], peer->val[4], peer->val[3], peer->val[2], peer->val[1], peer->val[0]);
-    // Delete ALL stored data for this peer to allow fresh pairing
-    ble_store_util_delete_peer(peer);
+    // NimBLE requires the application to delete the old bond before returning
+    // RETRY. Returning RETRY after a failed delete would just re-enter the same
+    // repeat-pairing check and can strand the peer in a timeout loop.
+    int delete_rc = ble_store_util_delete_peer(peer);
+    if (delete_rc == 0 || delete_rc == BLE_HS_ENOENT) {
+      return BLE_GAP_REPEAT_PAIRING_RETRY;
+    }
+    ESP_LOGE(TAG, "Repeat pairing: stale bond delete failed rc=%d", delete_rc);
   } else {
     ESP_LOGW(TAG, "Repeat pairing: conn desc not found rc=%d", rc);
   }
-  return BLE_GAP_REPEAT_PAIRING_RETRY;  // Tell NimBLE to retry pairing with
-                                        // clean slate
+  return BLE_GAP_REPEAT_PAIRING_IGNORE;
 }
 
 //======================== GAP event handler (dispatcher)
@@ -1471,6 +1477,20 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
                ev->data_len_chg.conn_handle, ev->data_len_chg.max_tx_octets,
                ev->data_len_chg.max_tx_time, ev->data_len_chg.max_rx_octets,
                ev->data_len_chg.max_rx_time);
+      return 0;
+#endif
+
+#ifdef BLE_GAP_EVENT_LINK_ESTAB
+    case BLE_GAP_EVENT_LINK_ESTAB:
+      // ESP-IDF emits this after CONNECT once link-layer synchronization is
+      // final. A successful event is routine; a failure is followed by the
+      // normal disconnect path, which owns connection-state cleanup.
+      if (ev->link_estab.status == 0) {
+        ESP_LOGV(TAG, "Link established: handle=%u", ev->link_estab.conn_handle);
+      } else {
+        ESP_LOGW(TAG, "Link establishment failed: handle=%u status=%d (0x%X)",
+                 ev->link_estab.conn_handle, ev->link_estab.status, ev->link_estab.status);
+      }
       return 0;
 #endif
 
@@ -2753,60 +2773,13 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   log_conn_desc(conn_handle);
   log_sm_config();
 
-  // Inspect the connection descriptor for bond-state mismatch handling. The
-  // post-disconnect timer owns its own peer id (set at disconnect time), so
-  // nothing is cached here.
-  struct ble_gap_conn_desc d;
-  if (ble_gap_conn_find(conn_handle, &d) == 0) {
-    // Check for bond state mismatch: peer thinks it's unbonded but we have bond
-    // data
-    if (!d.sec_state.bonded) {
-      struct ble_store_key_sec key {};
-      key.peer_addr = d.peer_id_addr;
-      struct ble_store_value_sec bond {};
-      int rc = ble_store_read_peer_sec(&key, &bond);
-      if (rc == BLE_HS_ENOENT) {
-        ESP_LOGD(TAG, "Peer unbonded and no cached bond (ENOENT) - will pair fresh");
-      } else if (rc != 0) {
-        ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d during bond mismatch check", rc);
-      } else if (bond.irk_present && is_valid_irk(bond.irk)) {
-        // BUG7 FIX: Use publish_and_log_irk() instead of
-        // publish_irk_to_sensors() directly. The direct call bypassed
-        // deduplication, rate limiting (60s MIN_REPUBLISH_INTERVAL_MS), and the
-        // total_captures_ counter. A device repeatedly hitting this path would
-        // spam Home Assistant without any throttling. publish_and_log_irk()
-        // applies all guards.
-        std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
-        publish_and_log_irk(this, d.peer_id_addr, irk_hex, "RECONNECT_EXISTING");
-        // Set flag to prevent immediate re-advertising (break the reconnect
-        // loop) THREAD-SAFE: Suppression flag write must be protected
-        {
-          MutexGuard lock(state_mutex_);
-          suppress_next_adv_ = true;
-        }
-        // Disconnect since we already have what we need
-        // THREAD-SAFE: use the conn_handle parameter (already stored to
-        // conn_handle_ under mutex at the top of on_connect)
-        int term_rc;
-        {
-          BleOpGuard ble_lock(ble_op_mutex_);
-          term_rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-        }
-        if (term_rc != 0) {
-          ESP_LOGW(TAG, "ble_gap_terminate after IRK re-publish rc=%d", term_rc);
-        }
-        return;  // Don't initiate security, we're done
-      } else {
-        // No IRK in bond - delete and try fresh pairing
-        ESP_LOGW(TAG,
-                 "Peer unbonded but we have cached bond without IRK. Clearing "
-                 "to force fresh pairing.");
-        ble_store_util_delete_peer(&d.peer_id_addr);
-      }
-    }
-  } else {
-    ESP_LOGD(TAG, "on_connect: ble_gap_conn_find failed; skipping bond-mismatch check");
-  }
+  // Do not infer the peer's bond knowledge from sec_state.bonded here. On a
+  // newly connected, unencrypted link NimBLE normally reports bonded=0 even
+  // when our store contains the peer's old bond. Short-circuiting on that flag
+  // used to terminate the link before a peer that forgot us could send its
+  // fresh pairing request. Always enter normal security negotiation; if the
+  // peer requests pairing while our old bond exists, REPEAT_PAIRING deletes
+  // that stale peer bond and lets NimBLE retry cleanly.
 
   // Proactively initiate pairing; peer should show pairing dialog now
   // THREAD-SAFE: use the conn_handle parameter (already stored to conn_handle_
