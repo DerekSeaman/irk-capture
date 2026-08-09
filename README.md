@@ -56,17 +56,11 @@ The super abbreviated installation instructions are as follows:
 - Add the shown **packages:** section at the bottom
 - Connect your ESP32 device and flash it
 
-ESPHome Device Builder pulls the release pinned by `irk_capture_ref`. My blog post includes optional Seeed Studio XIAO S3, C3, C5 and C6 device profile enhancements.
+ESPHome Device Builder pulls the package and component from the `main` branch, so clean builds always get the latest version. My blog post includes optional Seeed Studio XIAO S3, C3, C5 and C6 device profile enhancements.
 
 ![Device YAML Configuration](docs/YAML-screenshot.jpg)
 
 You can find the **packages:** content here: [irk-capture-device-remote.yaml](https://github.com/DerekSeaman/irk-capture/blob/main/ESPHome%20Devices/irk-capture-device-remote.yaml)
-
-> **Note on updates and pinning:** `irk_capture_ref` defaults to the `v1.6.1`
-> release and controls both the package YAML and nested component source, so
-> clean builds are reproducible. Bump that single substitution when adopting a
-> newer release. To opt into unreleased changes, set it to `main`; this is less
-> reproducible and is not recommended for security-sensitive deployments.
 
 ## Usage Instructions
 
