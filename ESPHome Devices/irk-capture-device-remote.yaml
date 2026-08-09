@@ -1,6 +1,8 @@
+# TEMPORARY (device testing): ref points at 'dev'. REVERT to 'main' before
+# merging/pushing to main.
 packages:
   device:
     url: https://github.com/DerekSeaman/irk-capture
-    ref: main
+    ref: dev
     file: ESPHome Devices/irk-capture-base.yaml
     refresh: always
