@@ -35,20 +35,21 @@ def validate_continuous_mode_config(config):
     continuous_mode = config.get(CONF_CONTINUOUS_MODE, True)
     max_captures = config.get(CONF_MAX_CAPTURES, 10)
 
-    # Configuration conflict: continuous_mode=false with max_captures>1
-    if not continuous_mode and max_captures > 1:
+    # Single-capture mode always stops after one publication, so values other
+    # than 1 would misrepresent the runtime behavior (including 0="unlimited").
+    if not continuous_mode and max_captures != 1:
         raise cv.Invalid(
             f"Configuration conflict: continuous_mode=false with max_captures={max_captures}. "
-            f"To capture multiple devices, set continuous_mode=true. "
-            f"For single capture, set max_captures=1."
+            f"To capture multiple unique devices, set continuous_mode=true. "
+            f"For one device, set max_captures=1."
         )
 
     # Warning for unlimited mode
-    if max_captures == 0:
+    if continuous_mode and max_captures == 0:
         import logging
 
         logging.getLogger(__name__).warning(
-            "max_captures=0 enables unlimited capture mode (no auto-stop). "
+            "max_captures=0 enables unlimited unique-device capture mode (no auto-stop). "
             "This is not recommended for production. Set a specific limit (e.g., max_captures=5)."
         )
 

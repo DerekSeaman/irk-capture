@@ -105,7 +105,8 @@ int handle_gap_disconnect(class IRKCaptureComponent* self, struct ble_gap_event*
 int handle_gap_enc_change(class IRKCaptureComponent* self, struct ble_gap_event* ev);
 int handle_gap_repeat_pairing(class IRKCaptureComponent* self, struct ble_gap_event* ev);
 void publish_and_log_irk(class IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
-                         const std::string& irk_hex, const char* context_tag);
+                         const std::string& irk_hex, const char* context_tag,
+                         uint32_t connection_generation);
 
 // Main component
 class IRKCaptureComponent : public Component {
@@ -131,7 +132,8 @@ class IRKCaptureComponent : public Component {
   friend int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
-                                  const std::string& irk_hex, const char* context_tag);
+                                  const std::string& irk_hex, const char* context_tag,
+                                  uint32_t connection_generation);
 
   // Friend declarations for GATT callback functions (access protected members)
   friend int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle,
@@ -214,7 +216,7 @@ class IRKCaptureComponent : public Component {
   std::string manufacturer_name_ { "ESPresense" };  // BLE Device Info manufacturer
   bool start_on_boot_ { true };
   bool continuous_mode_ { true };  // Keep advertising after captures
-  uint8_t max_captures_ { 10 };    // Max captures (0=unlimited)
+  uint8_t max_captures_ { 10 };    // Max unique devices (0=unlimited)
   text_sensor::TextSensor* irk_sensor_ { nullptr };
   text_sensor::TextSensor* address_sensor_ { nullptr };
   text_sensor::TextSensor* effective_mac_sensor_ { nullptr };
@@ -233,6 +235,9 @@ class IRKCaptureComponent : public Component {
   uint32_t last_loop_ { 0 };
   uint32_t last_notify_ { 0 };
   bool connected_ { false };
+  uint32_t connection_generation_ { 0 };  // Monotonic ID for coalescing capture paths
+  uint32_t pairing_generation_ { 0 };     // Generation that started without a cached bond
+  uint32_t repair_generation_ { 0 };      // Generation authorized by REPEAT_PAIRING
 
   // Security/pairing state
   bool enc_ready_ { false };
@@ -266,13 +271,17 @@ class IRKCaptureComponent : public Component {
   struct IRKCacheEntry {
     std::string irk_hex;
     std::string mac_addr;
+    uint8_t addr_type;
     uint32_t first_seen_ms;
     uint32_t last_seen_ms;
-    uint16_t capture_count;
+    uint32_t last_published_ms;
+    uint32_t last_observed_generation;
+    uint16_t reconnect_count;
+    bool reconnect_limit_reported;
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
-  uint32_t total_captures_ { 0 };         // Total IRKs captured this session
-  uint32_t last_publish_time_ { 0 };      // Last IRK publish timestamp
+  uint32_t capture_events_ { 0 };         // IRK publications this session
+  uint32_t unique_devices_ { 0 };         // New identity addresses this session
   uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
 
   // Deferred entity publishing. ESPHome entity publish_state() is not safe to
@@ -299,6 +308,7 @@ class IRKCaptureComponent : public Component {
   struct PeerTimer {
     uint32_t due_ms { 0 };
     ble_addr_t peer_id {};
+    uint32_t connection_generation { 0 };
   };
   std::array<PeerTimer, PEER_TIMER_CAPACITY> post_disc_timers_ {};
   std::array<PeerTimer, PEER_TIMER_CAPACITY> late_enc_timers_ {};
@@ -317,8 +327,9 @@ class IRKCaptureComponent : public Component {
   //           advertising_requested_,
   //           pairing_start_time_,
   //           ble_name_, manufacturer_name_, mac_rotation_state_, pending_mac_,
-  //           suppress_next_adv_, adv_restart_time_, total_captures_,
-  //           irk_cache_, last_publish_time_ (deduplication state),
+  //           suppress_next_adv_, adv_restart_time_, capture_events_,
+  //           unique_devices_, irk_cache_ (deduplication state),
+  //           connection_generation_, pairing_generation_, repair_generation_,
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
   //           security/global timeout termination retry state,
   //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
@@ -338,12 +349,14 @@ class IRKCaptureComponent : public Component {
 
   // IRK validation and deduplication helpers
   bool is_valid_irk(const uint8_t irk[16]);
-  bool should_publish_irk(const std::string& irk_hex, const std::string& addr,
-                          bool& out_should_stop_adv);
+  bool should_publish_irk(const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
+                          uint32_t connection_generation, bool force_pairing_publish,
+                          bool& out_should_stop_adv, bool& out_is_new_device,
+                          bool& out_limit_just_reached);
 
   // Timer handlers
-  void schedule_post_disconnect_check(const ble_addr_t& peer_id);
-  void schedule_late_enc_check(const ble_addr_t& peer_id);
+  void schedule_post_disconnect_check(const ble_addr_t& peer_id, uint32_t connection_generation);
+  void schedule_late_enc_check(const ble_addr_t& peer_id, uint32_t connection_generation);
   void handle_post_disconnect_timer(uint32_t now);
   void handle_late_enc_timer(uint32_t now);
 

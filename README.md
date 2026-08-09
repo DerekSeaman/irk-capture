@@ -215,12 +215,13 @@ Below is a sample log showing a successful IRK capture:
 [16:15:19.121][D][irk_capture:1195][nimble_host]: Peer identity resolved using IRK
 [16:15:19.121][I][irk_capture:988][nimble_host]: ENC_CHANGE status=0 (0x00)
 [16:15:19.121][I][irk_capture:1045][nimble_host]: Encryption established; attempting immediate IRK capture
-[16:15:19.121][I][irk_capture:522][nimble_host]: Re-publishing IRK (capture #2/5)
+[16:15:19.121][I][irk_capture:522][nimble_host]: Pairing completed; publishing IRK again
 [16:15:19.121][I][irk_capture:425][nimble_host]:
-[16:15:19.121][I][irk_capture:428][nimble_host]: *** IRK CAPTURED *** (ENC_CHANGE)
+[16:15:19.121][I][irk_capture:428][nimble_host]: *** IRK CAPTURED *** (REPAIR)
 [16:15:19.121][I][irk_capture:607][nimble_host]: Identity Address: A1:B2:C3:D4:E5:F6
 [16:15:19.121][I][irk_capture:608][nimble_host]: IRK: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
-[16:15:19.121][I][irk_capture:609][nimble_host]: Total captures this session: 2
+[16:15:19.121][I][irk_capture:609][nimble_host]: Capture events this session: 2
+[16:15:19.121][I][irk_capture:610][nimble_host]: Unique devices this session: 1
 [16:15:19.121][I][irk_capture:425][nimble_host]:
 [16:15:19.211][I][irk_capture:893][nimble_host]: Disconnect reason=534 (0x216)
 [16:15:19.211][I][irk_capture:1932][nimble_host]: Disconnected

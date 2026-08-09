@@ -54,7 +54,7 @@ button, text)
 THREAD SAFETY RULES:
 -    ALL reads/writes to shared state MUST use state_mutex_
 -    Protected by state_mutex_ (FreeRTOS mutex):
-     * post_disc_timers_ / late_enc_timers_ (queued timer targets and peer ids)
+     * post_disc_timers_ / late_enc_timers_ (queued timer targets, peers, and generations)
      * conn_handle_ (connection handle)
      * connected_ (connection state flag)
      * advertising_ (advertising state flag)
@@ -65,9 +65,10 @@ THREAD SAFETY RULES:
      * pending_mac_ (6-byte pre-generated MAC buffer)
      * suppress_next_adv_ (advertising suppression flag)
      * adv_restart_time_ (advertising restart timer)
-     * total_captures_ (session IRK counter - NOT atomic)
+     * capture_events_ / unique_devices_ (session counters - NOT atomic)
      * irk_cache_ (deduplication vector - push_back/erase NOT thread-safe)
-     * last_publish_time_ (rate limiting timestamp)
+     * connection_generation_ / pairing_generation_ / repair_generation_
+       (capture coalescing state)
      * enc_ready_, enc_time_ (encryption/pairing completion state)
      * sec_retry_done_, sec_init_time_ms_ (security retry state)
      * irk_gave_up_, irk_last_try_ms_ (IRK polling state)
@@ -534,65 +535,108 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
  * @brief Checks if IRK should be published (deduplication + rate limiting)
  *
  * CRITICAL: Caller MUST hold state_mutex_ before calling this function.
- * This function modifies irk_cache_, last_publish_time_, and reads
- * advertising_.
+ * This function modifies irk_cache_.
  *
  * MEMORY SAFETY: This function prevents duplicate entries in irk_cache_ by
- * checking if the IRK already exists before adding. Even if the same device
- * reconnects 100 times, it will only have ONE entry in the cache (updated
- * in-place). Cache cap derived from max(max_captures_, 10) prevents unbounded
- * memory growth on ESP32-C3.
+ * checking if the identity address already exists before adding. Even if the
+ * same device reconnects 100 times, it will only have ONE entry in the cache
+ * (updated in-place). Cache cap derived from max(max_captures_, 10) prevents
+ * unbounded memory growth on ESP32-C3.
  *
  * @param irk_hex IRK in hex string format
  * @param addr MAC address string
+ * @param addr_type NimBLE identity-address type
+ * @param connection_generation Monotonic connection identifier used to coalesce
+ * extraction paths from the same connection
+ * @param force_pairing_publish True for an explicit pairing or REPEAT_PAIRING;
+ * bypasses rate limiting
  * @param out_should_stop_adv [out] Set to true if caller should stop
  * advertising (limit reached)
+ * @param out_is_new_device [out] True when a new identity address was cached
+ * @param out_limit_just_reached [out] True only on the first over-limit reconnect
  * @return true if should publish, false if duplicate/rate-limited
  */
 bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const std::string& addr,
-                                             bool& out_should_stop_adv) {
+                                             uint8_t addr_type, uint32_t connection_generation,
+                                             bool force_pairing_publish, bool& out_should_stop_adv,
+                                             bool& out_is_new_device,
+                                             bool& out_limit_just_reached) {
   // PRECONDITION: Caller holds state_mutex_
-  out_should_stop_adv = false;  // Default: don't stop advertising
+  out_should_stop_adv = false;
+  out_is_new_device = false;
+  out_limit_just_reached = false;
   uint32_t now = now_ms();
 
-  // Check cache for duplicate - prevents memory bloat from repeated connections
-  // SAFETY: If found, we update the existing entry in-place (no new allocation)
+  // Identity address, rather than IRK, defines a unique device. A legitimate
+  // re-pair can rotate the IRK without becoming a second device.
   for (auto& entry : irk_cache_) {
-    if (entry.irk_hex == irk_hex && entry.mac_addr == addr) {
-      // Same device reconnecting - update existing entry, don't create new one
+    if (entry.mac_addr == addr && entry.addr_type == addr_type) {
+      // ENC_CHANGE, DISCONNECT, and delayed polling can all find the same IRK.
+      // Count the connection once and silently coalesce the remaining paths.
+      if (connection_generation != 0) {
+        if (entry.last_observed_generation == connection_generation) {
+          return false;
+        }
+        // A delayed timer from an older connection must not move the cache back
+        // to an earlier generation or count as another reconnect.
+        if (entry.last_observed_generation != 0 &&
+            static_cast<int32_t>(connection_generation - entry.last_observed_generation) < 0) {
+          return false;
+        }
+        entry.last_observed_generation = connection_generation;
+      }
+
       entry.last_seen_ms = now;
-      if (entry.capture_count < std::numeric_limits<uint16_t>::max()) {
-        entry.capture_count++;
+
+      // A changed IRK for a known identity is security-significant and should
+      // always be shown, but it is still the same unique device.
+      if (entry.irk_hex != irk_hex) {
+        entry.irk_hex = irk_hex;
+        entry.reconnect_count = 0;
+        entry.reconnect_limit_reported = false;
+        entry.last_published_ms = now;
+        ESP_LOGI(TAG, "IRK updated for known identity %s", addr.c_str());
+        return true;
       }
 
-      // SESSION LIMIT: Prevent unbounded memory growth from background
-      // reconnections iOS devices reconnect every 15min → 96 times/day → heap
-      // fragmentation
-      if (entry.capture_count > 5) {
-        ESP_LOGW(TAG,
-                 "IRK republish limit reached (%u captures). Device keeps "
-                 "reconnecting - "
-                 "unpair from Bluetooth settings to stop.",
-                 entry.capture_count);
+      // A fresh pairing or REPEAT_PAIRING is an explicit user action. Always
+      // surface its IRK, even when unchanged and inside the normal interval.
+      if (force_pairing_publish) {
+        entry.reconnect_count = 0;
+        entry.reconnect_limit_reported = false;
+        entry.last_published_ms = now;
+        ESP_LOGI(TAG, "Pairing completed; publishing IRK again");
+        return true;
+      }
 
-        // Signal caller to break the reconnection loop unconditionally. This
-        // must NOT be gated on advertising_: captures happen while connected or
-        // just-disconnected, when advertising_ is already false, so gating here
-        // would silently disable the defense. The caller uses this to set
-        // suppress_next_adv_ (and stop advertising if it happens to be active).
+      if (entry.reconnect_count < std::numeric_limits<uint16_t>::max()) {
+        entry.reconnect_count++;
+      }
+
+      // Count reconnecting connections, not the number of extraction paths.
+      if (entry.reconnect_count > 5) {
+        if (!entry.reconnect_limit_reported) {
+          ESP_LOGW(TAG,
+                   "Reconnect limit reached (%u connections). Device keeps reconnecting; "
+                   "unpair from Bluetooth settings to stop.",
+                   entry.reconnect_count);
+          entry.reconnect_limit_reported = true;
+          out_limit_just_reached = true;
+        }
         out_should_stop_adv = true;
-        return false;  // Don't republish - prevents heap fragmentation
-      }
-
-      // Rate limit republishing to Home Assistant (60s minimum)
-      if ((now - last_publish_time_) < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
-        ESP_LOGD(TAG, "Suppressing duplicate IRK (published %" PRIu32 " ms ago)",
-                 now - last_publish_time_);
         return false;
       }
 
-      ESP_LOGI(TAG, "Re-publishing IRK (capture #%u/5)", entry.capture_count);
-      last_publish_time_ = now;
+      // Rate limit ordinary bonded reconnects per device. This is intentionally
+      // verbose-only: routine suppression should not dominate debug logs.
+      if ((now - entry.last_published_ms) < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
+        ESP_LOGV(TAG, "Suppressing bonded reconnect IRK (published %" PRIu32 " ms ago)",
+                 now - entry.last_published_ms);
+        return false;
+      }
+
+      ESP_LOGI(TAG, "Re-publishing IRK after bonded reconnect (%u/5)", entry.reconnect_count);
+      entry.last_published_ms = now;
       return true;
     }
   }
@@ -607,8 +651,9 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
     ESP_LOGD(TAG, "IRK cache full (%zu entries), evicting oldest entry", cache_limit);
     irk_cache_.erase(irk_cache_.begin());
   }
-  irk_cache_.push_back({ irk_hex, addr, now, now, 1 });
-  last_publish_time_ = now;
+  irk_cache_.push_back(
+      { irk_hex, addr, addr_type, now, now, now, connection_generation, 0, false });
+  out_is_new_device = true;
   ESP_LOGD(TAG, "New IRK added to cache (total: %zu/%zu)", irk_cache_.size(), cache_limit);
   return true;
 }
@@ -625,13 +670,15 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
  * compatibility)
  * @param context_tag Context label for logging (e.g., "ENC_IMMEDIATE",
  * "DISC_IMMEDIATE", "POLL_CONNECTED")
+ * @param connection_generation Monotonic connection identifier
  *
  * This is the single point of IRK output, ensuring consistent formatting across
  * all capture paths. Called from multiple locations: ENC_CHANGE, DISCONNECT,
  * post-disconnect timer, polling loop.
  */
 void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
-                         const std::string& irk_hex, const char* context_tag) {
+                         const std::string& irk_hex, const char* context_tag,
+                         uint32_t connection_generation) {
   if (!self) return;  // Early return if no component instance
 
   const std::string addr_str = addr_to_str(peer_id_addr);
@@ -640,34 +687,59 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   // CRITICAL: should_publish_irk() assumes caller holds mutex (non-recursive
   // mutex!) All irk_cache_ operations, counter increments, and advertising
   // checks happen atomically
-  uint32_t current_captures;
+  uint32_t current_events = 0;
+  uint32_t current_unique = 0;
   bool max_reached = false;
   bool should_publish;
-  bool should_stop_adv = false;  // Output from deduplication check
+  bool should_stop_adv = false;
+  bool is_new_device = false;
+  bool limit_just_reached = false;
+  bool force_pairing_publish = false;
+  bool is_repair = false;
   {
     MutexGuard lock(self->state_mutex_);
 
-    // Deduplication check (modifies irk_cache_ and last_publish_time_)
-    // PRECONDITION: We hold state_mutex_ - safe to call should_publish_irk()
-    should_publish = self->should_publish_irk(irk_hex, addr_str, should_stop_adv);
+    force_pairing_publish =
+        connection_generation != 0 && self->pairing_generation_ == connection_generation;
+    is_repair = connection_generation != 0 && self->repair_generation_ == connection_generation;
+
+    // A valid observation makes delayed fallback reads for this connection
+    // redundant. Cancel them before they can create log or counter noise.
+    for (auto& timer : self->post_disc_timers_) {
+      if (timer.due_ms != 0 && timer.connection_generation == connection_generation &&
+          addr_equal(timer.peer_id, peer_id_addr)) {
+        timer = {};
+      }
+    }
+    for (auto& timer : self->late_enc_timers_) {
+      if (timer.due_ms != 0 && timer.connection_generation == connection_generation &&
+          addr_equal(timer.peer_id, peer_id_addr)) {
+        timer = {};
+      }
+    }
+
+    should_publish = self->should_publish_irk(irk_hex, addr_str, peer_id_addr.type,
+                                              connection_generation, force_pairing_publish,
+                                              should_stop_adv, is_new_device, limit_just_reached);
 
     if (should_publish) {
-      // Increment counter (read-modify-write race without mutex)
-      self->total_captures_++;
-      current_captures = self->total_captures_;
+      self->capture_events_++;
+      if (is_new_device) {
+        self->unique_devices_++;
+      }
+      current_events = self->capture_events_;
+      current_unique = self->unique_devices_;
 
-      // Check if max captures reached
-      // Stop advertising if:
-      // 1. continuous_mode is false (single capture mode), OR
-      // 2. continuous_mode is true AND max_captures > 0 AND we've hit the limit
+      // max_captures limits unique devices. Re-pairing the same device remains
+      // visible without consuming another slot.
       if (!self->continuous_mode_ ||
-          (self->max_captures_ > 0 && self->total_captures_ >= self->max_captures_)) {
+          (self->max_captures_ > 0 && self->unique_devices_ >= self->max_captures_)) {
         max_reached = true;
       }
     }
   }  // Release mutex before slow logging/publishing operations
 
-  // Handle auto-stop advertising due to reconnect-loop defense (capture_count > 5)
+  // Handle auto-stop advertising due to reconnect-loop defense.
   // Set suppress flag BEFORE checking is_advertising(): when called from
   // handle_gap_disconnect(), advertising_ is already false (cleared on connect
   // and on disconnect), so is_advertising() returns false. But the disconnect
@@ -686,9 +758,10 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     if (self->is_advertising()) {
       self->stop_advertising();
     }
-    // Neutral wording: the disconnect handler may auto-resume advertising after
-    // a short cooldown, while a stop from a delayed-timer path may stay off.
-    ESP_LOGI(TAG, "Reconnect limit reached; suppressing advertising to break the reconnect loop.");
+    if (limit_just_reached) {
+      ESP_LOGI(TAG,
+               "Reconnect limit reached; suppressing advertising to break the reconnect loop.");
+    }
   }
 
   // Skip publishing duplicate (deduplication happened under mutex)
@@ -697,15 +770,16 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   }
 
   log_spacer();
-  log_banner(context_tag);
+  log_banner(is_repair ? "REPAIR" : context_tag);
   ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
   ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
-  ESP_LOGI(TAG, "Total captures this session: %" PRIu32, current_captures);
+  ESP_LOGI(TAG, "Capture events this session: %" PRIu32, current_events);
+  ESP_LOGI(TAG, "Unique devices this session: %" PRIu32, current_unique);
   if (max_reached) {
     if (!self->continuous_mode_) {
       ESP_LOGI(TAG, "Single capture mode: advertising will stop after disconnect");
     } else {
-      ESP_LOGI(TAG, "Max captures (%u) reached - advertising will stop after disconnect",
+      ESP_LOGI(TAG, "Max unique devices (%u) reached - advertising will stop after disconnect",
                self->max_captures_);
     }
   }
@@ -1099,33 +1173,57 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   // descriptor). The post-disconnect timer's peer is set by
   // schedule_post_disconnect_check() below, so no separate cache is needed here.
   const struct ble_gap_conn_desc& d = ev->disconnect.conn;
+  uint32_t connection_generation = 0;
+  bool already_observed = false;
+  {
+    MutexGuard lock(self->state_mutex_);
+    if (self->connected_ && self->conn_handle_ == d.conn_handle) {
+      connection_generation = self->connection_generation_;
+      const std::string peer_addr = addr_to_str(d.peer_id_addr);
+      for (const auto& entry : self->irk_cache_) {
+        if (entry.mac_addr == peer_addr && entry.addr_type == d.peer_id_addr.type &&
+            entry.last_observed_generation == connection_generation) {
+          already_observed = true;
+          break;
+        }
+      }
+    }
+  }
   if (!self->on_disconnect(d.conn_handle)) {
     ESP_LOGW(TAG, "Ignoring disconnect for non-active handle=%u", d.conn_handle);
     return 0;
   }
 
-  struct ble_store_value_sec bond {};
-  struct ble_store_key_sec key {};
-  key.peer_addr = d.peer_id_addr;
-  int rc = ble_store_read_peer_sec(&key, &bond);
-  if (rc == BLE_HS_ENOENT) {
-    ESP_LOGD(TAG, "No bond for peer (ENOENT)");
-  } else if (rc != 0) {
-    ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d", rc);
-  } else if (bond.irk_present && self->is_valid_irk(bond.irk)) {
-    std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
-    publish_and_log_irk(self, d.peer_id_addr, irk_hex, "DISC_IMMEDIATE");
-  } else {
-    log_no_irk_for_peer(d.peer_id_addr);
-    // For public-address devices, publish a placeholder to HA so the sensors
-    // reflect the outcome rather than staying stale from a previous capture.
-    if (d.peer_id_addr.type == BLE_ADDR_PUBLIC) {
-      self->publish_irk_to_sensors("IRK not used", addr_to_str(d.peer_id_addr).c_str());
+  // ENC_CHANGE normally captures first. Only use the disconnect store read as
+  // a fallback when this connection has not produced a valid IRK yet.
+  bool needs_delayed_check = !already_observed;
+  if (!already_observed) {
+    struct ble_store_value_sec bond {};
+    struct ble_store_key_sec key {};
+    key.peer_addr = d.peer_id_addr;
+    int rc = ble_store_read_peer_sec(&key, &bond);
+    if (rc == BLE_HS_ENOENT) {
+      ESP_LOGD(TAG, "No bond for peer (ENOENT)");
+    } else if (rc != 0) {
+      ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d", rc);
+    } else if (bond.irk_present && self->is_valid_irk(bond.irk)) {
+      std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
+      publish_and_log_irk(self, d.peer_id_addr, irk_hex, "DISC_IMMEDIATE", connection_generation);
+      needs_delayed_check = false;
+    } else {
+      log_no_irk_for_peer(d.peer_id_addr);
+      // For public-address devices, publish a placeholder to HA so the sensors
+      // reflect the outcome rather than staying stale from a previous capture.
+      if (d.peer_id_addr.type == BLE_ADDR_PUBLIC) {
+        self->publish_irk_to_sensors("IRK not used", addr_to_str(d.peer_id_addr).c_str());
+        needs_delayed_check = false;
+      }
     }
   }
 
-  // Schedule an extra delayed post-disconnect check (800 ms)
-  self->schedule_post_disconnect_check(d.peer_id_addr);
+  if (needs_delayed_check) {
+    self->schedule_post_disconnect_check(d.peer_id_addr, connection_generation);
+  }
 
   // Thread-safe advertising state update
   {
@@ -1144,10 +1242,10 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     // Stop if:
     // 1. continuous_mode is false AND we've captured at least one IRK, OR
     // 2. continuous_mode is true AND max_captures > 0 AND we've hit the limit
-    if (!self->continuous_mode_ && self->total_captures_ > 0) {
+    if (!self->continuous_mode_ && self->capture_events_ > 0) {
       should_stop_adv = true;
     } else if (self->continuous_mode_ && self->max_captures_ > 0 &&
-               self->total_captures_ >= self->max_captures_) {
+               self->unique_devices_ >= self->max_captures_) {
       should_stop_adv = true;
     }
     suppressed = self->suppress_next_adv_;
@@ -1157,7 +1255,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
 
   if (should_stop_adv) {
     // Don't restart - max captures reached
-    ESP_LOGI(TAG, "Capture limit reached - stopping advertising");
+    ESP_LOGI(TAG, "Unique-device limit reached - stopping advertising");
     self->set_advertising_requested(false);
   } else if (!requested) {
     ESP_LOGD(TAG, "Advertising remains off by user request");
@@ -1196,6 +1294,13 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
  */
 int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   ESP_LOGI(TAG, "ENC_CHANGE status=%d (0x%02X)", ev->enc_change.status, ev->enc_change.status);
+  uint32_t connection_generation = 0;
+  {
+    MutexGuard lock(self->state_mutex_);
+    if (self->connected_ && self->conn_handle_ == ev->enc_change.conn_handle) {
+      connection_generation = self->connection_generation_;
+    }
+  }
 
   // Log common encryption failure reasons for debugging (especially Android
   // pairing issues)
@@ -1273,13 +1378,13 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       int rc = ble_store_read_peer_sec(&key, &bond);
       if (rc == BLE_HS_ENOENT) {
         ESP_LOGD(TAG, "No bond for peer yet (ENOENT); scheduling late check");
-        self->schedule_late_enc_check(d.peer_id_addr);
+        self->schedule_late_enc_check(d.peer_id_addr, connection_generation);
       } else if (rc != 0) {
         ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d; scheduling late check", rc);
-        self->schedule_late_enc_check(d.peer_id_addr);
+        self->schedule_late_enc_check(d.peer_id_addr, connection_generation);
       } else if (bond.irk_present && self->is_valid_irk(bond.irk)) {
         std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
-        publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE");
+        publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE", connection_generation);
         // Tested working behavior: terminate immediately after successful ENC +
         // IRK capture
         int term_rc;
@@ -1292,7 +1397,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
         }
       } else {
         ESP_LOGD(TAG, "Bond present but no IRK yet; scheduling late check");
-        self->schedule_late_enc_check(d.peer_id_addr);
+        self->schedule_late_enc_check(d.peer_id_addr, connection_generation);
       }
     }
   } else {
@@ -1346,7 +1451,6 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
  * bond states between devices.
  */
 int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* ev) {
-  (void) self;
   // Portable: get the current connection descriptor from the handle
   struct ble_gap_conn_desc d {};
   int rc = ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d);
@@ -1361,6 +1465,13 @@ int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* e
     // repeat-pairing check and can strand the peer in a timeout loop.
     int delete_rc = ble_store_util_delete_peer(peer);
     if (delete_rc == 0 || delete_rc == BLE_HS_ENOENT) {
+      // Remember that this connection represents an explicit re-pair. Its IRK
+      // must be published even when unchanged and inside the normal rate limit.
+      MutexGuard lock(self->state_mutex_);
+      if (self->connected_ && self->conn_handle_ == ev->repeat_pairing.conn_handle) {
+        self->pairing_generation_ = self->connection_generation_;
+        self->repair_generation_ = self->connection_generation_;
+      }
       return BLE_GAP_REPEAT_PAIRING_RETRY;
     }
     ESP_LOGE(TAG, "Repeat pairing: stale bond delete failed rc=%d", delete_rc);
@@ -1573,8 +1684,11 @@ void IRKCaptureComponent::setup() {
   // deduplication of reconnections)
   size_t cache_cap = (max_captures_ > 10) ? max_captures_ : 10;
   irk_cache_.reserve(cache_cap);
-  total_captures_ = 0;
-  last_publish_time_ = 0;
+  capture_events_ = 0;
+  unique_devices_ = 0;
+  connection_generation_ = 0;
+  pairing_generation_ = 0;
+  repair_generation_ = 0;
 
   this->setup_ble();
   if (this->is_failed()) {
@@ -2731,6 +2845,11 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     } else {
       conn_handle_ = conn_handle;
       connected_ = true;
+      connection_generation_++;
+      // Reserve zero for calls that have no connection context.
+      if (connection_generation_ == 0) {
+        connection_generation_++;
+      }
       was_advertising = advertising_;
       advertising_ = false;
       pairing_start_time_ = now_ms();
@@ -2780,6 +2899,23 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   // fresh pairing request. Always enter normal security negotiation; if the
   // peer requests pairing while our old bond exists, REPEAT_PAIRING deletes
   // that stale peer bond and lets NimBLE retry cleanly.
+
+  // Record connections that begin without a local bond. If this identity was
+  // already captured earlier in the same boot (for example after a failed
+  // encryption removed its bond), the eventual successful pairing must still
+  // publish the IRK rather than looking like a routine bonded reconnect.
+  struct ble_gap_conn_desc desc {};
+  if (ble_gap_conn_find(conn_handle, &desc) == 0) {
+    struct ble_store_key_sec key {};
+    struct ble_store_value_sec bond {};
+    key.peer_addr = desc.peer_id_addr;
+    if (ble_store_read_peer_sec(&key, &bond) == BLE_HS_ENOENT) {
+      MutexGuard lock(state_mutex_);
+      if (connected_ && conn_handle_ == conn_handle) {
+        pairing_generation_ = connection_generation_;
+      }
+    }
+  }
 
   // Proactively initiate pairing; peer should show pairing dialog now
   // THREAD-SAFE: use the conn_handle parameter (already stored to conn_handle_
@@ -2902,14 +3038,17 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 
 //======================== Timer helpers ========================
 
-void IRKCaptureComponent::schedule_post_disconnect_check(const ble_addr_t& peer_id) {
+void IRKCaptureComponent::schedule_post_disconnect_check(const ble_addr_t& peer_id,
+                                                         uint32_t connection_generation) {
   bool queued = false;
   uint32_t due_ms = now_ms() + TimingConfig::POST_DISC_DELAY_MS;
   {
     MutexGuard lock(state_mutex_);
-    // Coalesce only the same peer; never overwrite another peer's live timer.
+    // Coalesce only the same peer and connection; never overwrite another live
+    // connection's fallback read.
     for (auto& timer : post_disc_timers_) {
-      if (timer.due_ms != 0 && addr_equal(timer.peer_id, peer_id)) {
+      if (timer.due_ms != 0 && timer.connection_generation == connection_generation &&
+          addr_equal(timer.peer_id, peer_id)) {
         timer.due_ms = due_ms;
         queued = true;
         break;
@@ -2919,6 +3058,7 @@ void IRKCaptureComponent::schedule_post_disconnect_check(const ble_addr_t& peer_
       for (auto& timer : post_disc_timers_) {
         if (timer.due_ms == 0) {
           timer.peer_id = peer_id;
+          timer.connection_generation = connection_generation;
           timer.due_ms = due_ms;
           queued = true;
           break;
@@ -2932,13 +3072,15 @@ void IRKCaptureComponent::schedule_post_disconnect_check(const ble_addr_t& peer_
   }
 }
 
-void IRKCaptureComponent::schedule_late_enc_check(const ble_addr_t& peer_id) {
+void IRKCaptureComponent::schedule_late_enc_check(const ble_addr_t& peer_id,
+                                                  uint32_t connection_generation) {
   bool queued = false;
   uint32_t due_ms = now_ms() + TimingConfig::ENC_LATE_READ_DELAY_MS;
   {
     MutexGuard lock(state_mutex_);
     for (auto& timer : late_enc_timers_) {
-      if (timer.due_ms != 0 && addr_equal(timer.peer_id, peer_id)) {
+      if (timer.due_ms != 0 && timer.connection_generation == connection_generation &&
+          addr_equal(timer.peer_id, peer_id)) {
         timer.due_ms = due_ms;
         queued = true;
         break;
@@ -2948,6 +3090,7 @@ void IRKCaptureComponent::schedule_late_enc_check(const ble_addr_t& peer_id) {
       for (auto& timer : late_enc_timers_) {
         if (timer.due_ms == 0) {
           timer.peer_id = peer_id;
+          timer.connection_generation = connection_generation;
           timer.due_ms = due_ms;
           queued = true;
           break;
@@ -2965,14 +3108,15 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
   // Consume one due entry per loop; additional due entries run on subsequent
   // loop ticks without being overwritten.
   ble_addr_t peer_id {};
+  uint32_t connection_generation = 0;
   bool timer_due = false;
   {
     MutexGuard lock(state_mutex_);
     for (auto& timer : post_disc_timers_) {
       if (timer.due_ms != 0 && deadline_reached(now, timer.due_ms)) {
         peer_id = timer.peer_id;
-        timer.due_ms = 0;
-        timer.peer_id = {};
+        connection_generation = timer.connection_generation;
+        timer = {};
         timer_due = true;
         break;
       }
@@ -2995,7 +3139,7 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
     ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - post-disc delayed check", rc);
   } else if (bond.irk_present && is_valid_irk(bond.irk)) {
     std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
-    publish_and_log_irk(this, peer_id, irk_hex, "DISC_DELAYED");
+    publish_and_log_irk(this, peer_id, irk_hex, "DISC_DELAYED", connection_generation);
   } else {
     log_no_irk_for_peer(peer_id);
   }
@@ -3003,14 +3147,15 @@ void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
 
 void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
   ble_addr_t peer_id {};
+  uint32_t connection_generation = 0;
   bool timer_due = false;
   {
     MutexGuard lock(state_mutex_);
     for (auto& timer : late_enc_timers_) {
       if (timer.due_ms != 0 && deadline_reached(now, timer.due_ms)) {
         peer_id = timer.peer_id;
-        timer.due_ms = 0;
-        timer.peer_id = {};
+        connection_generation = timer.connection_generation;
+        timer = {};
         timer_due = true;
         break;
       }
@@ -3033,23 +3178,26 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
     ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - late ENC check", rc);
   } else if (bond.irk_present && is_valid_irk(bond.irk)) {
     std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
-    publish_and_log_irk(this, peer_id, irk_hex, "ENC_LATE");
+    publish_and_log_irk(this, peer_id, irk_hex, "ENC_LATE", connection_generation);
 
     // Tested working behavior: terminate after late capture if still connected
     // THREAD-SAFE: Check connection state before terminating
     bool is_connected;
     uint16_t conn_handle_copy;
+    uint32_t current_generation;
     {
       MutexGuard lock(state_mutex_);
       is_connected = connected_;
       conn_handle_copy = conn_handle_;
+      current_generation = connection_generation_;
     }
     // Only terminate if the CURRENT connection is still the same peer this late
     // check was scheduled for. In continuous mode the original peer may have
     // disconnected and a different device connected during the delay; without
     // this guard we would drop that unrelated device.
     bool same_peer = false;
-    if (is_connected && conn_handle_copy != BLE_HS_CONN_HANDLE_NONE) {
+    if (is_connected && current_generation == connection_generation &&
+        conn_handle_copy != BLE_HS_CONN_HANDLE_NONE) {
       struct ble_gap_conn_desc cur {};
       same_peer =
           (ble_gap_conn_find(conn_handle_copy, &cur) == 0) && addr_equal(cur.peer_id_addr, peer_id);
@@ -3288,6 +3436,7 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
   uint32_t enc_time_copy;
   uint32_t irk_last_try_copy;
   uint16_t conn_handle_copy;
+  uint32_t connection_generation_copy;
   {
     MutexGuard lock(state_mutex_);
     enc_ready_copy = enc_ready_;
@@ -3295,6 +3444,7 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
     enc_time_copy = enc_time_;
     irk_last_try_copy = irk_last_try_ms_;
     conn_handle_copy = conn_handle_;
+    connection_generation_copy = connection_generation_;
   }
 
   // Attempt IRK retrieval after encryption + delay (allow store write)
@@ -3311,7 +3461,7 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
   ble_addr_t peer_id;
   if (try_get_irk(conn_handle_copy, irk_bytes, peer_id)) {
     std::string irk_hex = to_hex_rev(irk_bytes, sizeof(irk_bytes));
-    publish_and_log_irk(this, peer_id, irk_hex, "POLL_CONNECTED");
+    publish_and_log_irk(this, peer_id, irk_hex, "POLL_CONNECTED", connection_generation_copy);
     int term_rc;
     {
       BleOpGuard ble_lock(ble_op_mutex_);
