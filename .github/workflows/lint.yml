@@ -72,6 +72,9 @@ jobs:
           - name: latest / ESP32-C3
             esphome: esphome
             config: tests/test-irk-capture-esp32-c3.yaml
+          - name: latest / ESP32-C6
+            esphome: esphome
+            config: tests/test-irk-capture-esp32-c6.yaml
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5

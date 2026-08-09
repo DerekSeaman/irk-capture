@@ -18,10 +18,10 @@
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
 
-// Some ESP-IDF 5.x package variants omit this prototype from headers; declare
-// it explicitly
-extern "C" int ble_store_config_init(void);
-extern "C" int ble_store_clear(void);
+// Some ESP-IDF 5.x package variants omit this prototype from headers. NimBLE's
+// implementation returns void; declaring it as int reads an undefined return
+// register (observed as nonzero on ESP32-C6).
+extern "C" void ble_store_config_init(void);
 
 namespace esphome {
 namespace irk_capture {
@@ -1492,7 +1492,7 @@ void IRKCaptureComponent::setup() {
   state_mutex_ = xSemaphoreCreateMutex();
   if (!state_mutex_) {
     ESP_LOGE(TAG, "CRITICAL: Failed to create state mutex - thread safety compromised!");
-    this->mark_failed();
+    this->mark_failed(LOG_STR("state mutex allocation failed"));
     return;
   }
   ble_op_mutex_ = xSemaphoreCreateMutex();
@@ -1500,7 +1500,7 @@ void IRKCaptureComponent::setup() {
     ESP_LOGE(TAG,
              "CRITICAL: Failed to create BLE op mutex - cannot serialize BLE "
              "host calls");
-    this->mark_failed();
+    this->mark_failed(LOG_STR("BLE operation mutex allocation failed"));
     return;
   }
 
@@ -1947,14 +1947,14 @@ void IRKCaptureComponent::setup_ble() {
     esp_err_t erase_err = nvs_flash_erase();
     if (erase_err != ESP_OK) {
       ESP_LOGE(TAG, "nvs_flash_erase failed (err=%d)", erase_err);
-      this->mark_failed();
+      this->mark_failed(LOG_STR("NVS erase failed"));
       return;
     }
     err = nvs_flash_init();
   }
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "nvs_flash_init failed (err=%d)", err);
-    this->mark_failed();
+    this->mark_failed(LOG_STR("NVS initialization failed"));
     return;
   }
 
@@ -1994,7 +1994,7 @@ void IRKCaptureComponent::setup_ble() {
   int rc = nimble_port_init();
   if (rc != 0) {
     ESP_LOGE(TAG, "nimble_port_init failed rc=%d", rc);
-    this->mark_failed();
+    this->mark_failed(LOG_STR("NimBLE host initialization failed"));
     return;
   }
 
@@ -2062,12 +2062,9 @@ void IRKCaptureComponent::setup_ble() {
   log_sm_config();
 
   // Key-value store for bonding/keys
-  rc = ble_store_config_init();
-  if (rc != 0) {
-    ESP_LOGE(TAG, "ble_store_config_init failed rc=%d", rc);
-    this->mark_failed();
-    return;
-  }
+  // This API returns void. The store callbacks it installs report later
+  // operation failures through their own return values.
+  ble_store_config_init();
 
   // Clear all bonds on boot for a "clean slate" - prevents bond table from
   // filling up and ensures privacy (no old IRKs persist across reboots or
@@ -2075,7 +2072,7 @@ void IRKCaptureComponent::setup_ble() {
   rc = ble_store_clear();
   if (rc != 0) {
     ESP_LOGE(TAG, "ble_store_clear on boot failed rc=%d", rc);
-    this->mark_failed();
+    this->mark_failed(LOG_STR("BLE bond store clear failed"));
     return;
   }
   ESP_LOGI(TAG, "Bond table cleared on boot - fresh pairing session ready");
@@ -2086,13 +2083,13 @@ void IRKCaptureComponent::setup_ble() {
   rc = ble_svc_gap_device_name_set(ble_name_.c_str());
   if (rc != 0) {
     ESP_LOGE(TAG, "ble_svc_gap_device_name_set failed rc=%d", rc);
-    this->mark_failed();
+    this->mark_failed(LOG_STR("BLE GAP name initialization failed"));
     return;
   }
 
   // Register services
   if (!this->register_gatt_services()) {
-    this->mark_failed();
+    this->mark_failed(LOG_STR("BLE GATT service registration failed"));
     return;
   }
 
