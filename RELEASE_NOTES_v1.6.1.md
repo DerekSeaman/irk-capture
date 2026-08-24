@@ -8,6 +8,10 @@ for no obvious reason. This release is all about reliability: making pairing and
 capture "just work" more often, and smoothing out a few rough edges along the
 way.
 
+## **WARNING:** The YAML has been refactored and the substitutions have changed. 
+The change was to simplify the initial deployment with the new ESPHome Builder
+UI. Please review the installation guide for how the use the new YAML. 
+
 ## More dependable pairing and capture
 
 The biggest focus this release is making captures succeed more consistently:
