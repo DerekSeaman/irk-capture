@@ -79,6 +79,17 @@ async def to_code(config):
     cg.add(var.set_continuous_mode(config[CONF_CONTINUOUS_MODE]))
     cg.add(var.set_max_captures(config[CONF_MAX_CAPTURES]))
 
+    # ESPHome 2026.9.0 excludes most built-in ESP-IDF components from the build
+    # by default and expects a component to ask for what it needs. Without this,
+    # "bt" stays excluded, NimBLE's include directory is never added, and the
+    # build fails with: fatal error: host/ble_gap.h: No such file or directory.
+    # The sdkconfig options below enable NimBLE but cannot pull the component
+    # back into the build on their own. No-ops on ESPHome < 2026.9.0.
+    if hasattr(esp32, "request_bluetooth"):
+        esp32.request_bluetooth()
+    elif hasattr(esp32, "include_builtin_idf_component"):
+        esp32.include_builtin_idf_component("bt")
+
     # NimBLE / Bluetooth sdkconfig — SINGLE SOURCE OF TRUTH.
     # These are applied after the esp32 platform processes the user's YAML
     # sdkconfig_options, so values set here win. Do NOT also declare them in
