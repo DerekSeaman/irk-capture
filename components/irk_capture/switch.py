@@ -16,7 +16,11 @@ IRKCaptureSwitch = irk_capture_ns.class_(
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
-        cv.Optional(CONF_ADVERTISING): switch.switch_schema(IRKCaptureSwitch),
+        # DISABLED delegates startup to the parent's start_on_boot setting.
+        # Explicit restore modes override that setting before NimBLE starts.
+        cv.Optional(CONF_ADVERTISING): switch.switch_schema(
+            IRKCaptureSwitch, default_restore_mode="DISABLED"
+        ),
     }
 )
 

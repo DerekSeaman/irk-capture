@@ -118,7 +118,8 @@ switch:
     advertising:
       id: ble_advertising
       name: "BLE Advertising"
-      restore_mode: ALWAYS_ON
+      # Preserve start_on_boot; an explicit restore mode can override it.
+      restore_mode: DISABLED
 
 # Buttons
 button:

@@ -201,6 +201,18 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Wi-Fi Disconnects (since boot)** | Sensor | Number of Wi-Fi disconnections since boot (diagnostic) |
 | **Wi-Fi RSSI** | Sensor | Wi-Fi signal strength in dBm (diagnostic) |
 
+The advertising switch represents the requested state and stays ON while a device is connected.
+An explicit switch `restore_mode` controls its startup state; omitting it or using `DISABLED`
+delegates startup to `irk_capture.start_on_boot`. The shared package uses `DISABLED`, so
+existing `start_on_boot: false` configurations still start with advertising OFF.
+If you explicitly set `ALWAYS_ON`, advertising starts ON even when `start_on_boot` is false.
+
+If advertising or random-address setup fails, retry delays increase through 1, 2, 4, and 8 seconds.
+After the fifth failure, automatic recovery continues once per minute while the switch stays ON.
+An error marks the transition to slow recovery; continuing failures are logged at most once every
+five minutes. Successful recovery is also logged. Turning the switch OFF cancels retries;
+turning it back ON starts a fresh attempt. Recovery does not reboot or clear captures/bonds.
+
 ## Tested Devices
 
 This ESPHome IRK capture component has been successfully tested with:

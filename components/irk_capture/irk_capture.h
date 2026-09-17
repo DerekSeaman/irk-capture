@@ -250,6 +250,10 @@ class IRKCaptureComponent : public Component {
   uint32_t sec_timeout_terminate_retry_ms_ { 0 };
   bool suppress_next_adv_ { false };  // Prevent immediate re-advertising after IRK re-publish
   uint32_t adv_restart_time_ { 0 };   // Time to auto-restart advertising after suppression
+  uint8_t advertising_start_attempts_ { 0 };
+  uint32_t advertising_failure_log_time_ { 0 };
+  bool random_address_ready_ { false };
+  uint32_t host_generation_ { 0 };  // Invalidates results from calls interrupted by a host reset
 
   // IRK polling state
   bool irk_gave_up_ { false };
@@ -266,6 +270,7 @@ class IRKCaptureComponent : public Component {
   uint8_t pending_mac_[6] { 0 };            // Pre-generated MAC for rotation
   uint8_t mac_rotation_retries_ { 0 };      // Retry counter for MAC rotation
   uint32_t mac_rotation_ready_time_ { 0 };  // Time when rotation can start (after settling delay)
+  uint32_t mac_rotation_generation_ { 0 };  // Invalidates work after reset or a new request
 
   // IRK capture tracking with deduplication and rate limiting
   struct IRKCacheEntry {
@@ -324,9 +329,11 @@ class IRKCaptureComponent : public Component {
 
   // FreeRTOS mutex for thread-safe access to shared state
   // Protects: timer queues, conn_handle_, connected_, advertising_,
-  //           advertising_requested_,
+  //           advertising_requested_, advertising_start_attempts_, advertising_failure_log_time_,
+  //           random_address_ready_, host_generation_,
   //           pairing_start_time_,
   //           ble_name_, manufacturer_name_, mac_rotation_state_, pending_mac_,
+  //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
   //           suppress_next_adv_, adv_restart_time_, capture_events_,
   //           unique_devices_, irk_cache_ (deduplication state),
   //           connection_generation_, pairing_generation_, repair_generation_,
@@ -346,6 +353,7 @@ class IRKCaptureComponent : public Component {
   void setup_ble();
   bool register_gatt_services();
   std::string sanitize_ble_name(const std::string& name);
+  void handle_advertising_failure_(int rc, uint32_t host_generation, const char* operation);
 
   // IRK validation and deduplication helpers
   bool is_valid_irk(const uint8_t irk[16]);
@@ -355,12 +363,16 @@ class IRKCaptureComponent : public Component {
                           bool& out_limit_just_reached);
 
   // Timer handlers
+  bool enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers,
+                           const ble_addr_t& peer_id, uint32_t connection_generation,
+                           uint32_t delay_ms);
   void schedule_post_disconnect_check(const ble_addr_t& peer_id, uint32_t connection_generation);
   void schedule_late_enc_check(const ble_addr_t& peer_id, uint32_t connection_generation);
   void handle_post_disconnect_timer(uint32_t now);
   void handle_late_enc_timer(uint32_t now);
 
   // Loop helpers
+  void handle_mac_rotation_(uint32_t now);
   void retry_security_if_needed(uint32_t now);
   void notify_hr_if_due(uint32_t now);
   void poll_irk_if_due(uint32_t now);
