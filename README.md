@@ -115,6 +115,59 @@ and diagnostics package as a second `packages:` entry alongside the one above:
 - **XIAO ESP32-C6**: [repo](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-C6-Config) — [Seeed XIAO ESP32-c6 IRK.yaml](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-C6-Config/blob/main/examples/Seeed%20XIAO%20ESP32-c6%20IRK.yaml)
 - **XIAO ESP32-S3**: [repo](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-s3-Config) — [Seeed XIAO ESP32-s3 IRK.yaml](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-s3-Config/blob/main/examples/Seeed%20XIAO%20ESP32-s3%20IRK.yaml)
 
+### Full Example: Seeed XIAO ESP32-C3
+
+Here's a complete device YAML for the Seeed XIAO ESP32-C3, combining the
+generic device config above with **both** `packages:` entries — the main
+IRK Capture package and the C3-specific hardware/diagnostics package
+(replace the placeholder key/passwords with your own device's values):
+
+```yaml
+# Board: Seeed XIAO ESP32C3 (Seeed Studio)
+# Definition: definitions/boards/seeed-xiao-esp32c3/manifest.yaml
+
+esphome:
+  name: test-irk
+  friendly_name: test IRK
+
+esp32:
+  variant: esp32c3
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: "UkVQTEFDRS1XSVRILVlPVVItT1dOLTMyQi1LRVkhISE="
+
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: test Fallback Hotspot
+    password: "CHANGE_ME_AP_PASSWORD"
+
+captive_portal:
+
+packages:
+  device:
+    url: https://github.com/DerekSeaman/irk-capture
+    ref: main
+    file: ESPHome Devices/irk-capture-base.yaml
+    refresh: always
+  c3_hardware:
+    url: https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c3-Config
+    ref: main
+    file: examples/Seeed XIAO ESP32-c3 IRK.yaml
+    refresh: always
+```
+
 ## Usage Instructions
 
 Again, my blog post covers usage in detail. However, the super short version is as follows:
