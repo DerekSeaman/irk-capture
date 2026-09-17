@@ -41,7 +41,7 @@ When your Apple or Android device pairs with the ESP32:
 
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESP-IDF framework** (required - this component does NOT support Arduino framework)
-- **ESPHome** 2026.7 or newer - Tested with 2026.7.4
+- **ESPHome** 2026.7 or newer - Tested with 2026.9.0
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
 - **ESPHome Device Builder** (optional, but makes managing ESPHome devices in Home Assistant easier)
 
@@ -60,7 +60,60 @@ ESPHome Device Builder pulls the package and component from the `main` branch, s
 
 ![Device YAML Configuration](docs/YAML-screenshot.jpg)
 
+Here's the same thing as plain, copyable YAML — a generic ESPHome Device
+Builder device with the **packages:** section added at the bottom (replace the
+placeholder key/passwords with your own device's values):
+
+```yaml
+# Board: Seeed XIAO ESP32C3 (Seeed Studio)
+# Definition: definitions/boards/seeed-xiao-esp32c3/manifest.yaml
+
+esphome:
+  name: test-irk
+  friendly_name: test IRK
+
+esp32:
+  variant: esp32c3
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: "UkVQTEFDRS1XSVRILVlPVVItT1dOLTMyQi1LRVkhISE="
+
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: test Fallback Hotspot
+    password: "CHANGE_ME_AP_PASSWORD"
+
+captive_portal:
+
+packages:
+  device:
+    url: https://github.com/DerekSeaman/irk-capture
+    ref: main
+    file: ESPHome Devices/irk-capture-base.yaml
+    refresh: always
+```
+
 You can find the **packages:** content here: [irk-capture-device-remote.yaml](https://github.com/DerekSeaman/irk-capture/blob/main/ESPHome%20Devices/irk-capture-device-remote.yaml)
+
+If you're using a Seeed Studio XIAO ESP32 board, add the board-specific hardware
+and diagnostics package as a second `packages:` entry alongside the one above:
+
+- **XIAO ESP32-C3**: [repo](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c3-Config) — [Seeed XIAO ESP32-c3 IRK.yaml](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c3-Config/blob/main/examples/Seeed%20XIAO%20ESP32-c3%20IRK.yaml)
+- **XIAO ESP32-C5**: [repo](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c5-Config) — [Seeed XIAO ESP32-c5 IRK.yaml](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-c5-Config/blob/main/examples/Seeed%20XIAO%20ESP32-c5%20IRK.yaml)
+- **XIAO ESP32-C6**: [repo](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-C6-Config) — [Seeed XIAO ESP32-c6 IRK.yaml](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-C6-Config/blob/main/examples/Seeed%20XIAO%20ESP32-c6%20IRK.yaml)
+- **XIAO ESP32-S3**: [repo](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-s3-Config) — [Seeed XIAO ESP32-s3 IRK.yaml](https://github.com/DerekSeaman/ESPHome-Seeed-Xiao-ESP32-s3-Config/blob/main/examples/Seeed%20XIAO%20ESP32-s3%20IRK.yaml)
 
 ## Usage Instructions
 
