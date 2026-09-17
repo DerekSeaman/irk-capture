@@ -1,4 +1,6 @@
-# Unreleased changes
+# Release Notes v1.6.3
+
+This release covers the changes from `v1.6.2` to `v1.6.3`.
 
 ## Capturing more than three devices in one session
 
