@@ -190,7 +190,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Generate New MAC** | Button | Generate a new random MAC address for the ESP32 |
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
 | **Effective MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
-| **IRK** | Text Sensor | The captured IRK in format `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
+| **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
 | **Internal Temp** | Sensor | ESP32 internal temperature (diagnostic) |
@@ -292,7 +292,9 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 
 ### IRK Not Captured After Pairing
 
-Not all devices use Bluetooth security when pairing to some accessories. For example, some Garmin watches are known to use a fixed BLE address, and thus do not have an IRK value. The ESP32 logs and the Home Assistant IRK sensor will indicate that no IRK was used.
+Some devices, including some Garmin watches, use a fixed BLE address and do not provide an IRK. When a completed pairing stores a bond without an IRK, the Home Assistant IRK sensor shows **`Failed: IRK not used`**, and **Device MAC** identifies that peer. This replaces the previous sensor value so it reflects the latest completed attempt; prior values remain in Home Assistant's recorded history. A later successful capture replaces the failure with the 32-character IRK, including when a previously captured device reconnects.
+
+Missing bond records, incomplete pairing, and invalid key bytes are not reported as "IRK not used." A public identity address alone does not establish whether a device uses BLE privacy.
 
 - After pairing, **forget/unpair the BLE device** from your device's Bluetooth settings
 - Turn Bluetooth OFF on your device

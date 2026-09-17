@@ -150,7 +150,6 @@ class IRKCaptureComponent : public Component {
     ble_name_ = name;
   }
   void set_start_on_boot(bool start) {
-    start_on_boot_ = start;
     advertising_requested_ = start;
   }
   void set_continuous_mode(bool enable) {
@@ -190,7 +189,8 @@ class IRKCaptureComponent : public Component {
   BLEProfile get_ble_profile();
 
   // Public actions
-  void update_ble_name(const std::string& name);
+  // Returns false when the device rejected the change (name left unchanged).
+  bool update_ble_name(const std::string& name);
   std::string get_ble_name();
   void start_advertising();
   void stop_advertising();
@@ -207,16 +207,16 @@ class IRKCaptureComponent : public Component {
   static int gap_event_handler(struct ble_gap_event* event, void* arg);
 
   // Sensor publishing helper
-  void publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str);
+  void publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str,
+                              uint32_t connection_generation = 0);
   void publish_effective_mac();
 
  protected:
   // Configuration/state
   std::string ble_name_ { "IRK Capture" };
   std::string manufacturer_name_ { "ESPresense" };  // BLE Device Info manufacturer
-  bool start_on_boot_ { true };
-  bool continuous_mode_ { true };  // Keep advertising after captures
-  uint8_t max_captures_ { 10 };    // Max unique devices (0=unlimited)
+  bool continuous_mode_ { true };                   // Keep advertising after captures
+  uint8_t max_captures_ { 10 };                     // Max unique devices (0=unlimited)
   text_sensor::TextSensor* irk_sensor_ { nullptr };
   text_sensor::TextSensor* address_sensor_ { nullptr };
   text_sensor::TextSensor* effective_mac_sensor_ { nullptr };
@@ -228,8 +228,6 @@ class IRKCaptureComponent : public Component {
 
   // Connection state
   uint16_t conn_handle_ { BLE_HS_CONN_HANDLE_NONE };
-  uint16_t hr_char_handle_ { 0 };
-  uint16_t prot_char_handle_ { 0 };
   bool advertising_ { false };           // Actual NimBLE advertising state
   bool advertising_requested_ { true };  // Persistent user intent across connections
   uint32_t last_loop_ { 0 };
@@ -244,10 +242,6 @@ class IRKCaptureComponent : public Component {
   uint32_t enc_time_ { 0 };
   bool sec_retry_done_ { false };
   uint32_t sec_init_time_ms_ { 0 };
-  bool sec_timeout_terminate_pending_ { false };
-  bool sec_timeout_bond_cleared_ { false };
-  uint8_t sec_timeout_terminate_attempts_ { 0 };
-  uint32_t sec_timeout_terminate_retry_ms_ { 0 };
   bool suppress_next_adv_ { false };  // Prevent immediate re-advertising after IRK re-publish
   uint32_t adv_restart_time_ { 0 };   // Time to auto-restart advertising after suppression
   uint8_t advertising_start_attempts_ { 0 };
@@ -277,8 +271,6 @@ class IRKCaptureComponent : public Component {
     std::string irk_hex;
     std::string mac_addr;
     uint8_t addr_type;
-    uint32_t first_seen_ms;
-    uint32_t last_seen_ms;
     uint32_t last_published_ms;
     uint32_t last_observed_generation;
     uint16_t reconnect_count;
@@ -298,6 +290,7 @@ class IRKCaptureComponent : public Component {
   bool pending_irk_pub_ { false };
   std::string pending_irk_hex_;
   std::string pending_irk_addr_;
+  uint32_t last_result_generation_ { 0 };  // Orders completed pairing outcomes across delayed reads
   bool pending_effmac_pub_ { false };
   std::string pending_effmac_;
 
@@ -314,18 +307,21 @@ class IRKCaptureComponent : public Component {
     uint32_t due_ms { 0 };
     ble_addr_t peer_id {};
     uint32_t connection_generation { 0 };
+    bool pairing_completed { false };
   };
   std::array<PeerTimer, PEER_TIMER_CAPACITY> post_disc_timers_ {};
   std::array<PeerTimer, PEER_TIMER_CAPACITY> late_enc_timers_ {};
 
-  // Bounded retry state for the global pairing-timeout termination path. Lets us
-  // retry ble_gap_terminate() without falsely reporting the connection closed
-  // while NimBLE still holds it.
-  uint8_t timeout_terminate_attempts_ { 0 };
-  uint32_t timeout_terminate_retry_ms_ { 0 };
-  bool timeout_terminate_pending_ { false };
-  bool timeout_bond_cleared_ { false };
-  bool timeout_cooldown_on_disconnect_ { false };
+  // Both deadlines terminate the same connection and share one retry budget.
+  // Once started, recovery continues until disconnect or host reset, even if
+  // encryption completes while the asynchronous termination is pending.
+  enum class TimeoutReason { NONE, ENCRYPTION, PAIRING };
+  struct ConnectionTimeout {
+    TimeoutReason reason { TimeoutReason::NONE };
+    uint8_t attempts { 0 };
+    uint32_t retry_ms { 0 };
+    bool bond_cleared { false };
+  } connection_timeout_;
 
   // FreeRTOS mutex for thread-safe access to shared state
   // Protects: timer queues, conn_handle_, connected_, advertising_,
@@ -338,9 +334,9 @@ class IRKCaptureComponent : public Component {
   //           unique_devices_, irk_cache_ (deduplication state),
   //           connection_generation_, pairing_generation_, repair_generation_,
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
-  //           security/global timeout termination retry state,
+  //           connection_timeout_,
   //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
-  //           pending_adv_/pending_irk_/pending_effmac_ (deferred-publish queue)
+  //           pending_adv_/pending_irk_/pending_effmac_, last_result_generation_
   SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Serializes BLE control operations that can be called from both NimBLE and
@@ -349,7 +345,8 @@ class IRKCaptureComponent : public Component {
   SemaphoreHandle_t ble_op_mutex_ { nullptr };
 
   // Internal helpers
-  bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out);
+  bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out,
+                   uint32_t connection_generation);
   void setup_ble();
   bool register_gatt_services();
   std::string sanitize_ble_name(const std::string& name);
@@ -357,6 +354,8 @@ class IRKCaptureComponent : public Component {
 
   // IRK validation and deduplication helpers
   bool is_valid_irk(const uint8_t irk[16]);
+  void publish_no_irk_(const ble_addr_t& peer_id, uint32_t connection_generation,
+                       bool pairing_completed);
   bool should_publish_irk(const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
                           uint32_t connection_generation, bool force_pairing_publish,
                           bool& out_should_stop_adv, bool& out_is_new_device,
@@ -365,8 +364,9 @@ class IRKCaptureComponent : public Component {
   // Timer handlers
   bool enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers,
                            const ble_addr_t& peer_id, uint32_t connection_generation,
-                           uint32_t delay_ms);
-  void schedule_post_disconnect_check(const ble_addr_t& peer_id, uint32_t connection_generation);
+                           uint32_t delay_ms, bool pairing_completed = false);
+  void schedule_post_disconnect_check(const ble_addr_t& peer_id, uint32_t connection_generation,
+                                      bool pairing_completed = false);
   void schedule_late_enc_check(const ble_addr_t& peer_id, uint32_t connection_generation);
   void handle_post_disconnect_timer(uint32_t now);
   void handle_late_enc_timer(uint32_t now);
@@ -374,6 +374,11 @@ class IRKCaptureComponent : public Component {
   // Loop helpers
   void handle_mac_rotation_(uint32_t now);
   void retry_security_if_needed(uint32_t now);
+  bool handle_connection_timeout_(uint32_t now);
+  // Caller holds state_mutex_. Reset is also used by connect/host reset;
+  // finish additionally applies the timeout cooldown and MAC rotation handoff.
+  void reset_connection_state_();
+  void finish_disconnect_(uint32_t now);
   void notify_hr_if_due(uint32_t now);
   void poll_irk_if_due(uint32_t now);
 
