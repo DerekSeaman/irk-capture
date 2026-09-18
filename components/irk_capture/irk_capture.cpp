@@ -27,7 +27,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.6.3";
+static constexpr char VERSION[] = "1.7.0";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -184,6 +184,10 @@ struct TimingConfig {
   static constexpr uint8_t MAC_ROTATION_MAX_RETRIES = 10;  // Max retries for MAC rotation
   static constexpr uint32_t MAC_ROTATION_SETTLE_DELAY_MS =
       500;  // Delay after adv stop before MAC change
+  static constexpr uint32_t STATUS_CAPTURE_HOLD_MS =
+      4000;  // How long the status sensor shows "captured" after a publish
+  static constexpr uint32_t AUTO_PROFILE_FALLBACK_MS =
+      60000;  // No connection attempt at all before trying the other profile
 };
 
 // GATT service and characteristic UUIDs
@@ -707,7 +711,12 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
     ESP_LOGD(TAG, "IRK cache full (%zu entries), evicting oldest entry", cache_limit);
     irk_cache_.erase(irk_cache_.begin());
   }
-  irk_cache_.push_back({ irk_hex, addr, addr_type, now, connection_generation, 0, false });
+  irk_cache_.push_back(
+      { irk_hex, addr, addr_type, now, connection_generation, 0, false, next_capture_label_ });
+  if (!next_capture_label_.empty()) {
+    ESP_LOGI(TAG, "Tagged new capture with label '%s'", next_capture_label_.c_str());
+    next_capture_label_.clear();  // Consume-once: next device starts unlabeled
+  }
   out_is_new_device = true;
   ESP_LOGD(TAG, "New IRK added to cache (total: %zu/%zu)", irk_cache_.size(), cache_limit);
   return true;
@@ -745,6 +754,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   uint32_t current_events = 0;
   uint32_t current_unique = 0;
   bool max_reached = false;
+  bool stop_after_capture_hit = false;
   bool should_publish;
   bool should_stop_adv = false;
   bool is_new_device = false;
@@ -791,8 +801,22 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
           (self->max_captures_ > 0 && self->unique_devices_ >= self->max_captures_)) {
         max_reached = true;
       }
+
+      // Wizard "one-shot" mode: independent of continuous_mode/max_captures,
+      // stop advertising after any publish so the flow can hand off to
+      // confirmation instead of continuing to hunt for more devices.
+      stop_after_capture_hit = self->stop_after_capture_;
+
+      // Hold the status sensor at "captured" briefly so a UI polling it can
+      // show a clear success state instead of racing back to "advertising".
+      self->status_capture_hold_until_ = now_ms() + TimingConfig::STATUS_CAPTURE_HOLD_MS;
     }
   }  // Release mutex before slow logging/publishing operations
+
+  if (should_publish) {
+    // Rebuild the capture-history sensor off the mutex; irk_cache_ just changed.
+    self->stage_history_publish_();
+  }
 
   // Handle auto-stop advertising due to reconnect-loop defense.
   // Set suppress flag BEFORE checking is_advertising(): when called from
@@ -842,10 +866,12 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
       ESP_LOGI(TAG, "Max unique devices (%u) reached - advertising will stop after disconnect",
                self->max_captures_);
     }
+  } else if (stop_after_capture_hit) {
+    ESP_LOGI(TAG, "Stop-after-capture enabled: advertising will stop after disconnect");
   }
 
   log_spacer();
-  if (max_reached) {
+  if (max_reached || stop_after_capture_hit) {
     self->set_advertising_requested(false);
   }
 }
@@ -1128,6 +1154,26 @@ void IRKCaptureButton::press_action() {
   parent_->refresh_mac();
 }
 
+void IRKCaptureForgetBondsButton::press_action() {
+  ESP_LOGI(TAG, "Forget All Bonds pressed");
+  parent_->forget_all_bonds();
+}
+
+void IRKCaptureStopAfterCaptureSwitch::write_state(bool state) {
+  parent_->set_stop_after_capture(state);
+  publish_state(state);
+}
+
+void IRKCaptureAutoProfileFallbackSwitch::write_state(bool state) {
+  parent_->set_auto_profile_fallback(state);
+  publish_state(state);
+}
+
+void IRKCaptureLabelText::control(const std::string& value) {
+  std::string sanitized = parent_->set_next_capture_label(value);
+  publish_state(sanitized);
+}
+
 //======================== Entity dump_config ========================
 
 void IRKCaptureText::dump_config() {
@@ -1142,6 +1188,25 @@ void IRKCaptureSwitch::dump_config() {
 
 void IRKCaptureButton::dump_config() {
   ESP_LOGCONFIG(TAG, "IRK Capture New MAC Button");
+}
+
+void IRKCaptureForgetBondsButton::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture Forget Bonds Button");
+}
+
+void IRKCaptureStopAfterCaptureSwitch::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture Stop-After-Capture Switch:");
+  ESP_LOGCONFIG(TAG, "  State: %s", state ? "ON" : "OFF");
+}
+
+void IRKCaptureAutoProfileFallbackSwitch::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture Auto Profile Fallback Switch:");
+  ESP_LOGCONFIG(TAG, "  State: %s", state ? "ON" : "OFF");
+}
+
+void IRKCaptureLabelText::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture Next Capture Label Text:");
+  ESP_LOGCONFIG(TAG, "  Value: '%s'", state.c_str());
 }
 
 void IRKCaptureSelect::control(const std::string& value) {
@@ -1727,6 +1792,10 @@ void IRKCaptureComponent::setup() {
   pairing_generation_ = 0;
   repair_generation_ = 0;
   last_result_generation_ = 0;
+  advertising_started_ms_ = 0;
+  auto_profile_fallback_triggered_ = false;
+  status_capture_hold_until_ = 0;
+  next_capture_label_.clear();
 
   // Resolve startup intent before starting the NimBLE task. DISABLED (the
   // platform default) preserves start_on_boot; explicit restore modes win.
@@ -1759,6 +1828,19 @@ void IRKCaptureComponent::setup() {
   }
   if (advertising_switch_) {
     advertising_switch_->publish_state(is_advertising_requested());
+  }
+  if (stop_after_capture_switch_) {
+    stop_after_capture_switch_->publish_state(stop_after_capture_);
+  }
+  if (auto_profile_fallback_switch_) {
+    auto_profile_fallback_switch_->publish_state(auto_profile_fallback_);
+  }
+  if (status_sensor_) {
+    last_status_value_ = "idle";
+    status_sensor_->publish_state(last_status_value_);
+  }
+  if (history_sensor_) {
+    history_sensor_->publish_state("[]");
   }
 }
 
@@ -1793,6 +1875,9 @@ void IRKCaptureComponent::loop() {
   // Drain entity publishes staged by the NimBLE task (see flush impl).
   flush_pending_publishes_();
 
+  // Wizard-facing session status (advertising/pairing/capturing/captured/idle).
+  update_status_sensor_(now);
+
   // Timers for IRK checks
   handle_post_disconnect_timer(now);
   handle_late_enc_timer(now);
@@ -1822,6 +1907,11 @@ void IRKCaptureComponent::loop() {
     ESP_LOGI(TAG, "Auto-restarting advertising after scheduled delay");
     start_advertising();
   }
+
+  // Wizard "not sure what kind of phone" mode: if advertising has run for a
+  // while with zero captures and no peer has even attempted pairing, try the
+  // other BLE profile once (this reboots; see set_ble_profile()).
+  check_auto_profile_fallback_(now);
 
   // Pairing robustness (single retry)
   retry_security_if_needed(now);
@@ -2294,6 +2384,9 @@ void IRKCaptureComponent::start_advertising() {
       adv_restart_time_ = 0;
       pending_adv_pub_ = true;
       pending_adv_val_ = advertising_requested_;
+      // Mark the start of this unbroken advertising run, once. Retries after
+      // a transient failure keep the original start time.
+      if (advertising_started_ms_ == 0) advertising_started_ms_ = now_ms();
     }
   }
   // Log outside both component locks, including when address setup succeeds
@@ -2386,6 +2479,10 @@ void IRKCaptureComponent::set_advertising_requested(bool requested) {
     if (advertising_requested_ != requested) {
       advertising_start_attempts_ = 0;
       advertising_failure_log_time_ = 0;
+      // Re-arm the "no capture yet" window every time advertising intent
+      // changes, so a fresh session gets a fresh auto-profile-fallback timer.
+      advertising_started_ms_ = 0;
+      auto_profile_fallback_triggered_ = false;
     }
     advertising_requested_ = requested;
     if (!requested) {
@@ -3479,8 +3576,9 @@ void IRKCaptureComponent::stage_advertising_publish_(bool value) {
 void IRKCaptureComponent::flush_pending_publishes_() {
   // Runs on the ESPHome main task. Copy staged values out under the mutex, then
   // publish outside it (publish_state can be slow and must not hold the lock).
-  bool adv_pub, adv_val, irk_pub, effmac_pub;
-  std::string irk_hex, irk_addr, effmac;
+  bool adv_pub, adv_val, irk_pub, effmac_pub, history_pub;
+  bool stop_after_pub, stop_after_val, auto_fallback_pub, auto_fallback_val, label_pub;
+  std::string irk_hex, irk_addr, effmac, history_json, label_val;
   {
     MutexGuard lock(state_mutex_);
     adv_pub = pending_adv_pub_;
@@ -3493,6 +3591,18 @@ void IRKCaptureComponent::flush_pending_publishes_() {
     effmac_pub = pending_effmac_pub_;
     pending_effmac_pub_ = false;
     effmac.swap(pending_effmac_);
+    history_pub = pending_history_pub_;
+    pending_history_pub_ = false;
+    history_json.swap(pending_history_json_);
+    stop_after_pub = pending_stop_after_capture_pub_;
+    stop_after_val = pending_stop_after_capture_val_;
+    pending_stop_after_capture_pub_ = false;
+    auto_fallback_pub = pending_auto_profile_fallback_pub_;
+    auto_fallback_val = pending_auto_profile_fallback_val_;
+    pending_auto_profile_fallback_pub_ = false;
+    label_pub = pending_label_pub_;
+    pending_label_pub_ = false;
+    label_val.swap(pending_label_val_);
   }
   if (adv_pub && advertising_switch_) advertising_switch_->publish_state(adv_val);
   if (irk_pub) {
@@ -3500,6 +3610,178 @@ void IRKCaptureComponent::flush_pending_publishes_() {
     if (address_sensor_) address_sensor_->publish_state(irk_addr);
   }
   if (effmac_pub && effective_mac_sensor_) effective_mac_sensor_->publish_state(effmac);
+  if (history_pub && history_sensor_) history_sensor_->publish_state(history_json);
+  if (stop_after_pub && stop_after_capture_switch_)
+    stop_after_capture_switch_->publish_state(stop_after_val);
+  if (auto_fallback_pub && auto_profile_fallback_switch_)
+    auto_profile_fallback_switch_->publish_state(auto_fallback_val);
+  if (label_pub && next_capture_label_text_) next_capture_label_text_->publish_state(label_val);
+}
+
+//======================== Wizard-facing controls (1.7.0) ========================
+
+void IRKCaptureComponent::set_stop_after_capture(bool enabled) {
+  MutexGuard lock(state_mutex_);
+  stop_after_capture_ = enabled;
+  pending_stop_after_capture_val_ = enabled;
+  pending_stop_after_capture_pub_ = true;
+}
+
+void IRKCaptureComponent::set_auto_profile_fallback(bool enabled) {
+  MutexGuard lock(state_mutex_);
+  auto_profile_fallback_ = enabled;
+  // Toggling the switch (in either direction) re-arms a fresh attempt window.
+  auto_profile_fallback_triggered_ = false;
+  pending_auto_profile_fallback_val_ = enabled;
+  pending_auto_profile_fallback_pub_ = true;
+}
+
+bool IRKCaptureComponent::get_stop_after_capture() {
+  MutexGuard lock(state_mutex_);
+  return stop_after_capture_;
+}
+
+bool IRKCaptureComponent::get_auto_profile_fallback() {
+  MutexGuard lock(state_mutex_);
+  return auto_profile_fallback_;
+}
+
+std::string IRKCaptureComponent::get_next_capture_label() {
+  MutexGuard lock(state_mutex_);
+  return next_capture_label_;
+}
+
+std::string IRKCaptureComponent::set_next_capture_label(const std::string& value) {
+  // Same safe charset as sanitize_ble_name(), but labels aren't advertised
+  // over the air, so they get a longer budget than the 12-byte BLE-name cap.
+  std::string sanitized;
+  sanitized.reserve(24);
+  for (char c : value) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' ||
+        c == '-' || c == '_') {
+      sanitized += c;
+    }
+    if (sanitized.length() >= 24) break;
+  }
+  {
+    MutexGuard lock(state_mutex_);
+    next_capture_label_ = sanitized;
+    pending_label_val_ = sanitized;
+    pending_label_pub_ = true;
+  }
+  ESP_LOGD(TAG, "Next capture label set to '%s'", sanitized.c_str());
+  return sanitized;
+}
+
+void IRKCaptureComponent::forget_all_bonds() {
+  ESP_LOGW(TAG, "Forget All Bonds: clearing NimBLE bond store and capture history");
+  int rc = ble_store_clear();
+  if (rc != 0) {
+    ESP_LOGE(TAG, "ble_store_clear failed rc=%d", rc);
+  } else {
+    ESP_LOGI(TAG, "All BLE bonds cleared");
+  }
+  {
+    MutexGuard lock(state_mutex_);
+    irk_cache_.clear();
+    capture_events_ = 0;
+    unique_devices_ = 0;
+  }
+  stage_history_publish_();
+}
+
+void IRKCaptureComponent::stage_history_publish_() {
+  // Copy the cache under the mutex, then format JSON outside it — string
+  // building is comparatively slow and must not block the NimBLE task.
+  std::vector<IRKCacheEntry> cache_copy;
+  {
+    MutexGuard lock(state_mutex_);
+    cache_copy = irk_cache_;
+  }
+
+  std::string json;
+  json.reserve(cache_copy.size() * 64 + 2);
+  json += "[";
+  bool first = true;
+  for (const auto& entry : cache_copy) {
+    if (!first) json += ",";
+    first = false;
+    // mac_addr/irk_hex are always hex/colon characters and label is
+    // restricted to a safe charset (see set_next_capture_label()), so none of
+    // these values can contain a character that needs JSON escaping.
+    json += "{\"mac\":\"";
+    json += entry.mac_addr;
+    json += "\",\"irk\":\"";
+    json += entry.irk_hex;
+    json += "\",\"label\":\"";
+    json += entry.label;
+    json += "\",\"reconnects\":";
+    json += std::to_string(entry.reconnect_count);
+    json += "}";
+  }
+  json += "]";
+
+  MutexGuard lock(state_mutex_);
+  pending_history_json_ = json;
+  pending_history_pub_ = true;
+}
+
+void IRKCaptureComponent::update_status_sensor_(uint32_t now) {
+  if (!status_sensor_) return;
+
+  bool adv, conn, enc, capturing_hold;
+  {
+    MutexGuard lock(state_mutex_);
+    adv = advertising_;
+    conn = connected_;
+    enc = enc_ready_;
+    capturing_hold =
+        status_capture_hold_until_ != 0 && !deadline_reached(now, status_capture_hold_until_);
+  }
+
+  const char* status;
+  if (this->is_failed()) {
+    status = "error";
+  } else if (capturing_hold) {
+    status = "captured";
+  } else if (conn && enc) {
+    status = "capturing";  // Encrypted; polling the bond store for the IRK
+  } else if (conn) {
+    status = "pairing";  // Connected; security/encryption not yet complete
+  } else if (adv) {
+    status = "advertising";
+  } else {
+    status = "idle";
+  }
+
+  if (last_status_value_ != status) {
+    last_status_value_ = status;
+    status_sensor_->publish_state(status);
+  }
+}
+
+void IRKCaptureComponent::check_auto_profile_fallback_(uint32_t now) {
+  bool should_switch = false;
+  BLEProfile other_profile = BLEProfile::HEART_SENSOR;
+  {
+    MutexGuard lock(state_mutex_);
+    if (auto_profile_fallback_ && !auto_profile_fallback_triggered_ && advertising_ && !connected_ &&
+        capture_events_ == 0 && advertising_started_ms_ != 0 &&
+        deadline_reached(now, advertising_started_ms_ + TimingConfig::AUTO_PROFILE_FALLBACK_MS)) {
+      should_switch = true;
+      auto_profile_fallback_triggered_ = true;
+      other_profile =
+          (ble_profile_ == BLEProfile::HEART_SENSOR) ? BLEProfile::KEYBOARD : BLEProfile::HEART_SENSOR;
+    }
+  }
+  if (should_switch) {
+    ESP_LOGI(TAG,
+             "Auto profile fallback: no pairing attempt after %" PRIu32
+             " s, trying the other BLE profile",
+             TimingConfig::AUTO_PROFILE_FALLBACK_MS / 1000);
+    // Reboots on an actual profile change (GATT DB can't be swapped live).
+    set_ble_profile(other_profile);
+  }
 }
 
 }  // namespace irk_capture

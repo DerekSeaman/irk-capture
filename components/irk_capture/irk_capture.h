@@ -99,6 +99,62 @@ class IRKCaptureButton : public button::Button, public Component {
   IRKCaptureComponent* parent_ { nullptr };
 };
 
+// Button that wipes the NimBLE bond store (all cached pairings), distinct
+// from "Generate New MAC" which only rotates the advertised address.
+class IRKCaptureForgetBondsButton : public button::Button, public Component {
+ public:
+  void set_parent(IRKCaptureComponent* parent) {
+    parent_ = parent;
+  }
+  void press_action() override;
+  void dump_config() override;
+
+ protected:
+  IRKCaptureComponent* parent_ { nullptr };
+};
+
+// Switch: stop advertising automatically once a capture publishes, instead of
+// continuing to hunt for more unique devices this session.
+class IRKCaptureStopAfterCaptureSwitch : public switch_::Switch, public Component {
+ public:
+  void set_parent(IRKCaptureComponent* parent) {
+    parent_ = parent;
+  }
+  void write_state(bool state) override;
+  void dump_config() override;
+
+ protected:
+  IRKCaptureComponent* parent_ { nullptr };
+};
+
+// Switch: if no BLE peer ever attempts pairing (advertising with no IRK
+// captured) within a bounded window, reboot into the other BLE profile once.
+class IRKCaptureAutoProfileFallbackSwitch : public switch_::Switch, public Component {
+ public:
+  void set_parent(IRKCaptureComponent* parent) {
+    parent_ = parent;
+  }
+  void write_state(bool state) override;
+  void dump_config() override;
+
+ protected:
+  IRKCaptureComponent* parent_ { nullptr };
+};
+
+// Text input: label attached to the next new device this session captures.
+// Consumed (and left as-is in the UI) the moment a new identity is cached.
+class IRKCaptureLabelText : public text::Text, public Component {
+ public:
+  void set_parent(IRKCaptureComponent* parent) {
+    parent_ = parent;
+  }
+  void control(const std::string& value) override;
+  void dump_config() override;
+
+ protected:
+  IRKCaptureComponent* parent_ { nullptr };
+};
+
 // Free-function helpers (external linkage). Definitions live in the .cpp.
 int handle_gap_connect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
 int handle_gap_disconnect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -183,6 +239,28 @@ class IRKCaptureComponent : public Component {
     ble_profile_select_ = sel;
     if (sel) sel->set_parent(this);
   }
+  void set_status_sensor(text_sensor::TextSensor* sensor) {
+    status_sensor_ = sensor;
+  }
+  void set_history_sensor(text_sensor::TextSensor* sensor) {
+    history_sensor_ = sensor;
+  }
+  void set_forget_bonds_button(IRKCaptureForgetBondsButton* btn) {
+    forget_bonds_button_ = btn;
+    if (btn) btn->set_parent(this);
+  }
+  void set_stop_after_capture_switch(IRKCaptureStopAfterCaptureSwitch* sw) {
+    stop_after_capture_switch_ = sw;
+    if (sw) sw->set_parent(this);
+  }
+  void set_auto_profile_fallback_switch(IRKCaptureAutoProfileFallbackSwitch* sw) {
+    auto_profile_fallback_switch_ = sw;
+    if (sw) sw->set_parent(this);
+  }
+  void set_next_capture_label_text(IRKCaptureLabelText* txt) {
+    next_capture_label_text_ = txt;
+    if (txt) txt->set_parent(this);
+  }
 
   // Profile management
   void set_ble_profile(BLEProfile profile);
@@ -210,6 +288,20 @@ class IRKCaptureComponent : public Component {
   void publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str,
                               uint32_t connection_generation = 0);
   void publish_effective_mac();
+
+  // New in 1.7.0: wizard-facing runtime controls (see README "Home Assistant
+  // Entities"). These are additive and default OFF so existing continuous
+  // multi-capture behavior is unchanged unless a user opts in.
+  void set_stop_after_capture(bool enabled);
+  void set_auto_profile_fallback(bool enabled);
+  bool get_stop_after_capture();
+  bool get_auto_profile_fallback();
+  std::string get_next_capture_label();
+  // Sanitizes, stores, and returns the accepted label for the next new device
+  // captured this session (consumed once; charset matches BLE-name rules).
+  std::string set_next_capture_label(const std::string& value);
+  // Wipes the NimBLE bond store and this session's in-memory capture cache.
+  void forget_all_bonds();
 
  protected:
   // Configuration/state
@@ -275,11 +367,30 @@ class IRKCaptureComponent : public Component {
     uint32_t last_observed_generation;
     uint16_t reconnect_count;
     bool reconnect_limit_reported;
+    std::string label;  // Optional user label, attached at first capture only
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
   uint32_t capture_events_ { 0 };         // IRK publications this session
   uint32_t unique_devices_ { 0 };         // New identity addresses this session
   uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
+
+  // Wizard-facing session state (see README). Protected by state_mutex_ like
+  // the rest of this block.
+  text_sensor::TextSensor* status_sensor_ { nullptr };
+  text_sensor::TextSensor* history_sensor_ { nullptr };
+  IRKCaptureForgetBondsButton* forget_bonds_button_ { nullptr };
+  IRKCaptureStopAfterCaptureSwitch* stop_after_capture_switch_ { nullptr };
+  IRKCaptureAutoProfileFallbackSwitch* auto_profile_fallback_switch_ { nullptr };
+  IRKCaptureLabelText* next_capture_label_text_ { nullptr };
+
+  bool stop_after_capture_ { false };            // Auto-off advertising after any publish
+  std::string next_capture_label_;               // Consumed by the next new cache entry
+  std::string last_status_value_;                // Avoids redundant status publishes
+  uint32_t status_capture_hold_until_ { 0 };      // "captured" displays until this deadline
+
+  bool auto_profile_fallback_ { false };          // User opt-in
+  bool auto_profile_fallback_triggered_ { false };  // Fires at most once per advertising session
+  uint32_t advertising_started_ms_ { 0 };         // Start of the current unbroken advertising run
 
   // Deferred entity publishing. ESPHome entity publish_state() is not safe to
   // call from the NimBLE task, so BLE-context code stages values here (under
@@ -293,6 +404,18 @@ class IRKCaptureComponent : public Component {
   uint32_t last_result_generation_ { 0 };  // Orders completed pairing outcomes across delayed reads
   bool pending_effmac_pub_ { false };
   std::string pending_effmac_;
+  bool pending_history_pub_ { false };
+  std::string pending_history_json_;
+  // Config entities can now be changed from two places (the HA entity itself
+  // and the on-device wizard's HTTP API, which runs on httpd's own task), so
+  // their entity state is staged here and published from the main task like
+  // everything else rather than written directly from the caller's context.
+  bool pending_stop_after_capture_pub_ { false };
+  bool pending_stop_after_capture_val_ { false };
+  bool pending_auto_profile_fallback_pub_ { false };
+  bool pending_auto_profile_fallback_val_ { false };
+  bool pending_label_pub_ { false };
+  std::string pending_label_val_;
 
   // Host state — written by NimBLE reset/sync callbacks and read by the ESPHome
   // main task. Atomic storage provides cross-core visibility without requiring
@@ -386,6 +509,13 @@ class IRKCaptureComponent : public Component {
   // drained only on the ESPHome main task in loop().
   void stage_advertising_publish_(bool value);
   void flush_pending_publishes_();
+  // Builds the capture-history JSON off the mutex, then stages it. Safe to
+  // call from either task context.
+  void stage_history_publish_();
+
+  // Main-task-only helpers (called from loop()).
+  void update_status_sensor_(uint32_t now);
+  void check_auto_profile_fallback_(uint32_t now);
 };
 
 }  // namespace irk_capture

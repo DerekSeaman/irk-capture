@@ -191,6 +191,12 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
 | **Effective MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
+| **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, or `error` |
+| **Capture History** | Text Sensor | JSON array of every device cached this session: `[{"mac","irk","label","reconnects"}, ...]` |
+| **Stop Advertising After Capture** | Switch | Auto-turns off BLE Advertising the moment any IRK publishes, instead of continuing to hunt for more devices (default OFF) |
+| **Auto-Switch Profile If No Pairing** | Switch | If nothing attempts to pair within 60s of advertising starting, reboot once into the other BLE profile (default OFF) |
+| **Next Capture Label** | Text Input | Optional label attached to the next *new* device captured this session (e.g. "Dad's iPhone"); consumed once per capture |
+| **Forget All Bonds** | Button | Clears the NimBLE bond store and this session's capture history — distinct from Generate New MAC, which only rotates the address |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
 | **Internal Temp** | Sensor | ESP32 internal temperature (diagnostic) |
@@ -212,6 +218,27 @@ After the fifth failure, automatic recovery continues once per minute while the 
 An error marks the transition to slow recovery; continuing failures are logged at most once every
 five minutes. Successful recovery is also logged. Turning the switch OFF cancels retries;
 turning it back ON starts a fresh attempt. Recovery does not reboot or clear captures/bonds.
+
+### Building a capture wizard on top of these entities
+
+The **Status**, **Capture History**, **Stop Advertising After Capture**, **Auto-Switch Profile If
+No Pairing**, **Next Capture Label**, and **Forget All Bonds** entities exist to support a guided,
+multi-device capture flow (e.g. a Home Assistant dashboard or external app) without hand-editing
+YAML per capture:
+
+1. Set **Next Capture Label** (optional) to tag the device you're about to pair.
+2. Turn on **Stop Advertising After Capture** so the session ends cleanly after one device instead
+   of continuing to hunt for more.
+3. Turn on **BLE Advertising** and poll **Status** for `advertising` → `pairing` → `capturing` →
+   `captured`.
+4. Read **Capture History** (JSON) for the labeled `{mac, irk}` pair once `captured` is reached.
+5. Before recapturing the same physical device, press **Forget All Bonds** — a cached bond can
+   otherwise cause pairing to silently fail on the retry.
+
+**Auto-Switch Profile If No Pairing** is for the "not sure what kind of phone this is" case: if
+nothing attempts to pair within 60 seconds of advertising starting, the device reboots once into
+the other profile (Heart Sensor ⇄ Keyboard) and tries again — profile changes always require a
+reboot because the GATT database can't be swapped while NimBLE is running.
 
 ## Tested Devices
 
