@@ -67,11 +67,20 @@ mdns:
 # Pull irk_capture external component. The component always tracks main so
 # devices pick up the latest component fixes automatically; the package YAML
 # version is pinned separately via the device YAML's packages: ref.
+#
+# Both can be redirected from the device YAML by setting irk_component_url /
+# irk_component_ref in its substitutions - useful for testing a branch or a
+# fork without having to edit this package. A device YAML's substitutions
+# take precedence over a package's.
+substitutions:
+  irk_component_url: https://github.com/DerekSeaman/irk-capture
+  irk_component_ref: main
+
 external_components:
   - source:
       type: git
-      url: https://github.com/DerekSeaman/irk-capture
-      ref: main
+      url: ${irk_component_url}
+      ref: ${irk_component_ref}
     components: [irk_capture]
     refresh: always
 
