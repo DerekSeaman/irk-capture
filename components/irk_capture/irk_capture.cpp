@@ -650,6 +650,7 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
       // always be shown, but it is still the same unique device.
       if (entry.irk_hex != irk_hex) {
         entry.irk_hex = irk_hex;
+        history_revision_++;
         entry.reconnect_count = 0;
         entry.reconnect_limit_reported = false;
         entry.last_published_ms = now;
@@ -708,9 +709,11 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
     // and keep UX predictable.
     ESP_LOGD(TAG, "IRK cache full (%zu entries), evicting oldest entry", cache_limit);
     irk_cache_.erase(irk_cache_.begin());
+    history_revision_++;
   }
   irk_cache_.push_back(
       { irk_hex, addr, addr_type, now, connection_generation, 0, false, next_capture_label_ });
+  history_revision_++;
   if (!next_capture_label_.empty()) {
     ESP_LOGI(TAG, "Tagged new capture with label '%s'", next_capture_label_.c_str());
     next_capture_label_.clear();  // Consume-once: next device starts unlabeled
@@ -1865,6 +1868,19 @@ void IRKCaptureComponent::loop() {
   // Drain entity publishes staged by the NimBLE task (see flush impl).
   flush_pending_publishes_();
 
+  // A profile change asks for a reboot from whichever task made the request;
+  // carry it out here, on the main task.
+  bool reboot;
+  {
+    MutexGuard lock(state_mutex_);
+    reboot = reboot_requested_;
+  }
+  if (reboot) {
+    ESP_LOGW(TAG, "Rebooting to apply the BLE profile change");
+    App.safe_reboot();
+    return;
+  }
+
   // Wizard-facing session status (advertising/pairing/capturing/captured/idle).
   update_status_sensor_(now);
 
@@ -2827,12 +2843,17 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     }
 
     // GATT database cannot be dynamically changed in NimBLE - restart required
-    // Use ESPHome's safe_reboot to avoid watchdog timeout from blocking
-    // vTaskDelay
     ESP_LOGW(TAG,
              "Profile change requires restart to update GATT database - "
              "scheduling safe reboot...");
-    App.safe_reboot();
+    // Request the reboot rather than performing it here. set_ble_profile()
+    // can be reached from a caller that is not the main task (the wizard
+    // serves it from esp_http_server's task), and App.safe_reboot() tears
+    // down every component, which must happen on the main task. Deferring
+    // also lets the caller finish its work - an HTTP handler gets to send
+    // its response instead of the connection dropping mid-reply.
+    MutexGuard lock(state_mutex_);
+    reboot_requested_ = true;
   }
 }
 
@@ -3658,15 +3679,24 @@ void IRKCaptureComponent::forget_all_bonds() {
   {
     MutexGuard lock(state_mutex_);
     irk_cache_.clear();
+    history_revision_++;
   }
 }
 
 std::string IRKCaptureComponent::build_history_json() {
-  // Copy the cache under the mutex, then format JSON outside it — string
+  // The wizard polls this continuously while its page is open, but captures
+  // are rare, so re-serializing - and copying the whole cache under the mutex
+  // the NimBLE task also needs - on every poll would be pure waste. Only
+  // rebuild when a capture actually changed something.
+  //
+  // Copy the cache under the mutex, then format JSON outside it: string
   // building is comparatively slow and must not block the NimBLE task.
   std::vector<IRKCacheEntry> cache_copy;
+  uint32_t revision;
   {
     MutexGuard lock(state_mutex_);
+    if (history_cached_revision_ == history_revision_) return history_cached_json_;
+    revision = history_revision_;
     cache_copy = irk_cache_;
   }
 
@@ -3692,6 +3722,13 @@ std::string IRKCaptureComponent::build_history_json() {
   }
   json += "]";
 
+  MutexGuard lock(state_mutex_);
+  // A capture landing mid-build just bumps the revision again; the next call
+  // rebuilds rather than caching a string that is already stale.
+  if (revision == history_revision_) {
+    history_cached_json_ = json;
+    history_cached_revision_ = revision;
+  }
   return json;
 }
 
