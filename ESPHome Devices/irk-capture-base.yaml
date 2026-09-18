@@ -119,6 +119,13 @@ text_sensor:
     effective_mac:
       name: "Effective MAC"
       id: effective_mac
+    status:
+      name: "Status"
+      id: capture_status
+      icon: mdi:bluetooth-connect
+    capture_history:
+      name: "Capture History"
+      id: capture_history
 
 # Persistent BLE advertising intent (pauses automatically while connected)
 switch:
@@ -129,6 +136,16 @@ switch:
       name: "BLE Advertising"
       # Preserve start_on_boot; an explicit restore mode can override it.
       restore_mode: DISABLED
+    # Both default OFF: existing continuous multi-capture behavior is
+    # unchanged unless a user (or wizard) opts in.
+    stop_after_capture:
+      id: stop_after_capture
+      name: "Stop Advertising After Capture"
+      icon: mdi:stop-circle-outline
+    auto_profile_fallback:
+      id: auto_profile_fallback
+      name: "Auto-Switch Profile If No Pairing"
+      icon: mdi:swap-horizontal
 
 # Buttons
 button:
@@ -137,6 +154,10 @@ button:
     new_mac:
       id: new_mac_btn
       name: "Generate New MAC"
+    forget_bonds:
+      id: forget_bonds_btn
+      name: "Forget All Bonds"
+      icon: mdi:bluetooth-off
   - platform: restart
     name: "Restart Device"
 
@@ -147,6 +168,10 @@ text:
     ble_name:
       id: ble_name_input
       name: "BLE Device Name"
+      mode: text
+    next_capture_label:
+      id: next_capture_label
+      name: "Next Capture Label"
       mode: text
 
 # BLE profile selection dropdown
