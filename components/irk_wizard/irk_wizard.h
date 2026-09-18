@@ -6,6 +6,7 @@
 #include "esphome/components/irk_capture/irk_capture.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/core/component.h"
+#include "wizard_util.h"
 
 #ifdef USE_ESP32
 #include <esp_http_server.h>
@@ -75,6 +76,20 @@ class IRKWizardComponent : public Component {
   irk_capture::IRKCaptureComponent* irk_capture() {
     return irk_capture_;
   }
+  // Gzipped page, generated from wizard_page.html at build time.
+  void set_page(const uint8_t* data, size_t size) {
+    page_data_ = data;
+    page_size_ = size;
+  }
+  const uint8_t* page_data() const {
+    return page_data_;
+  }
+  size_t page_size() const {
+    return page_size_;
+  }
+  AuthThrottle& auth_throttle() {
+    return auth_throttle_;
+  }
   const std::string& expected_auth() const {
     return expected_auth_;
   }
@@ -95,6 +110,9 @@ class IRKWizardComponent : public Component {
   text_sensor::TextSensor* device_mac_sensor_ { nullptr };
   text_sensor::TextSensor* effective_mac_sensor_ { nullptr };
   uint16_t port_ { 8080 };
+  const uint8_t* page_data_ { nullptr };
+  size_t page_size_ { 0 };
+  AuthThrottle auth_throttle_;
   std::string expected_auth_;  // "Basic <base64>", empty = auth disabled
   std::atomic<uint32_t> last_request_ms_ { 0 };
 

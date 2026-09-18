@@ -8,6 +8,9 @@ capture/BLE logic, only reads published entity state and calls the same
 public control methods the switch/button/text/select platforms use.
 """
 
+import gzip
+from pathlib import Path
+
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import esp32, text_sensor
@@ -20,6 +23,7 @@ CODEOWNERS = ["@davidcoulson"]
 # does not otherwise declare wifi/ethernet.
 DEPENDENCIES = ["irk_capture", "network", "text_sensor"]
 
+CONF_PAGE_DATA_ID = "page_data_id"
 CONF_PORT = "port"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
@@ -34,6 +38,7 @@ IRKWizardComponent = irk_wizard_ns.class_("IRKWizardComponent", cg.Component)
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(IRKWizardComponent),
+        cv.GenerateID(CONF_PAGE_DATA_ID): cv.declare_id(cg.uint8),
         cv.Required(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
         # The four text sensors the wizard displays. These must already be
         # defined elsewhere in the device YAML (see irk-capture-base.yaml) -
@@ -68,6 +73,14 @@ async def to_code(config):
     cg.add(var.set_device_mac_sensor(device_mac))
     effective_mac = await cg.get_variable(config[CONF_EFFECTIVE_MAC_ID])
     cg.add(var.set_effective_mac_sensor(effective_mac))
+
+    # Gzip the page here rather than shipping it as source text: roughly a
+    # quarter of the flash, and the browser inflates it for free. mtime=0
+    # keeps the output byte-identical between builds.
+    page = (Path(__file__).parent / "wizard_page.html").read_bytes()
+    packed = gzip.compress(page, compresslevel=9, mtime=0)
+    page_arr = cg.progmem_array(config[CONF_PAGE_DATA_ID], list(packed))
+    cg.add(var.set_page(page_arr, len(packed)))
 
     cg.add(var.set_port(config[CONF_PORT]))
     if CONF_USERNAME in config:

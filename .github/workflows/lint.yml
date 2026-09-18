@@ -154,6 +154,26 @@ jobs:
             assert(json_escape("a\"b") == "a\\\"b");
             assert(json_escape("a\\b") == "a\\\\b");
 
+            // auth throttle: locks after five straight failures, a success
+            // resets it, and it expires - including across a millis() wrap
+            AuthThrottle t;
+            for (int i = 0; i < 4; i++) t.fail(1000);
+            assert(!t.locked(1000));
+            t.ok();
+            for (int i = 0; i < 4; i++) t.fail(2000);
+            assert(!t.locked(2000));  // the success cleared the earlier four
+            t.fail(2000);
+            assert(t.locked(2000));
+            assert(t.locked(2000 + AuthThrottle::LOCKOUT_MS - 1));
+            assert(!t.locked(2000 + AuthThrottle::LOCKOUT_MS));
+            assert(t.failures == 0);  // expiry starts a clean count
+            AuthThrottle w;
+            const uint32_t near_wrap = 0xFFFFFF00u;
+            for (int i = 0; i < 5; i++) w.fail(near_wrap);
+            assert(w.locked(near_wrap + 100));  // still before the wrap
+            assert(w.locked(near_wrap + 0x200));  // just after it
+            assert(!w.locked(near_wrap + AuthThrottle::LOCKOUT_MS));
+
             printf("wizard_util: all assertions passed\n");
             return 0;
           }

@@ -63,6 +63,37 @@ inline bool is_json_content_type(const char* value) {
   return value[i] == '\0' || value[i] == ';';
 }
 
+// Slows down password guessing: after MAX_FAILURES bad attempts in a row,
+// everything is refused for LOCKOUT_MS. A success clears the count.
+struct AuthThrottle {
+  static constexpr uint8_t MAX_FAILURES = 5;
+  static constexpr uint32_t LOCKOUT_MS = 30000;
+
+  uint8_t failures { 0 };
+  bool lock_active { false };
+  uint32_t locked_at { 0 };
+
+  // Wraparound-safe: compares elapsed time, never absolute timestamps.
+  bool locked(uint32_t now) {
+    if (lock_active && (uint32_t) (now - locked_at) >= LOCKOUT_MS) {
+      lock_active = false;
+      failures = 0;
+    }
+    return lock_active;
+  }
+  void fail(uint32_t now) {
+    if (failures < MAX_FAILURES) failures++;
+    if (failures >= MAX_FAILURES) {
+      lock_active = true;
+      locked_at = now;
+    }
+  }
+  void ok() {
+    failures = 0;
+    lock_active = false;
+  }
+};
+
 inline bool json_find_value_start(const std::string& body, const char* key, size_t& pos) {
   std::string needle = std::string("\"") + key + "\"";
   size_t key_pos = body.find(needle);
