@@ -373,8 +373,6 @@ class IRKCaptureComponent : public Component {
   uint32_t status_capture_hold_until_ { 0 };
   // "no_irk" displays until this deadline.
   uint32_t status_no_irk_hold_until_ { 0 };
-  // Set by set_ble_profile() from any task; acted on by loop().
-  bool reboot_requested_ { false };
   // Bumped on every irk_cache_ mutation so build_history_json() can hand back
   // its cached string instead of re-serializing on every wizard poll.
   uint32_t history_revision_ { 0 };

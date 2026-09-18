@@ -1868,19 +1868,6 @@ void IRKCaptureComponent::loop() {
   // Drain entity publishes staged by the NimBLE task (see flush impl).
   flush_pending_publishes_();
 
-  // A profile change asks for a reboot from whichever task made the request;
-  // carry it out here, on the main task.
-  bool reboot;
-  {
-    MutexGuard lock(state_mutex_);
-    reboot = reboot_requested_;
-  }
-  if (reboot) {
-    ESP_LOGW(TAG, "Rebooting to apply the BLE profile change");
-    App.safe_reboot();
-    return;
-  }
-
   // Wizard-facing session status (advertising/pairing/capturing/captured/idle).
   update_status_sensor_(now);
 
@@ -2846,14 +2833,13 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     ESP_LOGW(TAG,
              "Profile change requires restart to update GATT database - "
              "scheduling safe reboot...");
-    // Request the reboot rather than performing it here. set_ble_profile()
-    // can be reached from a caller that is not the main task (the wizard
-    // serves it from esp_http_server's task), and App.safe_reboot() tears
-    // down every component, which must happen on the main task. Deferring
-    // also lets the caller finish its work - an HTTP handler gets to send
-    // its response instead of the connection dropping mid-reply.
-    MutexGuard lock(state_mutex_);
-    reboot_requested_ = true;
+    // set_ble_profile() can be reached from a caller that is not the main
+    // task (the wizard serves it from esp_http_server's task), and
+    // App.safe_reboot() tears down every component, which must happen on the
+    // main task. defer() is safe to call from another task and runs on the
+    // main loop, which also lets the caller finish first - an HTTP handler
+    // gets to send its response instead of the connection dropping mid-reply.
+    this->defer([]() { App.safe_reboot(); });
   }
 }
 
