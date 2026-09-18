@@ -119,6 +119,10 @@ text_sensor:
     effective_mac:
       name: "Effective MAC"
       id: effective_mac
+    status:
+      name: "Status"
+      id: capture_status
+      icon: mdi:bluetooth-connect
 
 # Persistent BLE advertising intent (pauses automatically while connected)
 switch:
@@ -137,6 +141,10 @@ button:
     new_mac:
       id: new_mac_btn
       name: "Generate New MAC"
+    forget_bonds:
+      id: forget_bonds_btn
+      name: "Forget All Bonds"
+      icon: mdi:bluetooth-off
   - platform: restart
     name: "Restart Device"
 

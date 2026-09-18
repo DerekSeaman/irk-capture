@@ -27,7 +27,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.6.3";
+static constexpr char VERSION[] = "1.7.0";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -184,6 +184,8 @@ struct TimingConfig {
   static constexpr uint8_t MAC_ROTATION_MAX_RETRIES = 10;  // Max retries for MAC rotation
   static constexpr uint32_t MAC_ROTATION_SETTLE_DELAY_MS =
       500;  // Delay after adv stop before MAC change
+  static constexpr uint32_t STATUS_RESULT_HOLD_MS =
+      4000;  // How long the status sensor holds "captured" / "no_irk"
 };
 
 // GATT service and characteristic UUIDs
@@ -648,6 +650,7 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
       // always be shown, but it is still the same unique device.
       if (entry.irk_hex != irk_hex) {
         entry.irk_hex = irk_hex;
+        history_revision_++;
         entry.reconnect_count = 0;
         entry.reconnect_limit_reported = false;
         entry.last_published_ms = now;
@@ -706,8 +709,15 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
     // and keep UX predictable.
     ESP_LOGD(TAG, "IRK cache full (%zu entries), evicting oldest entry", cache_limit);
     irk_cache_.erase(irk_cache_.begin());
+    history_revision_++;
   }
-  irk_cache_.push_back({ irk_hex, addr, addr_type, now, connection_generation, 0, false });
+  irk_cache_.push_back(
+      { irk_hex, addr, addr_type, now, connection_generation, 0, false, next_capture_label_ });
+  history_revision_++;
+  if (!next_capture_label_.empty()) {
+    ESP_LOGI(TAG, "Tagged new capture with label '%s'", next_capture_label_.c_str());
+    next_capture_label_.clear();  // Consume-once: next device starts unlabeled
+  }
   out_is_new_device = true;
   ESP_LOGD(TAG, "New IRK added to cache (total: %zu/%zu)", irk_cache_.size(), cache_limit);
   return true;
@@ -745,6 +755,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   uint32_t current_events = 0;
   uint32_t current_unique = 0;
   bool max_reached = false;
+  bool stop_after_capture_hit = false;
   bool should_publish;
   bool should_stop_adv = false;
   bool is_new_device = false;
@@ -790,6 +801,21 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
       if (!self->continuous_mode_ ||
           (self->max_captures_ > 0 && self->unique_devices_ >= self->max_captures_)) {
         max_reached = true;
+      }
+
+      // Wizard "one-shot" mode: independent of continuous_mode/max_captures,
+      // stop advertising after any publish so the flow can hand off to
+      // confirmation instead of continuing to hunt for more devices.
+      stop_after_capture_hit = self->stop_after_capture_;
+
+      // Hold the status sensor at "captured" briefly so a UI polling it can
+      // show a clear success state instead of racing back to "advertising".
+      // Only for a genuine capture or an explicit (re)pairing - a bonded
+      // reconnect that republishes the same key after the rate limit is not
+      // something the user just did.
+      if (is_new_device || force_pairing_publish || is_repair) {
+        self->status_capture_hold_until_ = now_ms() + TimingConfig::STATUS_RESULT_HOLD_MS;
+        self->status_no_irk_hold_until_ = 0;
       }
     }
   }  // Release mutex before slow logging/publishing operations
@@ -842,10 +868,12 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
       ESP_LOGI(TAG, "Max unique devices (%u) reached - advertising will stop after disconnect",
                self->max_captures_);
     }
+  } else if (stop_after_capture_hit) {
+    ESP_LOGI(TAG, "Stop-after-capture enabled: advertising will stop after disconnect");
   }
 
   log_spacer();
-  if (max_reached) {
+  if (max_reached || stop_after_capture_hit) {
     self->set_advertising_requested(false);
   }
 }
@@ -1128,6 +1156,22 @@ void IRKCaptureButton::press_action() {
   parent_->refresh_mac();
 }
 
+void IRKCaptureForgetBondsButton::press_action() {
+  ESP_LOGI(TAG, "Forget All Bonds pressed");
+  parent_->forget_all_bonds();
+}
+
+void IRKCaptureStopAfterCaptureSwitch::write_state(bool state) {
+  // set_stop_after_capture() stages the entity publish; publishing here as
+  // well would send every change twice.
+  parent_->set_stop_after_capture(state);
+}
+
+void IRKCaptureLabelText::control(const std::string& value) {
+  // Stages the publish of the accepted (sanitized) value; see above.
+  parent_->set_next_capture_label(value);
+}
+
 //======================== Entity dump_config ========================
 
 void IRKCaptureText::dump_config() {
@@ -1142,6 +1186,20 @@ void IRKCaptureSwitch::dump_config() {
 
 void IRKCaptureButton::dump_config() {
   ESP_LOGCONFIG(TAG, "IRK Capture New MAC Button");
+}
+
+void IRKCaptureForgetBondsButton::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture Forget Bonds Button");
+}
+
+void IRKCaptureStopAfterCaptureSwitch::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture Stop-After-Capture Switch:");
+  ESP_LOGCONFIG(TAG, "  State: %s", state ? "ON" : "OFF");
+}
+
+void IRKCaptureLabelText::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture Next Capture Label Text:");
+  ESP_LOGCONFIG(TAG, "  Value: '%s'", state.c_str());
 }
 
 void IRKCaptureSelect::control(const std::string& value) {
@@ -1727,6 +1785,9 @@ void IRKCaptureComponent::setup() {
   pairing_generation_ = 0;
   repair_generation_ = 0;
   last_result_generation_ = 0;
+  status_capture_hold_until_ = 0;
+  status_no_irk_hold_until_ = 0;
+  next_capture_label_.clear();
 
   // Resolve startup intent before starting the NimBLE task. DISABLED (the
   // platform default) preserves start_on_boot; explicit restore modes win.
@@ -1760,6 +1821,20 @@ void IRKCaptureComponent::setup() {
   if (advertising_switch_) {
     advertising_switch_->publish_state(is_advertising_requested());
   }
+  if (stop_after_capture_switch_) {
+    // Apply the switch's restore mode, the same way the advertising switch
+    // does. Without this the declared RESTORE_DEFAULT_OFF never takes effect
+    // and the setting silently reverts on every boot.
+    auto restored = stop_after_capture_switch_->get_initial_state_with_restore_mode();
+    if (restored.has_value()) {
+      stop_after_capture_ = restored.value() != stop_after_capture_switch_->is_inverted();
+    }
+    stop_after_capture_switch_->publish_state(stop_after_capture_);
+  }
+  if (status_sensor_) {
+    last_status_value_ = "idle";
+    status_sensor_->publish_state(last_status_value_);
+  }
 }
 
 void IRKCaptureComponent::dump_config() {
@@ -1792,6 +1867,9 @@ void IRKCaptureComponent::loop() {
 
   // Drain entity publishes staged by the NimBLE task (see flush impl).
   flush_pending_publishes_();
+
+  // Wizard-facing session status (advertising/pairing/capturing/captured/idle).
+  update_status_sensor_(now);
 
   // Timers for IRK checks
   handle_post_disconnect_timer(now);
@@ -2752,12 +2830,16 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     }
 
     // GATT database cannot be dynamically changed in NimBLE - restart required
-    // Use ESPHome's safe_reboot to avoid watchdog timeout from blocking
-    // vTaskDelay
     ESP_LOGW(TAG,
              "Profile change requires restart to update GATT database - "
              "scheduling safe reboot...");
-    App.safe_reboot();
+    // set_ble_profile() can be reached from a caller that is not the main
+    // task (the wizard serves it from esp_http_server's task), and
+    // App.safe_reboot() tears down every component, which must happen on the
+    // main task. defer() is safe to call from another task and runs on the
+    // main loop, which also lets the caller finish first - an HTTP handler
+    // gets to send its response instead of the connection dropping mid-reply.
+    this->defer([]() { App.safe_reboot(); });
   }
 }
 
@@ -3415,6 +3497,7 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
     pending_irk_hex_ = "Failed: IRK not used";
     pending_irk_addr_ = addr;
     pending_irk_pub_ = true;
+    status_no_irk_hold_until_ = now_ms() + TimingConfig::STATUS_RESULT_HOLD_MS;
     if (connected_) irk_gave_up_ = true;
     for (auto* timers : { &post_disc_timers_, &late_enc_timers_ }) {
       for (auto& timer : *timers) {
@@ -3480,7 +3563,8 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   // Runs on the ESPHome main task. Copy staged values out under the mutex, then
   // publish outside it (publish_state can be slow and must not hold the lock).
   bool adv_pub, adv_val, irk_pub, effmac_pub;
-  std::string irk_hex, irk_addr, effmac;
+  bool stop_after_pub, stop_after_val, label_pub;
+  std::string irk_hex, irk_addr, effmac, label_val;
   {
     MutexGuard lock(state_mutex_);
     adv_pub = pending_adv_pub_;
@@ -3493,6 +3577,12 @@ void IRKCaptureComponent::flush_pending_publishes_() {
     effmac_pub = pending_effmac_pub_;
     pending_effmac_pub_ = false;
     effmac.swap(pending_effmac_);
+    stop_after_pub = pending_stop_after_capture_pub_;
+    stop_after_val = pending_stop_after_capture_val_;
+    pending_stop_after_capture_pub_ = false;
+    label_pub = pending_label_pub_;
+    pending_label_pub_ = false;
+    label_val.swap(pending_label_val_);
   }
   if (adv_pub && advertising_switch_) advertising_switch_->publish_state(adv_val);
   if (irk_pub) {
@@ -3500,6 +3590,171 @@ void IRKCaptureComponent::flush_pending_publishes_() {
     if (address_sensor_) address_sensor_->publish_state(irk_addr);
   }
   if (effmac_pub && effective_mac_sensor_) effective_mac_sensor_->publish_state(effmac);
+  if (stop_after_pub && stop_after_capture_switch_)
+    stop_after_capture_switch_->publish_state(stop_after_val);
+  if (label_pub && next_capture_label_text_) next_capture_label_text_->publish_state(label_val);
+}
+
+//======================== Wizard-facing controls (1.7.0) ========================
+
+void IRKCaptureComponent::set_stop_after_capture(bool enabled) {
+  MutexGuard lock(state_mutex_);
+  stop_after_capture_ = enabled;
+  pending_stop_after_capture_val_ = enabled;
+  pending_stop_after_capture_pub_ = true;
+}
+
+bool IRKCaptureComponent::get_stop_after_capture() {
+  MutexGuard lock(state_mutex_);
+  return stop_after_capture_;
+}
+
+std::string IRKCaptureComponent::get_next_capture_label() {
+  MutexGuard lock(state_mutex_);
+  return next_capture_label_;
+}
+
+std::string IRKCaptureComponent::set_next_capture_label(const std::string& value) {
+  // Same safe charset as sanitize_ble_name(), but labels aren't advertised
+  // over the air, so they get a longer budget than the 12-byte BLE-name cap.
+  std::string sanitized;
+  sanitized.reserve(24);
+  for (char c : value) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' ||
+        c == '-' || c == '_') {
+      sanitized += c;
+    }
+    if (sanitized.length() >= 24) break;
+  }
+  {
+    MutexGuard lock(state_mutex_);
+    next_capture_label_ = sanitized;
+    pending_label_val_ = sanitized;
+    pending_label_pub_ = true;
+  }
+  ESP_LOGD(TAG, "Next capture label set to '%s'", sanitized.c_str());
+  return sanitized;
+}
+
+void IRKCaptureComponent::forget_all_bonds() {
+  bool connected;
+  {
+    MutexGuard lock(state_mutex_);
+    connected = connected_;
+  }
+
+  // Wiping the store mid-pairing would pull the bond out from under an
+  // in-flight exchange. The session cache is always safe to clear.
+  if (connected) {
+    ESP_LOGW(TAG,
+             "Forget All Bonds: a peer is connected; clearing this session's "
+             "capture list only. Run it again once the device disconnects to "
+             "also clear stored bonds.");
+  } else {
+    ESP_LOGW(TAG, "Forget All Bonds: clearing stored bonds and this session's capture list");
+    int rc = ble_store_clear();
+    if (rc != 0) {
+      ESP_LOGE(TAG, "ble_store_clear failed rc=%d", rc);
+    } else {
+      ESP_LOGI(TAG, "All BLE bonds cleared");
+    }
+  }
+
+  // capture_events_/unique_devices_ are deliberately left alone: max_captures
+  // budgets against them, and clearing the list does not un-capture a device.
+  {
+    MutexGuard lock(state_mutex_);
+    irk_cache_.clear();
+    history_revision_++;
+  }
+}
+
+std::string IRKCaptureComponent::build_history_json() {
+  // The wizard polls this continuously while its page is open, but captures
+  // are rare, so re-serializing - and copying the whole cache under the mutex
+  // the NimBLE task also needs - on every poll would be pure waste. Only
+  // rebuild when a capture actually changed something.
+  //
+  // Copy the cache under the mutex, then format JSON outside it: string
+  // building is comparatively slow and must not block the NimBLE task.
+  std::vector<IRKCacheEntry> cache_copy;
+  uint32_t revision;
+  {
+    MutexGuard lock(state_mutex_);
+    if (history_cached_revision_ == history_revision_) return history_cached_json_;
+    revision = history_revision_;
+    cache_copy = irk_cache_;
+  }
+
+  std::string json;
+  json.reserve(cache_copy.size() * 64 + 2);
+  json += "[";
+  bool first = true;
+  for (const auto& entry : cache_copy) {
+    if (!first) json += ",";
+    first = false;
+    // mac_addr/irk_hex are always hex/colon characters and label is
+    // restricted to a safe charset (see set_next_capture_label()), so none of
+    // these values can contain a character that needs JSON escaping.
+    json += "{\"mac\":\"";
+    json += entry.mac_addr;
+    json += "\",\"irk\":\"";
+    json += entry.irk_hex;
+    json += "\",\"label\":\"";
+    json += entry.label;
+    json += "\",\"reconnects\":";
+    json += std::to_string(entry.reconnect_count);
+    json += "}";
+  }
+  json += "]";
+
+  MutexGuard lock(state_mutex_);
+  // A capture landing mid-build just bumps the revision again; the next call
+  // rebuilds rather than caching a string that is already stale.
+  if (revision == history_revision_) {
+    history_cached_json_ = json;
+    history_cached_revision_ = revision;
+  }
+  return json;
+}
+
+void IRKCaptureComponent::update_status_sensor_(uint32_t now) {
+  if (!status_sensor_) return;
+
+  bool adv, conn, enc, capturing_hold, no_irk_hold;
+  {
+    MutexGuard lock(state_mutex_);
+    adv = advertising_;
+    conn = connected_;
+    enc = enc_ready_;
+    capturing_hold =
+        status_capture_hold_until_ != 0 && !deadline_reached(now, status_capture_hold_until_);
+    no_irk_hold =
+        status_no_irk_hold_until_ != 0 && !deadline_reached(now, status_no_irk_hold_until_);
+  }
+
+  const char* status;
+  if (capturing_hold) {
+    status = "captured";
+  } else if (no_irk_hold) {
+    // Pairing completed but the peer never sent an identity key. This is the
+    // one outcome the user has to act on, so it must not look like "still
+    // advertising" (see publish_no_irk_).
+    status = "no_irk";
+  } else if (conn && enc) {
+    status = "capturing";  // Encrypted; polling the bond store for the IRK
+  } else if (conn) {
+    status = "pairing";  // Connected; security/encryption not yet complete
+  } else if (adv) {
+    status = "advertising";
+  } else {
+    status = "idle";
+  }
+
+  if (last_status_value_ != status) {
+    last_status_value_ = status;
+    status_sensor_->publish_state(status);
+  }
 }
 
 }  // namespace irk_capture

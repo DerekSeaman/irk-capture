@@ -191,6 +191,8 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
 | **Effective MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
+| **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, or `no_irk` |
+| **Forget All Bonds** | Button | Clears this session's capture list so a run can start from a clean slate, and clears stored bonds when no device is connected |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
 | **Internal Temp** | Sensor | ESP32 internal temperature (diagnostic) |
@@ -212,6 +214,29 @@ After the fifth failure, automatic recovery continues once per minute while the 
 An error marks the transition to slow recovery; continuing failures are logged at most once every
 five minutes. Successful recovery is also logged. Turning the switch OFF cancels retries;
 turning it back ON starts a fresh attempt. Recovery does not reboot or clear captures/bonds.
+
+### Status and building a capture flow on top of it
+
+**Status** reports where a capture attempt is, which is otherwise only inferable by watching
+several entities change at once:
+
+| State | Meaning |
+| :--- | :--- |
+| `idle` | Not advertising |
+| `advertising` | Advertising, nothing connected |
+| `pairing` | A peer is connected, security is not yet complete |
+| `capturing` | Encrypted, reading the identity key from the bond store |
+| `captured` | A key was just captured (or the device was deliberately re-paired) |
+| `no_irk` | Pairing completed but the peer sent no identity key - see the IRK sensor |
+
+`captured` and `no_irk` are held briefly so a polling UI cannot miss them between updates. A
+bonded device reconnecting and republishing the same key does not re-trigger `captured`.
+
+**Forget All Bonds** clears this session's capture list, and also clears stored bonds when no
+device is connected. Generate New MAC already clears the bond store as part of rotating the
+address, so reach for this one when you want a clean capture list without changing the address.
+
+For a guided, multi-device flow built on these entities, see the optional wizard package.
 
 ## Tested Devices
 
