@@ -1,0 +1,58 @@
+---
+# Optional IRK Capture Wizard package
+#
+# Adds a guided, on-device capture UI plus the entities that go with it. Add
+# it as a SECOND packages: entry alongside irk-capture-base.yaml:
+#
+#   packages:
+#     device: !include ...irk-capture-base.yaml
+#     wizard: !include ...irk-capture-wizard.yaml
+#
+# Most people capture straight from the Home Assistant device page and don't
+# need any of this. It is only worth adding for a guided multi-device flow.
+#
+# The UI is served from the ESP32 on its own port, so it works with no Home
+# Assistant and no internet - including from the fallback AP.
+
+external_components:
+  - source:
+      type: git
+      url: ${irk_component_url}
+      ref: ${irk_component_ref}
+    components: [irk_wizard]
+    refresh: always
+
+# Entities used by the wizard flow. They are ordinary irk_capture entities,
+# so they show up in Home Assistant too.
+switch:
+  - platform: irk_capture
+    irk_capture_id: irk
+    # Ends the session after one device instead of continuing to hunt for
+    # more, while keeping the multi-capture buffer available.
+    stop_after_capture:
+      id: stop_after_capture
+      name: "Stop Advertising After Capture"
+      icon: mdi:stop-circle-outline
+
+text:
+  - platform: irk_capture
+    irk_capture_id: irk
+    # Consumed by the next new device captured, so a key can be told apart
+    # from the others afterwards.
+    next_capture_label:
+      id: next_capture_label
+      name: "Next Capture Label"
+      mode: text
+
+irk_wizard:
+  irk_capture_id: irk
+  status_id: capture_status
+  irk_id: last_irk
+  device_mac_id: last_addr
+  effective_mac_id: effective_mac
+  port: 8080
+  # A captured IRK permanently resolves a phone's randomized BLE address, so
+  # the wizard should not be left open on the network. Add these two secrets
+  # to your secrets.yaml.
+  username: !secret wizard_username
+  password: !secret wizard_password
