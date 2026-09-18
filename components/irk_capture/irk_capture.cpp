@@ -817,11 +817,6 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     }
   }  // Release mutex before slow logging/publishing operations
 
-  if (should_publish) {
-    // Rebuild the capture-history sensor off the mutex; irk_cache_ just changed.
-    self->stage_history_publish_();
-  }
-
   // Handle auto-stop advertising due to reconnect-loop defense.
   // Set suppress flag BEFORE checking is_advertising(): when called from
   // handle_gap_disconnect(), advertising_ is already false (cleared on connect
@@ -1836,9 +1831,6 @@ void IRKCaptureComponent::setup() {
   if (status_sensor_) {
     last_status_value_ = "idle";
     status_sensor_->publish_state(last_status_value_);
-  }
-  if (history_sensor_) {
-    history_sensor_->publish_state("[]");
   }
 }
 
@@ -3563,9 +3555,9 @@ void IRKCaptureComponent::stage_advertising_publish_(bool value) {
 void IRKCaptureComponent::flush_pending_publishes_() {
   // Runs on the ESPHome main task. Copy staged values out under the mutex, then
   // publish outside it (publish_state can be slow and must not hold the lock).
-  bool adv_pub, adv_val, irk_pub, effmac_pub, history_pub;
+  bool adv_pub, adv_val, irk_pub, effmac_pub;
   bool stop_after_pub, stop_after_val, label_pub;
-  std::string irk_hex, irk_addr, effmac, history_json, label_val;
+  std::string irk_hex, irk_addr, effmac, label_val;
   {
     MutexGuard lock(state_mutex_);
     adv_pub = pending_adv_pub_;
@@ -3578,9 +3570,6 @@ void IRKCaptureComponent::flush_pending_publishes_() {
     effmac_pub = pending_effmac_pub_;
     pending_effmac_pub_ = false;
     effmac.swap(pending_effmac_);
-    history_pub = pending_history_pub_;
-    pending_history_pub_ = false;
-    history_json.swap(pending_history_json_);
     stop_after_pub = pending_stop_after_capture_pub_;
     stop_after_val = pending_stop_after_capture_val_;
     pending_stop_after_capture_pub_ = false;
@@ -3594,7 +3583,6 @@ void IRKCaptureComponent::flush_pending_publishes_() {
     if (address_sensor_) address_sensor_->publish_state(irk_addr);
   }
   if (effmac_pub && effective_mac_sensor_) effective_mac_sensor_->publish_state(effmac);
-  if (history_pub && history_sensor_) history_sensor_->publish_state(history_json);
   if (stop_after_pub && stop_after_capture_switch_)
     stop_after_capture_switch_->publish_state(stop_after_val);
   if (label_pub && next_capture_label_text_) next_capture_label_text_->publish_state(label_val);
@@ -3671,10 +3659,9 @@ void IRKCaptureComponent::forget_all_bonds() {
     MutexGuard lock(state_mutex_);
     irk_cache_.clear();
   }
-  stage_history_publish_();
 }
 
-void IRKCaptureComponent::stage_history_publish_() {
+std::string IRKCaptureComponent::build_history_json() {
   // Copy the cache under the mutex, then format JSON outside it — string
   // building is comparatively slow and must not block the NimBLE task.
   std::vector<IRKCacheEntry> cache_copy;
@@ -3705,9 +3692,7 @@ void IRKCaptureComponent::stage_history_publish_() {
   }
   json += "]";
 
-  MutexGuard lock(state_mutex_);
-  pending_history_json_ = json;
-  pending_history_pub_ = true;
+  return json;
 }
 
 void IRKCaptureComponent::update_status_sensor_(uint32_t now) {

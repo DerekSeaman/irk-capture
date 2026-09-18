@@ -11,7 +11,6 @@ CONF_LAST_IRK = "last_irk"
 CONF_LAST_ADDRESS = "last_address"
 CONF_EFFECTIVE_MAC = "effective_mac"
 CONF_STATUS = "status"
-CONF_CAPTURE_HISTORY = "capture_history"
 
 IRKCaptureTextSensor = irk_capture_ns.class_(
     "IRKCaptureTextSensor", text_sensor.TextSensor, cg.Component
@@ -31,11 +30,6 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         # One of: idle, advertising, pairing, capturing, captured, error.
         cv.Optional(CONF_STATUS): text_sensor.text_sensor_schema(IRKCaptureTextSensor),
-        # JSON array of {mac, irk, label, reconnects} for every device cached
-        # this session (see max_captures for the buffer size).
-        cv.Optional(CONF_CAPTURE_HISTORY): text_sensor.text_sensor_schema(
-            IRKCaptureTextSensor, entity_category="diagnostic"
-        ),
     }
 )
 
@@ -59,7 +53,3 @@ async def to_code(config):
     if CONF_STATUS in config:
         sens = await text_sensor.new_text_sensor(config[CONF_STATUS])
         cg.add(parent.set_status_sensor(sens))
-
-    if CONF_CAPTURE_HISTORY in config:
-        sens = await text_sensor.new_text_sensor(config[CONF_CAPTURE_HISTORY])
-        cg.add(parent.set_history_sensor(sens))
