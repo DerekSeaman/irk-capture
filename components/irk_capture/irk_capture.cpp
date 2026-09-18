@@ -1164,13 +1164,14 @@ void IRKCaptureForgetBondsButton::press_action() {
 }
 
 void IRKCaptureStopAfterCaptureSwitch::write_state(bool state) {
+  // set_stop_after_capture() stages the entity publish; publishing here as
+  // well would send every change twice.
   parent_->set_stop_after_capture(state);
-  publish_state(state);
 }
 
 void IRKCaptureLabelText::control(const std::string& value) {
-  std::string sanitized = parent_->set_next_capture_label(value);
-  publish_state(sanitized);
+  // Stages the publish of the accepted (sanitized) value; see above.
+  parent_->set_next_capture_label(value);
 }
 
 //======================== Entity dump_config ========================
@@ -1823,6 +1824,13 @@ void IRKCaptureComponent::setup() {
     advertising_switch_->publish_state(is_advertising_requested());
   }
   if (stop_after_capture_switch_) {
+    // Apply the switch's restore mode, the same way the advertising switch
+    // does. Without this the declared RESTORE_DEFAULT_OFF never takes effect
+    // and the setting silently reverts on every boot.
+    auto restored = stop_after_capture_switch_->get_initial_state_with_restore_mode();
+    if (restored.has_value()) {
+      stop_after_capture_ = restored.value() != stop_after_capture_switch_->is_inverted();
+    }
     stop_after_capture_switch_->publish_state(stop_after_capture_);
   }
   if (status_sensor_) {
