@@ -4,6 +4,8 @@
 
 #include <cstring>
 
+#include <esp_random.h>
+
 #include "esphome/components/network/util.h"
 #include "wizard_util.h"
 #include "esphome/core/log.h"
@@ -122,6 +124,28 @@ void IRKWizardComponent::set_auth(const std::string& username, const std::string
   expected_auth_ = "Basic " + base64_encode(username + ":" + password);
 }
 
+void IRKWizardComponent::fresh_identity() {
+  const std::string name = fresh_ble_name(esp_random());
+  // Entity calls and publishes belong on the main task; this is reached from
+  // esp_http_server's.
+  this->defer([this, name]() {
+    if (!irk_capture_) return;
+    if (irk_capture_->get_ble_profile() == irk_capture::BLEProfile::KEYBOARD) {
+      // The Keyboard profile's name is fixed, so only the address can change.
+      ESP_LOGI(TAG, "Fresh identity: rotating address (Keyboard name is fixed)");
+    } else if (ble_name_text_) {
+      ESP_LOGI(TAG, "Fresh identity: renaming to '%s' and rotating address", name.c_str());
+      auto call = ble_name_text_->make_call();
+      call.set_value(name);
+      call.perform();
+    } else {
+      ESP_LOGI(TAG, "Fresh identity: renaming to '%s' and rotating address", name.c_str());
+      irk_capture_->update_ble_name(name);
+    }
+    irk_capture_->refresh_mac();
+  });
+}
+
 WizardSnapshot IRKWizardComponent::get_snapshot() {
   MutexGuard lock(snapshot_mutex_);
   return snapshot_;
@@ -160,6 +184,7 @@ static esp_err_t handle_post_profile(httpd_req_t* req);
 static esp_err_t handle_post_label(httpd_req_t* req);
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req);
 static esp_err_t handle_post_new_mac(httpd_req_t* req);
+static esp_err_t handle_post_fresh_identity(httpd_req_t* req);
 static esp_err_t handle_post_stop_after_capture(httpd_req_t* req);
 
 static esp_err_t send_json(httpd_req_t* req, const std::string& body) {
@@ -206,6 +231,7 @@ bool IRKWizardComponent::start_server_() {
     { "/api/label", HTTP_POST, handle_post_label },
     { "/api/forget_bonds", HTTP_POST, handle_post_forget_bonds },
     { "/api/new_mac", HTTP_POST, handle_post_new_mac },
+    { "/api/fresh_identity", HTTP_POST, handle_post_fresh_identity },
     { "/api/stop_after_capture", HTTP_POST, handle_post_stop_after_capture },
   };
 
@@ -371,6 +397,13 @@ static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
   if (json_extract_bool(body, "enabled", enabled) && self->irk_capture()) {
     self->irk_capture()->set_stop_after_capture(enabled);
   }
+  return send_ok(req);
+}
+
+static esp_err_t handle_post_fresh_identity(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  static_cast<IRKWizardComponent*>(req->user_ctx)->fresh_identity();
   return send_ok(req);
 }
 

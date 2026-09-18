@@ -116,6 +116,9 @@ ol.pair li{margin-bottom:5px}
     <div class="target"><div class="cap">Look for this name</div><div class="nm" id="wizAdvName">-</div></div>
     <ol class="pair" id="wizSteps"></ol>
     <div class="callout" id="wizHint">Waiting for your phone to connect. Keep this page open.</div>
+    <p class="help" id="freshHelp">Not in the list, or it flashes up and vanishes? Phones hide names
+      they have seen before. Turn Bluetooth off and on again, then give the device a new name:</p>
+    <div class="btnrow"><button id="freshBtn" onclick="wizFresh()">Use a fresh name</button></div>
     <div class="btnrow"><button onclick="wizStop()">Stop</button><button onclick="wizGo(3)">Back</button></div>
   </div>
 
@@ -220,6 +223,7 @@ function wizStart(){
   post('/api/advertising',{on:true});
   wizGo(4);
 }
+function wizFresh(){ post('/api/fresh_identity',{}); }
 function wizStop(){ awaitingCapture=false; post('/api/advertising',{on:false}); }
 function wizRestart(){ awaitingCapture=false; el('wizLabel').value=''; wizGo(1); }
 

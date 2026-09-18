@@ -154,6 +154,13 @@ jobs:
             assert(json_escape("a\"b") == "a\\\"b");
             assert(json_escape("a\\b") == "a\\\\b");
 
+            // fresh names must fit irk_capture's 12-byte BLE name cap and
+            // stay inside its allowed character set
+            assert(fresh_ble_name(0x0000A3F2u) == "IRK Cap A3F2");
+            assert(fresh_ble_name(0xFFFF0000u) == "IRK Cap 0000");  // low 16 bits only
+            assert(fresh_ble_name(0xFFFFFFFFu).size() == 12);
+            assert(fresh_ble_name(1) != fresh_ble_name(2));
+
             // auth throttle: locks after five straight failures, a success
             // resets it, and it expires - including across a millis() wrap
             AuthThrottle t;
@@ -287,6 +294,7 @@ jobs:
             - platform: irk_capture
               irk_capture_id: irk
               ble_name:
+                id: ble_name_input
                 name: "BLE Device Name"
                 mode: text
               next_capture_label:
@@ -303,6 +311,7 @@ jobs:
             irk_id: last_irk
             device_mac_id: last_addr
             effective_mac_id: effective_mac
+            ble_name_id: ble_name_input
             port: 8080
             username: ci
             password: ci-password
