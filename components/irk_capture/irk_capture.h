@@ -228,9 +228,6 @@ class IRKCaptureComponent : public Component {
   void set_status_sensor(text_sensor::TextSensor* sensor) {
     status_sensor_ = sensor;
   }
-  void set_history_sensor(text_sensor::TextSensor* sensor) {
-    history_sensor_ = sensor;
-  }
   void set_forget_bonds_button(IRKCaptureForgetBondsButton* btn) {
     forget_bonds_button_ = btn;
     if (btn) btn->set_parent(this);
@@ -282,6 +279,11 @@ class IRKCaptureComponent : public Component {
   std::string set_next_capture_label(const std::string& value);
   // Wipes the NimBLE bond store and this session's in-memory capture cache.
   void forget_all_bonds();
+  // This session's captures as a JSON array of {mac, irk, label, reconnects}.
+  // Served over HTTP by the wizard rather than published as an entity: Home
+  // Assistant caps a state at 255 characters and shows anything longer as
+  // unknown, which this passes at the third device.
+  std::string build_history_json();
 
  protected:
   // Configuration/state
@@ -357,7 +359,6 @@ class IRKCaptureComponent : public Component {
   // Wizard-facing session state (see README). Protected by state_mutex_ like
   // the rest of this block.
   text_sensor::TextSensor* status_sensor_ { nullptr };
-  text_sensor::TextSensor* history_sensor_ { nullptr };
   IRKCaptureForgetBondsButton* forget_bonds_button_ { nullptr };
   IRKCaptureStopAfterCaptureSwitch* stop_after_capture_switch_ { nullptr };
   IRKCaptureLabelText* next_capture_label_text_ { nullptr };
@@ -385,8 +386,6 @@ class IRKCaptureComponent : public Component {
   uint32_t last_result_generation_ { 0 };  // Orders completed pairing outcomes across delayed reads
   bool pending_effmac_pub_ { false };
   std::string pending_effmac_;
-  bool pending_history_pub_ { false };
-  std::string pending_history_json_;
   // Config entities can now be changed from two places (the HA entity itself
   // and the on-device wizard's HTTP API, which runs on httpd's own task), so
   // their entity state is staged here and published from the main task like
@@ -488,9 +487,6 @@ class IRKCaptureComponent : public Component {
   // drained only on the ESPHome main task in loop().
   void stage_advertising_publish_(bool value);
   void flush_pending_publishes_();
-  // Builds the capture-history JSON off the mutex, then stages it. Safe to
-  // call from either task context.
-  void stage_history_publish_();
 
   // Main-task-only helpers (called from loop()).
   void update_status_sensor_(uint32_t now);
