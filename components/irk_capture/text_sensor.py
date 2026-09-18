@@ -30,9 +30,7 @@ CONFIG_SCHEMA = cv.Schema(
             IRKCaptureTextSensor
         ),
         # One of: idle, advertising, pairing, capturing, captured, error.
-        cv.Optional(CONF_STATUS): text_sensor.text_sensor_schema(
-            IRKCaptureTextSensor
-        ),
+        cv.Optional(CONF_STATUS): text_sensor.text_sensor_schema(IRKCaptureTextSensor),
         # JSON array of {mac, irk, label, reconnects} for every device cached
         # this session (see max_captures for the buffer size).
         cv.Optional(CONF_CAPTURE_HISTORY): text_sensor.text_sensor_schema(

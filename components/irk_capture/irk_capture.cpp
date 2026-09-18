@@ -184,10 +184,8 @@ struct TimingConfig {
   static constexpr uint8_t MAC_ROTATION_MAX_RETRIES = 10;  // Max retries for MAC rotation
   static constexpr uint32_t MAC_ROTATION_SETTLE_DELAY_MS =
       500;  // Delay after adv stop before MAC change
-  static constexpr uint32_t STATUS_CAPTURE_HOLD_MS =
-      4000;  // How long the status sensor shows "captured" after a publish
-  static constexpr uint32_t AUTO_PROFILE_FALLBACK_MS =
-      60000;  // No connection attempt at all before trying the other profile
+  static constexpr uint32_t STATUS_RESULT_HOLD_MS =
+      4000;  // How long the status sensor holds "captured" / "no_irk"
 };
 
 // GATT service and characteristic UUIDs
@@ -809,7 +807,13 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
 
       // Hold the status sensor at "captured" briefly so a UI polling it can
       // show a clear success state instead of racing back to "advertising".
-      self->status_capture_hold_until_ = now_ms() + TimingConfig::STATUS_CAPTURE_HOLD_MS;
+      // Only for a genuine capture or an explicit (re)pairing - a bonded
+      // reconnect that republishes the same key after the rate limit is not
+      // something the user just did.
+      if (is_new_device || force_pairing_publish || is_repair) {
+        self->status_capture_hold_until_ = now_ms() + TimingConfig::STATUS_RESULT_HOLD_MS;
+        self->status_no_irk_hold_until_ = 0;
+      }
     }
   }  // Release mutex before slow logging/publishing operations
 
@@ -1164,11 +1168,6 @@ void IRKCaptureStopAfterCaptureSwitch::write_state(bool state) {
   publish_state(state);
 }
 
-void IRKCaptureAutoProfileFallbackSwitch::write_state(bool state) {
-  parent_->set_auto_profile_fallback(state);
-  publish_state(state);
-}
-
 void IRKCaptureLabelText::control(const std::string& value) {
   std::string sanitized = parent_->set_next_capture_label(value);
   publish_state(sanitized);
@@ -1196,11 +1195,6 @@ void IRKCaptureForgetBondsButton::dump_config() {
 
 void IRKCaptureStopAfterCaptureSwitch::dump_config() {
   ESP_LOGCONFIG(TAG, "IRK Capture Stop-After-Capture Switch:");
-  ESP_LOGCONFIG(TAG, "  State: %s", state ? "ON" : "OFF");
-}
-
-void IRKCaptureAutoProfileFallbackSwitch::dump_config() {
-  ESP_LOGCONFIG(TAG, "IRK Capture Auto Profile Fallback Switch:");
   ESP_LOGCONFIG(TAG, "  State: %s", state ? "ON" : "OFF");
 }
 
@@ -1792,9 +1786,8 @@ void IRKCaptureComponent::setup() {
   pairing_generation_ = 0;
   repair_generation_ = 0;
   last_result_generation_ = 0;
-  advertising_started_ms_ = 0;
-  auto_profile_fallback_triggered_ = false;
   status_capture_hold_until_ = 0;
+  status_no_irk_hold_until_ = 0;
   next_capture_label_.clear();
 
   // Resolve startup intent before starting the NimBLE task. DISABLED (the
@@ -1831,9 +1824,6 @@ void IRKCaptureComponent::setup() {
   }
   if (stop_after_capture_switch_) {
     stop_after_capture_switch_->publish_state(stop_after_capture_);
-  }
-  if (auto_profile_fallback_switch_) {
-    auto_profile_fallback_switch_->publish_state(auto_profile_fallback_);
   }
   if (status_sensor_) {
     last_status_value_ = "idle";
@@ -1907,11 +1897,6 @@ void IRKCaptureComponent::loop() {
     ESP_LOGI(TAG, "Auto-restarting advertising after scheduled delay");
     start_advertising();
   }
-
-  // Wizard "not sure what kind of phone" mode: if advertising has run for a
-  // while with zero captures and no peer has even attempted pairing, try the
-  // other BLE profile once (this reboots; see set_ble_profile()).
-  check_auto_profile_fallback_(now);
 
   // Pairing robustness (single retry)
   retry_security_if_needed(now);
@@ -2384,9 +2369,6 @@ void IRKCaptureComponent::start_advertising() {
       adv_restart_time_ = 0;
       pending_adv_pub_ = true;
       pending_adv_val_ = advertising_requested_;
-      // Mark the start of this unbroken advertising run, once. Retries after
-      // a transient failure keep the original start time.
-      if (advertising_started_ms_ == 0) advertising_started_ms_ = now_ms();
     }
   }
   // Log outside both component locks, including when address setup succeeds
@@ -2479,10 +2461,6 @@ void IRKCaptureComponent::set_advertising_requested(bool requested) {
     if (advertising_requested_ != requested) {
       advertising_start_attempts_ = 0;
       advertising_failure_log_time_ = 0;
-      // Re-arm the "no capture yet" window every time advertising intent
-      // changes, so a fresh session gets a fresh auto-profile-fallback timer.
-      advertising_started_ms_ = 0;
-      auto_profile_fallback_triggered_ = false;
     }
     advertising_requested_ = requested;
     if (!requested) {
@@ -3512,6 +3490,7 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
     pending_irk_hex_ = "Failed: IRK not used";
     pending_irk_addr_ = addr;
     pending_irk_pub_ = true;
+    status_no_irk_hold_until_ = now_ms() + TimingConfig::STATUS_RESULT_HOLD_MS;
     if (connected_) irk_gave_up_ = true;
     for (auto* timers : { &post_disc_timers_, &late_enc_timers_ }) {
       for (auto& timer : *timers) {
@@ -3577,7 +3556,7 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   // Runs on the ESPHome main task. Copy staged values out under the mutex, then
   // publish outside it (publish_state can be slow and must not hold the lock).
   bool adv_pub, adv_val, irk_pub, effmac_pub, history_pub;
-  bool stop_after_pub, stop_after_val, auto_fallback_pub, auto_fallback_val, label_pub;
+  bool stop_after_pub, stop_after_val, label_pub;
   std::string irk_hex, irk_addr, effmac, history_json, label_val;
   {
     MutexGuard lock(state_mutex_);
@@ -3597,9 +3576,6 @@ void IRKCaptureComponent::flush_pending_publishes_() {
     stop_after_pub = pending_stop_after_capture_pub_;
     stop_after_val = pending_stop_after_capture_val_;
     pending_stop_after_capture_pub_ = false;
-    auto_fallback_pub = pending_auto_profile_fallback_pub_;
-    auto_fallback_val = pending_auto_profile_fallback_val_;
-    pending_auto_profile_fallback_pub_ = false;
     label_pub = pending_label_pub_;
     pending_label_pub_ = false;
     label_val.swap(pending_label_val_);
@@ -3613,8 +3589,6 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   if (history_pub && history_sensor_) history_sensor_->publish_state(history_json);
   if (stop_after_pub && stop_after_capture_switch_)
     stop_after_capture_switch_->publish_state(stop_after_val);
-  if (auto_fallback_pub && auto_profile_fallback_switch_)
-    auto_profile_fallback_switch_->publish_state(auto_fallback_val);
   if (label_pub && next_capture_label_text_) next_capture_label_text_->publish_state(label_val);
 }
 
@@ -3627,23 +3601,9 @@ void IRKCaptureComponent::set_stop_after_capture(bool enabled) {
   pending_stop_after_capture_pub_ = true;
 }
 
-void IRKCaptureComponent::set_auto_profile_fallback(bool enabled) {
-  MutexGuard lock(state_mutex_);
-  auto_profile_fallback_ = enabled;
-  // Toggling the switch (in either direction) re-arms a fresh attempt window.
-  auto_profile_fallback_triggered_ = false;
-  pending_auto_profile_fallback_val_ = enabled;
-  pending_auto_profile_fallback_pub_ = true;
-}
-
 bool IRKCaptureComponent::get_stop_after_capture() {
   MutexGuard lock(state_mutex_);
   return stop_after_capture_;
-}
-
-bool IRKCaptureComponent::get_auto_profile_fallback() {
-  MutexGuard lock(state_mutex_);
-  return auto_profile_fallback_;
 }
 
 std::string IRKCaptureComponent::get_next_capture_label() {
@@ -3674,18 +3634,34 @@ std::string IRKCaptureComponent::set_next_capture_label(const std::string& value
 }
 
 void IRKCaptureComponent::forget_all_bonds() {
-  ESP_LOGW(TAG, "Forget All Bonds: clearing NimBLE bond store and capture history");
-  int rc = ble_store_clear();
-  if (rc != 0) {
-    ESP_LOGE(TAG, "ble_store_clear failed rc=%d", rc);
-  } else {
-    ESP_LOGI(TAG, "All BLE bonds cleared");
+  bool connected;
+  {
+    MutexGuard lock(state_mutex_);
+    connected = connected_;
   }
+
+  // Wiping the store mid-pairing would pull the bond out from under an
+  // in-flight exchange. The session cache is always safe to clear.
+  if (connected) {
+    ESP_LOGW(TAG,
+             "Forget All Bonds: a peer is connected; clearing this session's "
+             "capture list only. Run it again once the device disconnects to "
+             "also clear stored bonds.");
+  } else {
+    ESP_LOGW(TAG, "Forget All Bonds: clearing stored bonds and this session's capture list");
+    int rc = ble_store_clear();
+    if (rc != 0) {
+      ESP_LOGE(TAG, "ble_store_clear failed rc=%d", rc);
+    } else {
+      ESP_LOGI(TAG, "All BLE bonds cleared");
+    }
+  }
+
+  // capture_events_/unique_devices_ are deliberately left alone: max_captures
+  // budgets against them, and clearing the list does not un-capture a device.
   {
     MutexGuard lock(state_mutex_);
     irk_cache_.clear();
-    capture_events_ = 0;
-    unique_devices_ = 0;
   }
   stage_history_publish_();
 }
@@ -3729,7 +3705,7 @@ void IRKCaptureComponent::stage_history_publish_() {
 void IRKCaptureComponent::update_status_sensor_(uint32_t now) {
   if (!status_sensor_) return;
 
-  bool adv, conn, enc, capturing_hold;
+  bool adv, conn, enc, capturing_hold, no_irk_hold;
   {
     MutexGuard lock(state_mutex_);
     adv = advertising_;
@@ -3737,13 +3713,18 @@ void IRKCaptureComponent::update_status_sensor_(uint32_t now) {
     enc = enc_ready_;
     capturing_hold =
         status_capture_hold_until_ != 0 && !deadline_reached(now, status_capture_hold_until_);
+    no_irk_hold =
+        status_no_irk_hold_until_ != 0 && !deadline_reached(now, status_no_irk_hold_until_);
   }
 
   const char* status;
-  if (this->is_failed()) {
-    status = "error";
-  } else if (capturing_hold) {
+  if (capturing_hold) {
     status = "captured";
+  } else if (no_irk_hold) {
+    // Pairing completed but the peer never sent an identity key. This is the
+    // one outcome the user has to act on, so it must not look like "still
+    // advertising" (see publish_no_irk_).
+    status = "no_irk";
   } else if (conn && enc) {
     status = "capturing";  // Encrypted; polling the bond store for the IRK
   } else if (conn) {
@@ -3757,30 +3738,6 @@ void IRKCaptureComponent::update_status_sensor_(uint32_t now) {
   if (last_status_value_ != status) {
     last_status_value_ = status;
     status_sensor_->publish_state(status);
-  }
-}
-
-void IRKCaptureComponent::check_auto_profile_fallback_(uint32_t now) {
-  bool should_switch = false;
-  BLEProfile other_profile = BLEProfile::HEART_SENSOR;
-  {
-    MutexGuard lock(state_mutex_);
-    if (auto_profile_fallback_ && !auto_profile_fallback_triggered_ && advertising_ && !connected_ &&
-        capture_events_ == 0 && advertising_started_ms_ != 0 &&
-        deadline_reached(now, advertising_started_ms_ + TimingConfig::AUTO_PROFILE_FALLBACK_MS)) {
-      should_switch = true;
-      auto_profile_fallback_triggered_ = true;
-      other_profile =
-          (ble_profile_ == BLEProfile::HEART_SENSOR) ? BLEProfile::KEYBOARD : BLEProfile::HEART_SENSOR;
-    }
-  }
-  if (should_switch) {
-    ESP_LOGI(TAG,
-             "Auto profile fallback: no pairing attempt after %" PRIu32
-             " s, trying the other BLE profile",
-             TimingConfig::AUTO_PROFILE_FALLBACK_MS / 1000);
-    // Reboots on an actual profile change (GATT DB can't be swapped live).
-    set_ble_profile(other_profile);
   }
 }
 
