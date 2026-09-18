@@ -127,20 +127,6 @@ class IRKCaptureStopAfterCaptureSwitch : public switch_::Switch, public Componen
   IRKCaptureComponent* parent_ { nullptr };
 };
 
-// Switch: if no BLE peer ever attempts pairing (advertising with no IRK
-// captured) within a bounded window, reboot into the other BLE profile once.
-class IRKCaptureAutoProfileFallbackSwitch : public switch_::Switch, public Component {
- public:
-  void set_parent(IRKCaptureComponent* parent) {
-    parent_ = parent;
-  }
-  void write_state(bool state) override;
-  void dump_config() override;
-
- protected:
-  IRKCaptureComponent* parent_ { nullptr };
-};
-
 // Text input: label attached to the next new device this session captures.
 // Consumed (and left as-is in the UI) the moment a new identity is cached.
 class IRKCaptureLabelText : public text::Text, public Component {
@@ -253,10 +239,6 @@ class IRKCaptureComponent : public Component {
     stop_after_capture_switch_ = sw;
     if (sw) sw->set_parent(this);
   }
-  void set_auto_profile_fallback_switch(IRKCaptureAutoProfileFallbackSwitch* sw) {
-    auto_profile_fallback_switch_ = sw;
-    if (sw) sw->set_parent(this);
-  }
   void set_next_capture_label_text(IRKCaptureLabelText* txt) {
     next_capture_label_text_ = txt;
     if (txt) txt->set_parent(this);
@@ -293,9 +275,7 @@ class IRKCaptureComponent : public Component {
   // Entities"). These are additive and default OFF so existing continuous
   // multi-capture behavior is unchanged unless a user opts in.
   void set_stop_after_capture(bool enabled);
-  void set_auto_profile_fallback(bool enabled);
   bool get_stop_after_capture();
-  bool get_auto_profile_fallback();
   std::string get_next_capture_label();
   // Sanitizes, stores, and returns the accepted label for the next new device
   // captured this session (consumed once; charset matches BLE-name rules).
@@ -380,17 +360,18 @@ class IRKCaptureComponent : public Component {
   text_sensor::TextSensor* history_sensor_ { nullptr };
   IRKCaptureForgetBondsButton* forget_bonds_button_ { nullptr };
   IRKCaptureStopAfterCaptureSwitch* stop_after_capture_switch_ { nullptr };
-  IRKCaptureAutoProfileFallbackSwitch* auto_profile_fallback_switch_ { nullptr };
   IRKCaptureLabelText* next_capture_label_text_ { nullptr };
 
-  bool stop_after_capture_ { false };            // Auto-off advertising after any publish
-  std::string next_capture_label_;               // Consumed by the next new cache entry
-  std::string last_status_value_;                // Avoids redundant status publishes
-  uint32_t status_capture_hold_until_ { 0 };      // "captured" displays until this deadline
-
-  bool auto_profile_fallback_ { false };          // User opt-in
-  bool auto_profile_fallback_triggered_ { false };  // Fires at most once per advertising session
-  uint32_t advertising_started_ms_ { 0 };         // Start of the current unbroken advertising run
+  // Auto-off advertising after any publish.
+  bool stop_after_capture_ { false };
+  // Consumed by the next new cache entry.
+  std::string next_capture_label_;
+  // Avoids redundant status publishes.
+  std::string last_status_value_;
+  // "captured" displays until this deadline.
+  uint32_t status_capture_hold_until_ { 0 };
+  // "no_irk" displays until this deadline.
+  uint32_t status_no_irk_hold_until_ { 0 };
 
   // Deferred entity publishing. ESPHome entity publish_state() is not safe to
   // call from the NimBLE task, so BLE-context code stages values here (under
@@ -412,8 +393,6 @@ class IRKCaptureComponent : public Component {
   // everything else rather than written directly from the caller's context.
   bool pending_stop_after_capture_pub_ { false };
   bool pending_stop_after_capture_val_ { false };
-  bool pending_auto_profile_fallback_pub_ { false };
-  bool pending_auto_profile_fallback_val_ { false };
   bool pending_label_pub_ { false };
   std::string pending_label_val_;
 
@@ -515,7 +494,6 @@ class IRKCaptureComponent : public Component {
 
   // Main-task-only helpers (called from loop()).
   void update_status_sensor_(uint32_t now);
-  void check_auto_profile_fallback_(uint32_t now);
 };
 
 }  // namespace irk_capture
