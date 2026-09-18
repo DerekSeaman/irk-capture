@@ -290,7 +290,8 @@ function render(d){
   el('stopAfterSwitch').classList.toggle('on', !!d.stop_after_capture);
 
   var history=[];
-  try{ history=JSON.parse(d.history||'[]'); }catch(e){}
+  // The device sends history as a real JSON array, not a string.
+  if(Array.isArray(d.history)) history=d.history;
   var histEl=el('history');
   histEl.textContent='';
   if(!history.length){
