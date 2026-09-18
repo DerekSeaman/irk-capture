@@ -2791,11 +2791,22 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   if (reject_extra_connection) {
     ESP_LOGE(TAG, "Rejecting unexpected second BLE connection handle=%u (active=%u)", conn_handle,
              existing_handle);
-    BleOpGuard ble_lock(ble_op_mutex_);
-    int rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-    if (rc != 0) {
-      ESP_LOGE(TAG, "Failed to terminate unexpected second connection rc=%d; rebooting", rc);
-      App.safe_reboot();
+    bool terminate_failed;
+    {
+      BleOpGuard ble_lock(ble_op_mutex_);
+      int rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+      terminate_failed = rc != 0;
+      if (terminate_failed) {
+        ESP_LOGE(TAG, "Failed to terminate unexpected second connection rc=%d; rebooting", rc);
+      }
+    }
+    if (terminate_failed) {
+      // on_connect() runs on the NimBLE host task, but App.safe_reboot() tears
+      // down every component and so has to run on the main task. Rebooting
+      // from here also did it while ble_op_mutex_ was still held. defer()
+      // hands the reboot to the main loop, after this handler has returned and
+      // released the guard.
+      this->defer([]() { App.safe_reboot(); });
     }
     return;
   }
