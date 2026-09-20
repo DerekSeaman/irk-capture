@@ -265,7 +265,7 @@ class IRKCaptureComponent : public Component {
 
   // Sensor publishing helper
   void publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str,
-                              uint32_t connection_generation = 0);
+                              uint32_t connection_generation = 0, bool capture_event = false);
   void publish_effective_mac();
 
   // New in 1.7.0: wizard-facing runtime controls (see README "Home Assistant
@@ -369,10 +369,11 @@ class IRKCaptureComponent : public Component {
   std::string next_capture_label_;
   // Avoids redundant status publishes.
   std::string last_status_value_;
-  // "captured" displays until this deadline.
-  uint32_t status_capture_hold_until_ { 0 };
-  // "no_irk" displays until this deadline.
-  uint32_t status_no_irk_hold_until_ { 0 };
+  // Terminal status belongs to last_result_generation_, just like the IRK
+  // sensor. NONE also covers ordinary bonded reconnects (no capture event).
+  enum class CaptureStatus { NONE, CAPTURED, NO_IRK };
+  CaptureStatus capture_status_ { CaptureStatus::NONE };
+  uint32_t status_result_hold_until_ { 0 };
 
   // Deferred entity publishing. ESPHome entity publish_state() is not safe to
   // call from the NimBLE task, so BLE-context code stages values here (under

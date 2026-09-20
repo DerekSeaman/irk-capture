@@ -28,7 +28,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_EFFECTIVE_MAC): text_sensor.text_sensor_schema(
             IRKCaptureTextSensor
         ),
-        # One of: idle, advertising, pairing, capturing, captured, error.
+        # One of: idle, advertising, pairing, capturing, captured, no_irk.
         cv.Optional(CONF_STATUS): text_sensor.text_sensor_schema(IRKCaptureTextSensor),
     }
 )

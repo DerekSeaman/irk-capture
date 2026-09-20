@@ -222,15 +222,17 @@ several entities change at once:
 
 | State | Meaning |
 | :--- | :--- |
-| `idle` | Not advertising |
+| `idle` | No active capture work or advertising; a completed connection may still be closing |
 | `advertising` | Advertising, nothing connected |
 | `pairing` | A peer is connected, security is not yet complete |
 | `capturing` | Encrypted, reading the identity key from the bond store |
 | `captured` | A key was just captured (or the device was deliberately re-paired) |
 | `no_irk` | Pairing completed but the peer sent no identity key - see the IRK sensor |
 
-`captured` and `no_irk` are held briefly so a polling UI cannot miss them between updates. A
-bonded device reconnecting and republishing the same key does not re-trigger `captured`.
+`captured` and `no_irk` are held briefly so a polling UI cannot miss them between updates,
+and remain visible while that completed connection is still open. A newer completed result
+replaces the previous status. A bonded device reconnecting and republishing the same key does
+not re-trigger `captured`.
 
 **Forget All Bonds** clears this session's capture list, and also clears stored bonds when no
 device is connected. Generate New MAC already clears the bond store as part of rotating the

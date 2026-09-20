@@ -804,16 +804,6 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
       // stop advertising after any publish so the flow can hand off to
       // confirmation instead of continuing to hunt for more devices.
       stop_after_capture_hit = self->stop_after_capture_;
-
-      // Hold the status sensor at "captured" briefly so a UI polling it can
-      // show a clear success state instead of racing back to "advertising".
-      // Only for a genuine capture or an explicit (re)pairing - a bonded
-      // reconnect that republishes the same key after the rate limit is not
-      // something the user just did.
-      if (is_new_device || force_pairing_publish || is_repair) {
-        self->status_capture_hold_until_ = now_ms() + TimingConfig::STATUS_RESULT_HOLD_MS;
-        self->status_no_irk_hold_until_ = 0;
-      }
     }
   }  // Release mutex before slow logging/publishing operations
 
@@ -845,7 +835,9 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   // The sensor represents the latest completed outcome, even when capture logs
   // and counters coalesce a bonded reconnect. This restores a valid IRK after
   // another device's no-IRK result without counting the reconnect again.
-  self->publish_irk_to_sensors(irk_hex, addr_str.c_str(), connection_generation);
+  self->publish_irk_to_sensors(
+      irk_hex, addr_str.c_str(), connection_generation,
+      should_publish && (is_new_device || force_pairing_publish || is_repair));
 
   // Skip duplicate capture logs (deduplication happened under mutex).
   if (!should_publish) {
@@ -1782,8 +1774,8 @@ void IRKCaptureComponent::setup() {
   pairing_generation_ = 0;
   repair_generation_ = 0;
   last_result_generation_ = 0;
-  status_capture_hold_until_ = 0;
-  status_no_irk_hold_until_ = 0;
+  capture_status_ = CaptureStatus::NONE;
+  status_result_hold_until_ = 0;
   next_capture_label_.clear();
 
   // Resolve startup intent before starting the NimBLE task. DISABLED (the
@@ -3490,7 +3482,9 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
     pending_irk_hex_ = "Failed: IRK not used";
     pending_irk_addr_ = addr;
     pending_irk_pub_ = true;
-    status_no_irk_hold_until_ = now_ms() + TimingConfig::STATUS_RESULT_HOLD_MS;
+    capture_status_ = CaptureStatus::NO_IRK;
+    status_result_hold_until_ = now_ms() + TimingConfig::STATUS_RESULT_HOLD_MS;
+    if (status_result_hold_until_ == 0) status_result_hold_until_ = 1;
     if (connected_) irk_gave_up_ = true;
     for (auto* timers : { &post_disc_timers_, &late_enc_timers_ }) {
       for (auto& timer : *timers) {
@@ -3512,16 +3506,30 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
 }
 
 void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str,
-                                                 uint32_t connection_generation) {
+                                                 uint32_t connection_generation,
+                                                 bool capture_event) {
   // Stage only; the ESPHome main loop() performs the actual publish_state().
   // Callers may run in the NimBLE task, where publish_state() is unsafe.
   MutexGuard lock(state_mutex_);
+  const bool new_result = connection_generation != last_result_generation_;
   if (connection_generation != 0) {
     // An older delayed result must not overwrite the outcome of a newer pairing.
     if (last_result_generation_ != 0 &&
         static_cast<int32_t>(connection_generation - last_result_generation_) < 0)
       return;
     last_result_generation_ = connection_generation;
+  }
+  // Stage status and IRK under the same ordering check. A delayed read may
+  // still populate history, but cannot replace a newer attempt's outcome.
+  if (capture_event) {
+    capture_status_ = CaptureStatus::CAPTURED;
+    status_result_hold_until_ = now_ms() + TimingConfig::STATUS_RESULT_HOLD_MS;
+    if (status_result_hold_until_ == 0) status_result_hold_until_ = 1;
+  } else if (new_result || capture_status_ == CaptureStatus::NO_IRK) {
+    // A bonded reconnect restores the IRK without pretending it is a fresh
+    // capture. Duplicate extraction paths for the same success keep its hold.
+    capture_status_ = CaptureStatus::NONE;
+    status_result_hold_until_ = 0;
   }
   pending_irk_hex_ = irk_hex;
   pending_irk_addr_ = addr_str;
@@ -3698,34 +3706,30 @@ std::string IRKCaptureComponent::build_history_json() {
 void IRKCaptureComponent::update_status_sensor_(uint32_t now) {
   if (!status_sensor_) return;
 
-  bool adv, conn, enc, capturing_hold, no_irk_hold;
+  const char* status;
   {
     MutexGuard lock(state_mutex_);
-    adv = advertising_;
-    conn = connected_;
-    enc = enc_ready_;
-    capturing_hold =
-        status_capture_hold_until_ != 0 && !deadline_reached(now, status_capture_hold_until_);
-    no_irk_hold =
-        status_no_irk_hold_until_ != 0 && !deadline_reached(now, status_no_irk_hold_until_);
-  }
-
-  const char* status;
-  if (capturing_hold) {
-    status = "captured";
-  } else if (no_irk_hold) {
-    // Pairing completed but the peer never sent an identity key. This is the
-    // one outcome the user has to act on, so it must not look like "still
-    // advertising" (see publish_no_irk_).
-    status = "no_irk";
-  } else if (conn && enc) {
-    status = "capturing";  // Encrypted; polling the bond store for the IRK
-  } else if (conn) {
-    status = "pairing";  // Connected; security/encryption not yet complete
-  } else if (adv) {
-    status = "advertising";
-  } else {
-    status = "idle";
+    // Retire expired deadlines permanently: signed wrap-safe comparisons only
+    // order timestamps within half the clock period (about 25 days).
+    if (status_result_hold_until_ != 0 && deadline_reached(now, status_result_hold_until_)) {
+      status_result_hold_until_ = 0;
+    }
+    const bool current_result =
+        connection_generation_ != 0 && last_result_generation_ == connection_generation_;
+    if (capture_status_ != CaptureStatus::NONE &&
+        (status_result_hold_until_ != 0 || (connected_ && current_result))) {
+      status = capture_status_ == CaptureStatus::CAPTURED ? "captured" : "no_irk";
+    } else if (connected_ && enc_ready_) {
+      // irk_gave_up_ also covers polling timeouts; it is not evidence of a
+      // no-IRK outcome. Completed reconnects/timeouts are simply waiting to close.
+      status = !current_result && !irk_gave_up_ ? "capturing" : "idle";
+    } else if (connected_) {
+      status = "pairing";
+    } else if (advertising_) {
+      status = "advertising";
+    } else {
+      status = "idle";
+    }
   }
 
   if (last_status_value_ != status) {
