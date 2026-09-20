@@ -2874,7 +2874,13 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     ESP_LOGW(TAG,
              "Profile change requires restart to update GATT database - "
              "scheduling safe reboot...");
-    App.safe_reboot();
+    // set_ble_profile() can be reached from a caller that is not the main task
+    // (the wizard serves it from esp_http_server's task), and App.safe_reboot()
+    // tears down every component, which must happen on the main task. defer()
+    // is safe to call from another task and runs on the main loop, which also
+    // lets the caller finish first - an HTTP handler gets to send its response
+    // instead of the connection dropping mid-reply.
+    this->defer([]() { App.safe_reboot(); });
   }
 }
 
