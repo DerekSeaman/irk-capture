@@ -122,21 +122,30 @@ jobs:
                 name: "Device MAC"
               effective_mac:
                 name: "Effective MAC"
+              status:
+                name: "Status"
           switch:
             - platform: irk_capture
               irk_capture_id: irk
               advertising:
                 name: "BLE Advertising"
+              stop_after_capture:
+                name: "Stop Advertising After Capture"
           button:
             - platform: irk_capture
               irk_capture_id: irk
               new_mac:
                 name: "Generate New MAC"
+              forget_bonds:
+                name: "Forget All Bonds"
           text:
             - platform: irk_capture
               irk_capture_id: irk
               ble_name:
                 name: "BLE Device Name"
+                mode: text
+              next_capture_label:
+                name: "Next Capture Label"
                 mode: text
           select:
             - platform: irk_capture
