@@ -235,8 +235,13 @@ replaces the previous status. A bonded device reconnecting and republishing the 
 not re-trigger `captured`.
 
 **Forget All Bonds** clears this session's capture list, and also clears stored bonds when no
-device is connected. Generate New MAC already clears the bond store as part of rotating the
-address, so reach for this one when you want a clean capture list without changing the address.
+device is connected. Bond deletion briefly pauses advertising and is serialized with BLE
+events so it cannot interrupt an in-flight pairing. If a device is connected or BLE maintenance is
+busy, the bonds are retained; press the button again once idle. Capture counts and reconnect
+deduplication are retained, so clearing the list does not reset the session's capture limit.
+A subsequent capture can add a device back to the list without counting it as a new identity.
+Generate New MAC already clears the bond store as part of rotating the address, so reach for
+Forget All Bonds when you want a clean capture list without changing the address.
 
 For a guided, multi-device flow built on these entities, see the optional wizard package.
 

@@ -21,8 +21,8 @@ CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
         cv.Optional(CONF_NEW_MAC): button.button_schema(IRKCaptureButton),
-        # Wipes the NimBLE bond store (all cached pairings), distinct from
-        # new_mac which only rotates the advertised address.
+        # Clears capture history and requests a bond-store wipe without
+        # rotating the advertised address.
         cv.Optional(CONF_FORGET_BONDS): button.button_schema(
             IRKCaptureForgetBondsButton
         ),

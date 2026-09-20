@@ -653,6 +653,7 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
         entry.reconnect_count = 0;
         entry.reconnect_limit_reported = false;
         entry.last_published_ms = now;
+        restore_capture_history_(entry);
         ESP_LOGI(TAG, "IRK updated for known identity %s", addr.c_str());
         return true;
       }
@@ -663,6 +664,7 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
         entry.reconnect_count = 0;
         entry.reconnect_limit_reported = false;
         entry.last_published_ms = now;
+        restore_capture_history_(entry);
         ESP_LOGI(TAG, "Pairing completed; publishing IRK again");
         return true;
       }
@@ -695,6 +697,7 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
 
       ESP_LOGI(TAG, "Re-publishing IRK after bonded reconnect (%u/5)", entry.reconnect_count);
       entry.last_published_ms = now;
+      restore_capture_history_(entry);
       return true;
     }
   }
@@ -718,6 +721,15 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
   out_is_new_device = true;
   ESP_LOGD(TAG, "New IRK added to cache (total: %zu/%zu)", irk_cache_.size(), cache_limit);
   return true;
+}
+
+void IRKCaptureComponent::restore_capture_history_(IRKCacheEntry& entry) {
+  // A new publication can restore a forgotten history row, but duplicate
+  // extraction paths from the same connection must leave it hidden.
+  if (entry.in_history) return;
+  entry.in_history = true;
+  entry.label = next_capture_label_;
+  next_capture_label_.clear();
 }
 
 //======================== Output helpers (centralized) ========================
@@ -1792,6 +1804,14 @@ void IRKCaptureComponent::setup() {
     return;
   }
 
+  ble_npl_event_init(
+      &bond_clear_event_,
+      [](struct ble_npl_event* event) {
+        auto* self = static_cast<IRKCaptureComponent*>(ble_npl_event_get_arg(event));
+        self->handle_forget_bonds_();
+      },
+      this);
+
   // on_ble_host_synced() applies the resolved intent when NimBLE becomes ready.
 
   if (ble_name_text_) {
@@ -1859,6 +1879,15 @@ void IRKCaptureComponent::loop() {
 
   // Wizard-facing session status (advertising/pairing/capturing/captured/idle).
   update_status_sensor_(now);
+
+  // Some NPL ports drop an event when their queue is full. Requeue pending
+  // work until serviced; NimBLE coalesces events that are already queued.
+  bool queue_bond_clear;
+  {
+    MutexGuard lock(state_mutex_);
+    queue_bond_clear = bond_clear_pending_;
+  }
+  if (queue_bond_clear) ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &bond_clear_event_);
 
   // Timers for IRK checks
   handle_post_disconnect_timer(now);
@@ -2204,7 +2233,7 @@ void IRKCaptureComponent::start_advertising() {
     name_copy = ble_name_;
     requested = advertising_requested_;
     connected = connected_;
-    rotating = mac_rotation_state_ != MacRotationState::IDLE;
+    rotating = mac_rotation_state_ != MacRotationState::IDLE || bond_clear_pending_;
     host_generation = host_generation_;
   }
   if (!requested) {
@@ -2212,7 +2241,7 @@ void IRKCaptureComponent::start_advertising() {
     return;
   }
   if (connected || rotating) {
-    ESP_LOGD(TAG, "Advertising start deferred until connection/MAC rotation completes");
+    ESP_LOGD(TAG, "Advertising start deferred until connection/BLE maintenance completes");
     return;
   }
 
@@ -2287,7 +2316,7 @@ void IRKCaptureComponent::start_advertising() {
     {
       MutexGuard lock(state_mutex_);
       if (host_generation != host_generation_ || !host_synced_ || !advertising_requested_ ||
-          connected_ || mac_rotation_state_ != MacRotationState::IDLE)
+          connected_ || bond_clear_pending_ || mac_rotation_state_ != MacRotationState::IDLE)
         return;
       address_ready = random_address_ready_;
     }
@@ -2385,7 +2414,7 @@ void IRKCaptureComponent::handle_advertising_failure_(int rc, uint32_t host_gene
   {
     MutexGuard lock(state_mutex_);
     if (host_generation != host_generation_ || !host_synced_ || !advertising_requested_ ||
-        connected_ || mac_rotation_state_ != MacRotationState::IDLE)
+        connected_ || bond_clear_pending_ || mac_rotation_state_ != MacRotationState::IDLE)
       return;
     entering_slow_recovery = advertising_start_attempts_ == TimingConfig::ADV_FAST_ATTEMPTS - 1;
     // Saturate the counter: indefinite slow recovery must never wrap it back
@@ -2506,7 +2535,7 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   uint16_t waiting_handle = BLE_HS_CONN_HANDLE_NONE;
   {
     MutexGuard lock(state_mutex_);
-    if (!host_synced_ || mac_rotation_state_ == MacRotationState::IDLE ||
+    if (!host_synced_ || bond_clear_pending_ || mac_rotation_state_ == MacRotationState::IDLE ||
         mac_rotation_state_ == MacRotationState::REQUESTED)
       return;
     generation = mac_rotation_generation_;
@@ -3638,35 +3667,84 @@ std::string IRKCaptureComponent::set_next_capture_label(const std::string& value
 }
 
 void IRKCaptureComponent::forget_all_bonds() {
-  bool connected;
+  bool can_queue;
   {
     MutexGuard lock(state_mutex_);
-    connected = connected_;
+    // These entries also coalesce disconnect/timer reads and account for unique
+    // devices. Hide history instead of discarding that session bookkeeping.
+    for (auto& entry : irk_cache_) {
+      entry.in_history = false;
+      entry.label.clear();
+    }
+    if (bond_clear_pending_) return;
+    can_queue = host_synced_ && mac_rotation_state_ == MacRotationState::IDLE;
+    if (can_queue) {
+      bond_clear_pending_ = true;
+      bond_clear_host_generation_ = host_generation_;
+    }
   }
-
-  // Wiping the store mid-pairing would pull the bond out from under an
-  // in-flight exchange. The session cache is always safe to clear.
-  if (connected) {
+  if (!can_queue) {
     ESP_LOGW(TAG,
-             "Forget All Bonds: a peer is connected; clearing this session's "
-             "capture list only. Run it again once the device disconnects to "
-             "also clear stored bonds.");
-  } else {
-    ESP_LOGW(TAG, "Forget All Bonds: clearing stored bonds and this session's capture list");
-    int rc = ble_store_clear();
-    if (rc != 0) {
-      ESP_LOGE(TAG, "ble_store_clear failed rc=%d", rc);
-    } else {
-      ESP_LOGI(TAG, "All BLE bonds cleared");
+             "Forget All Bonds: history cleared; BLE is not ready or MAC rotation is active. "
+             "Run it again once BLE is ready to clear stored bonds.");
+    return;
+  }
+  ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &bond_clear_event_);
+}
+
+void IRKCaptureComponent::handle_forget_bonds_() {
+  // Runs on the same NimBLE event queue as connect/security callbacks. A peer
+  // arriving before this event is checked here; one arriving afterwards cannot
+  // start pairing until this callback returns. The pending flag also blocks
+  // main-task advertising starts and MAC rotation throughout the store wipe.
+  bool can_clear = false;
+  int stop_rc = BLE_HS_EBUSY;
+  {
+    MutexGuard lock(state_mutex_);
+    if (!bond_clear_pending_) return;  // A loop retry may have queued a duplicate.
+  }
+  {
+    // Do not block the host behind a main-task operation that may need it.
+    BleOpGuard ble_lock(ble_op_mutex_, 0);
+    if (ble_lock.acquired()) {
+      {
+        MutexGuard lock(state_mutex_);
+        can_clear = host_synced_ && host_generation_ == bond_clear_host_generation_ &&
+                    !connected_ && mac_rotation_state_ == MacRotationState::IDLE;
+      }
+      if (can_clear) {
+        stop_rc = ble_gap_adv_stop();
+        const bool active = ble_gap_adv_active() != 0;
+        MutexGuard lock(state_mutex_);
+        advertising_ = active;
+        can_clear = !active && host_synced_ && host_generation_ == bond_clear_host_generation_ &&
+                    !connected_ && mac_rotation_state_ == MacRotationState::IDLE &&
+                    (stop_rc == 0 || stop_rc == BLE_HS_EALREADY || stop_rc == BLE_HS_EINVAL);
+      }
     }
   }
 
-  // capture_events_/unique_devices_ are deliberately left alone: max_captures
-  // budgets against them, and clearing the list does not un-capture a device.
+  if (can_clear) {
+    // Flash work must not hold either component mutex.
+    const int rc = ble_store_clear();
+    if (rc != 0) {
+      ESP_LOGE(TAG, "Forget All Bonds: ble_store_clear failed rc=%d; run it again to retry", rc);
+    } else {
+      ESP_LOGI(TAG, "All BLE bonds cleared");
+    }
+  } else {
+    ESP_LOGW(TAG,
+             "Forget All Bonds: history cleared; stored bonds retained because a peer is "
+             "connected or BLE maintenance is busy (stop rc=%d). Run it again once idle.",
+             stop_rc);
+  }
   {
     MutexGuard lock(state_mutex_);
-    irk_cache_.clear();
+    bond_clear_pending_ = false;
   }
+  // Re-evaluate current intent: an OFF request or capture limit reached while
+  // the event was queued must not be undone by restoring an old snapshot.
+  start_advertising();
 }
 
 std::string IRKCaptureComponent::build_history_json() {
@@ -3683,6 +3761,7 @@ std::string IRKCaptureComponent::build_history_json() {
   json += "[";
   bool first = true;
   for (const auto& entry : cache_copy) {
+    if (!entry.in_history) continue;
     if (!first) json += ",";
     first = false;
     // mac_addr/irk_hex are always hex/colon characters and label is

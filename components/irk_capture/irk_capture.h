@@ -99,8 +99,8 @@ class IRKCaptureButton : public button::Button, public Component {
   IRKCaptureComponent* parent_ { nullptr };
 };
 
-// Button that wipes the NimBLE bond store (all cached pairings), distinct
-// from "Generate New MAC" which only rotates the advertised address.
+// Button that clears capture history and requests a bond-store wipe without
+// rotating the advertised address.
 class IRKCaptureForgetBondsButton : public button::Button, public Component {
  public:
   void set_parent(IRKCaptureComponent* parent) {
@@ -274,10 +274,11 @@ class IRKCaptureComponent : public Component {
   void set_stop_after_capture(bool enabled);
   bool get_stop_after_capture();
   std::string get_next_capture_label();
-  // Sanitizes, stores, and returns the accepted label for the next new device
-  // captured this session (consumed once; charset matches BLE-name rules).
+  // Sanitizes, stores, and returns the label for the next device added to
+  // visible history (consumed once; charset matches BLE-name rules).
   std::string set_next_capture_label(const std::string& value);
-  // Wipes the NimBLE bond store and this session's in-memory capture cache.
+  // Clears visible history, retaining deduplication/capture accounting. The
+  // NimBLE task clears stored bonds only when no peer is connected.
   void forget_all_bonds();
   // This session's captures as a JSON array of {mac, irk, label, reconnects}.
   // Served over HTTP by the wizard rather than published as an entity: Home
@@ -349,12 +350,19 @@ class IRKCaptureComponent : public Component {
     uint32_t last_observed_generation;
     uint16_t reconnect_count;
     bool reconnect_limit_reported;
-    std::string label;  // Optional user label, attached at first capture only
+    std::string label;         // Optional user label for the visible history entry
+    bool in_history { true };  // History can be cleared without losing deduplication
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
   uint32_t capture_events_ { 0 };         // IRK publications this session
   uint32_t unique_devices_ { 0 };         // New identity addresses this session
   uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
+
+  // Requests are queued onto NimBLE's task so bond deletion cannot interleave
+  // with pairing callbacks. Pending work gates advertising and MAC rotation.
+  struct ble_npl_event bond_clear_event_ {};
+  bool bond_clear_pending_ { false };
+  uint32_t bond_clear_host_generation_ { 0 };
 
   // Wizard-facing session state (see README). Protected by state_mutex_ like
   // the rest of this block.
@@ -434,6 +442,7 @@ class IRKCaptureComponent : public Component {
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
   //           suppress_next_adv_, adv_restart_time_, capture_events_,
   //           unique_devices_, irk_cache_ (deduplication state),
+  //           bond_clear_pending_, bond_clear_host_generation_,
   //           connection_generation_, pairing_generation_, repair_generation_,
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
   //           connection_timeout_,
@@ -462,6 +471,8 @@ class IRKCaptureComponent : public Component {
                           uint32_t connection_generation, bool force_pairing_publish,
                           bool& out_should_stop_adv, bool& out_is_new_device,
                           bool& out_limit_just_reached);
+  void restore_capture_history_(IRKCacheEntry& entry);  // Caller holds state_mutex_
+  void handle_forget_bonds_();                          // NimBLE event-queue callback only
 
   // Timer handlers
   bool enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers,
