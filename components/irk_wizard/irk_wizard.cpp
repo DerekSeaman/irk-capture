@@ -189,6 +189,11 @@ static esp_err_t handle_post_stop_after_capture(httpd_req_t* req);
 
 static esp_err_t send_json(httpd_req_t* req, const std::string& body) {
   httpd_resp_set_type(req, "application/json");
+  // /api/status carries the captured IRK and the peer's identity address, which
+  // permanently deanonymize a phone. no-store keeps them out of the browser's
+  // disk cache and out of any intermediary, rather than merely requiring
+  // revalidation the way the page's no-cache does.
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   return httpd_resp_send(req, body.c_str(), body.size());
 }
 
