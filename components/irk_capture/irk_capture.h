@@ -14,6 +14,8 @@
 
 // ESP32-only component - requires Bluetooth hardware
 #ifdef USE_ESP32
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <host/ble_gap.h>
 #include <host/ble_gatt.h>
 #include <host/ble_hs.h>
@@ -358,9 +360,12 @@ class IRKCaptureComponent : public Component {
   uint32_t unique_devices_ { 0 };         // New identity addresses this session
   uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
 
-  // Requests are queued onto NimBLE's task so bond deletion cannot interleave
-  // with pairing callbacks. Pending work gates advertising and MAC rotation.
+  // A worker queues wake-ups onto NimBLE's task without blocking the main task
+  // on queue capacity. Bond deletion stays serialized with pairing callbacks.
+  // The worker/event live for the component's lifetime; only pending state is
+  // cancelled on host reset. Pending work gates advertising and MAC rotation.
   struct ble_npl_event bond_clear_event_ {};
+  TaskHandle_t bond_clear_task_ { nullptr };  // Initialized once in setup()
   bool bond_clear_pending_ { false };
   uint32_t bond_clear_host_generation_ { 0 };
 
@@ -472,6 +477,8 @@ class IRKCaptureComponent : public Component {
                           bool& out_should_stop_adv, bool& out_is_new_device,
                           bool& out_limit_just_reached);
   void restore_capture_history_(IRKCacheEntry& entry);  // Caller holds state_mutex_
+  void notify_bond_clear_();                            // Nonblocking worker wake-up
+  void queue_bond_clear_();                             // Worker task only
   void handle_forget_bonds_();                          // NimBLE event-queue callback only
 
   // Timer handlers

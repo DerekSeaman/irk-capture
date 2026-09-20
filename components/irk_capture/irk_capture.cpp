@@ -50,6 +50,8 @@ CRITICAL: This component runs in a multi-threaded environment:
 enc_change, etc.)
 2. ESPHome main task: Executes loop(), setup(), and UI callbacks (switch,
 button, text)
+3. Bond-clear worker: Enqueues NimBLE wake-ups; may wait for queue capacity,
+but never holds a component mutex while doing so or deletes bonds itself
 
 THREAD SAFETY RULES:
 -    ALL reads/writes to shared state MUST use state_mutex_
@@ -1812,6 +1814,23 @@ void IRKCaptureComponent::setup() {
       },
       this);
 
+  // Older NPL ports wait indefinitely for space in the host event queue. Keep
+  // that wait off both the ESPHome main task and the shared timer task. A
+  // notification bit coalesces retries while this single producer is blocked.
+  if (xTaskCreate(
+          [](void* arg) {
+            auto* self = static_cast<IRKCaptureComponent*>(arg);
+            for (;;) {
+              uint32_t notification;
+              xTaskNotifyWait(0, UINT32_MAX, &notification, portMAX_DELAY);
+              self->queue_bond_clear_();
+            }
+          },
+          "irk_bond_clear", 2048, this, tskIDLE_PRIORITY + 1, &bond_clear_task_) != pdPASS) {
+    bond_clear_task_ = nullptr;
+    ESP_LOGE(TAG, "Bond-clear worker allocation failed; stored-bond clearing is unavailable");
+  }
+
   // on_ble_host_synced() applies the resolved intent when NimBLE becomes ready.
 
   if (ble_name_text_) {
@@ -1880,14 +1899,9 @@ void IRKCaptureComponent::loop() {
   // Wizard-facing session status (advertising/pairing/capturing/captured/idle).
   update_status_sensor_(now);
 
-  // Some NPL ports drop an event when their queue is full. Requeue pending
-  // work until serviced; NimBLE coalesces events that are already queued.
-  bool queue_bond_clear;
-  {
-    MutexGuard lock(state_mutex_);
-    queue_bond_clear = bond_clear_pending_;
-  }
-  if (queue_bond_clear) ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &bond_clear_event_);
+  // Some NPL ports drop full-queue events; others block the producer. Retry
+  // through the worker so neither behavior can stall the ESPHome main task.
+  notify_bond_clear_();
 
   // Timers for IRK checks
   handle_post_disconnect_timer(now);
@@ -2022,6 +2036,10 @@ void IRKCaptureComponent::setup_ble() {
     g_irk_instance->reset_connection_state_();
     g_irk_instance->suppress_next_adv_ = false;
     g_irk_instance->adv_restart_time_ = 0;
+    // Cancel the request without relying on the old host event being serviced.
+    // Leave its event object intact: a delayed wake-up checks current state.
+    g_irk_instance->bond_clear_pending_ = false;
+    g_irk_instance->bond_clear_host_generation_ = 0;
     // A host reset proves the old controller state is gone. Abort any
     // in-flight MAC rotation instead of leaving REQUESTED waiting for a
     // disconnect callback that can no longer arrive.
@@ -3668,6 +3686,7 @@ std::string IRKCaptureComponent::set_next_capture_label(const std::string& value
 
 void IRKCaptureComponent::forget_all_bonds() {
   bool can_queue;
+  bool worker_available;
   {
     MutexGuard lock(state_mutex_);
     // These entries also coalesce disconnect/timer reads and account for unique
@@ -3677,11 +3696,18 @@ void IRKCaptureComponent::forget_all_bonds() {
       entry.label.clear();
     }
     if (bond_clear_pending_) return;
-    can_queue = host_synced_ && mac_rotation_state_ == MacRotationState::IDLE;
+    worker_available = bond_clear_task_ != nullptr;
+    can_queue = worker_available && host_synced_ && mac_rotation_state_ == MacRotationState::IDLE;
     if (can_queue) {
       bond_clear_pending_ = true;
       bond_clear_host_generation_ = host_generation_;
     }
+  }
+  if (!worker_available) {
+    ESP_LOGW(TAG,
+             "Forget All Bonds: history cleared; stored bonds retained because the "
+             "bond-clear worker is unavailable");
+    return;
   }
   if (!can_queue) {
     ESP_LOGW(TAG,
@@ -3689,6 +3715,28 @@ void IRKCaptureComponent::forget_all_bonds() {
              "Run it again once BLE is ready to clear stored bonds.");
     return;
   }
+  notify_bond_clear_();
+}
+
+void IRKCaptureComponent::notify_bond_clear_() {
+  {
+    MutexGuard lock(state_mutex_);
+    if (!bond_clear_task_ || !bond_clear_pending_) return;
+  }
+  // Task notifications do not wait for queue capacity. A reset racing this
+  // notification is harmless: the worker rechecks the pending request.
+  xTaskNotify(bond_clear_task_, 1, eSetBits);
+}
+
+void IRKCaptureComponent::queue_bond_clear_() {
+  {
+    MutexGuard lock(state_mutex_);
+    if (!bond_clear_pending_ || !host_synced_ || host_generation_ != bond_clear_host_generation_)
+      return;
+  }
+  // Worker task only, with neither component mutex held. This can block on
+  // older SDKs. The event is just a wake-up, not ownership of a request: after
+  // reset/resync its callback must consult the current pending state again.
   ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &bond_clear_event_);
 }
 
