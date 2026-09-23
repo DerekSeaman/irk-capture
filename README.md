@@ -389,3 +389,32 @@ Original package: [github://KyleTeal/irk-capture/irk-capture-package.yaml@main](
 ## License
 
 MIT License - See LICENSE file for details
+
+## Development Status
+
+To test the latest development build, point both the package **and** the component at
+the `dev` branch. In your device YAML, change the IRK capture package `ref` to `dev`, and
+add a `substitutions:` block setting `irk_component_ref` to `dev`:
+
+```yaml
+packages:
+  device:
+    url: https://github.com/DerekSeaman/irk-capture
+    ref: dev
+    file: ESPHome Devices/irk-capture-base.yaml
+    refresh: always
+
+substitutions:
+  irk_component_ref: dev
+```
+
+Both settings are required. The package pulls the component from `main` by default, so
+changing only the package `ref` runs the development package against the released
+component and fails validation with errors such as
+`[status] is an invalid option for [text_sensor.irk_capture]`.
+
+Board packages (such as the Seeed Studio XIAO packages) can stay on `main`. To return to
+the released version, set the package `ref` back to `main` and remove the `substitutions:`
+block.
+
+![Development configuration: package ref and irk_component_ref set to dev](docs/dev-config.jpg)
