@@ -232,7 +232,8 @@ several entities change at once:
 `captured` and `no_irk` are held briefly so a polling UI cannot miss them between updates,
 and remain visible while that completed connection is still open. A newer completed result
 replaces the previous status. A bonded device reconnecting and republishing the same key does
-not re-trigger `captured`.
+not re-trigger `captured`, and never replaces another device's displayed result. It only restores
+the IRK sensor when that sensor is showing a `Failed: IRK not used` result.
 
 **Forget All Bonds** clears this session's capture list, and also clears stored bonds when no
 device is connected. Bond deletion briefly pauses advertising and is serialized with BLE

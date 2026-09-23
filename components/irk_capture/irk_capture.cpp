@@ -773,6 +773,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   bool limit_just_reached = false;
   bool force_pairing_publish = false;
   bool is_repair = false;
+  bool capture_event = false;
   {
     MutexGuard lock(self->state_mutex_);
 
@@ -814,10 +815,15 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
         max_reached = true;
       }
 
+      // A genuine capture: a new device, or an explicit (re)pairing. A bonded
+      // reconnect republishing a key it already gave us is not one.
+      capture_event = is_new_device || force_pairing_publish || is_repair;
+
       // Wizard "one-shot" mode: independent of continuous_mode/max_captures,
-      // stop advertising after any publish so the flow can hand off to
-      // confirmation instead of continuing to hunt for more devices.
-      stop_after_capture_hit = self->stop_after_capture_;
+      // stop advertising after a capture so the flow can hand off to
+      // confirmation. An earlier device reconnecting in the background must
+      // not turn advertising off before the intended device has paired.
+      stop_after_capture_hit = self->stop_after_capture_ && capture_event;
     }
   }  // Release mutex before slow logging/publishing operations
 
@@ -846,12 +852,9 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     }
   }
 
-  // The sensor represents the latest completed outcome, even when capture logs
-  // and counters coalesce a bonded reconnect. This restores a valid IRK after
-  // another device's no-IRK result without counting the reconnect again.
-  self->publish_irk_to_sensors(
-      irk_hex, addr_str.c_str(), connection_generation,
-      should_publish && (is_new_device || force_pairing_publish || is_repair));
+  // Called even for coalesced or rate-limited observations: the sensor decides
+  // whether this may replace what is displayed (see publish_irk_to_sensors()).
+  self->publish_irk_to_sensors(irk_hex, addr_str.c_str(), connection_generation, capture_event);
 
   // Skip duplicate capture logs (deduplication happened under mutex).
   if (!should_publish) {
@@ -3558,26 +3561,30 @@ void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex, con
   // Stage only; the ESPHome main loop() performs the actual publish_state().
   // Callers may run in the NimBLE task, where publish_state() is unsafe.
   MutexGuard lock(state_mutex_);
-  const bool new_result = connection_generation != last_result_generation_;
-  if (connection_generation != 0) {
-    // An older delayed result must not overwrite the outcome of a newer pairing.
-    if (last_result_generation_ != 0 &&
-        static_cast<int32_t>(connection_generation - last_result_generation_) < 0)
-      return;
-    last_result_generation_ = connection_generation;
+  // A valid IRK for the live connection ends its capture work whether or not it
+  // becomes the displayed result, so Status stops reporting "capturing".
+  if (connected_ && connection_generation != 0 && connection_generation == connection_generation_) {
+    irk_gave_up_ = true;
   }
-  // Stage status and IRK under the same ordering check. A delayed read may
-  // still populate history, but cannot replace a newer attempt's outcome.
+  // An older delayed result must not overwrite the outcome of a newer pairing.
+  if (connection_generation != 0 && last_result_generation_ != 0 &&
+      static_cast<int32_t>(connection_generation - last_result_generation_) < 0)
+    return;
+  // Stage status and IRK under the same ordering check. Only a genuine capture
+  // replaces what is on display. A bonded reconnect of an earlier device may
+  // restore its IRK over a no-IRK failure (or an empty sensor), but must never
+  // replace another device's result while the user is copying it.
   if (capture_event) {
     capture_status_ = CaptureStatus::CAPTURED;
     status_result_hold_until_ = now_ms() + TimingConfig::STATUS_RESULT_HOLD_MS;
     if (status_result_hold_until_ == 0) status_result_hold_until_ = 1;
-  } else if (new_result || capture_status_ == CaptureStatus::NO_IRK) {
-    // A bonded reconnect restores the IRK without pretending it is a fresh
-    // capture. Duplicate extraction paths for the same success keep its hold.
+  } else if (capture_status_ == CaptureStatus::NO_IRK || last_result_generation_ == 0) {
     capture_status_ = CaptureStatus::NONE;
     status_result_hold_until_ = 0;
+  } else {
+    return;
   }
+  if (connection_generation != 0) last_result_generation_ = connection_generation;
   pending_irk_hex_ = irk_hex;
   pending_irk_addr_ = addr_str;
   pending_irk_pub_ = true;

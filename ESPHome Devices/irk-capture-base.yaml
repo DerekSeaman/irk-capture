@@ -72,6 +72,11 @@ mdns:
 # irk_component_ref in its substitutions - useful for testing a branch or a
 # fork without having to edit this package. A device YAML's substitutions
 # take precedence over a package's.
+#
+# When testing a branch, set irk_component_ref to match the device YAML's
+# packages: ref. Otherwise a newer package runs against main's component and
+# fails validation on any option main does not have yet (for example
+# "[status] is an invalid option for [text_sensor.irk_capture]").
 substitutions:
   irk_component_url: https://github.com/DerekSeaman/irk-capture
   irk_component_ref: main
