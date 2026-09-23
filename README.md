@@ -251,8 +251,8 @@ For a guided, multi-device flow built on these entities, see the optional wizard
 This ESPHome IRK capture component has been successfully tested with:
 
 - **Apple OS 26 and 27 family:**
-  - iPhone 17 Pro
-  - Apple Watch Ultra 3
+  - iPhone 17 Pro, iPhone 18 Pro
+  - Apple Watch Ultra 3, Apple Watch Ultra 4
   - iPad Pro M5
 
 - **Android devices:**
