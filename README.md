@@ -12,9 +12,33 @@ Modern Apple and Android devices use **BLE privacy features** that randomize the
 
 The **Identity Resolving Key (IRK)** is a cryptographic key exchanged during BLE pairing that allows authorized devices to resolve these random MAC addresses back to the original device. By capturing a device's IRK, you can reliably track it for presence detection even as it randomizes its MAC address.
 
-Capturing IRKs from devices can be very tricky, as the Bluetooth stack can very widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes.
+Capturing IRKs from devices can be very tricky, as the Bluetooth stack can vary widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes.
 
-The ESP32 uses a **random static address** for BLE advertising, which is regenerated each time the device boots. This address serves as both the advertised MAC address and the identity address for pairing. The "Refresh BLE Identity" button also changes this address, and renames the device at the same time, to `IRK HR` (Heart Sensor) or `IRK KB` (Keyboard) plus the last four characters of the new address (`IRK HR 7F3A`) so the name on your phone matches the Effective MAC sensor. The generated name lasts until the next reboot, which restores the default name. Both halves change together because a new address alone is often not enough: iOS hides an accessory whose **name** it has already seen, even on an address it has never seen, so a phone that has met the ESP32 once may show it for a second and then drop it. If your phone or watch has previously paired with the ESP32, it may also still have cached bond information, so **forget the pairing** on the phone or watch as well before pairing again.
+## BLE Identity
+
+The ESP32's BLE identity is the name and MAC address your phone or watch sees when it looks for devices to pair with. After every boot, the ESP32 advertises under the default name for the selected profile:
+
+| Profile | Default name |
+| :--- | :--- |
+| Heart Sensor | `IRK Capture` |
+| Keyboard | `Logitech K380` |
+
+The MAC address is a **random static address** that is regenerated each time the ESP32 boots. The current address is shown in the **Effective MAC** sensor.
+
+**Refresh BLE Identity.** Pressing this button gives the ESP32 a new MAC address and a matching new name, without a reboot. The name shows the active profile, followed by the last four characters of the new MAC address:
+
+| Profile | Name after a refresh |
+| :--- | :--- |
+| Heart Sensor | `IRK HR 7F3A` |
+| Keyboard | `IRK KB 7F3A` |
+
+The name changes along with the address because iPhones hide an accessory whose name they've already seen, even on a new MAC address. If the ESP32 doesn't show up on your phone or watch, turn Bluetooth off and back on there. Because the suffix matches the end of Effective MAC, you can tell which entry on your phone is the current one.
+
+**Custom names.** You can also change the advertising name yourself, in either profile. Type a new name into **BLE Device Name** and press Enter, and the ESP32 starts advertising it immediately. Names are limited to 12 characters; letters, numbers, spaces, `-` and `_` are kept and anything else is removed.
+
+**After a reboot**, whether from Restart Device, a power cycle, or changing the BLE profile, the ESP32 goes back to the default name for its profile and a new random MAC address. A refreshed or custom name only lasts until then.
+
+If your phone or watch has paired with the ESP32 before, **forget the pairing** on it before pairing again.
 
 ## Track Who's in Each Room with ESPHome + Bermuda BLE
 
@@ -25,7 +49,7 @@ For a complete guide for room-level presence detection using Bermuda BLE Trilate
 This IRK capture component turns your ESP32 into a BLE peripheral that can emulate different device types to capture IRKs from various platforms. It supports two BLE profiles:
 
 - **Heart Sensor Profile** (for Apple devices, Android watches): Advertises as a heart rate monitor, which Apple devices and many Android watches can discover (with third party app)
-- **Keyboard Profile** (for Android phones): Advertises as a "Logitech K380" keyboard, which bypasses Samsung's aggressive BLE filtering on Galaxy phones
+- **Keyboard Profile** (for Android phones): Advertises as a "Logitech K380" keyboard by default, which bypasses Samsung's aggressive BLE filtering on Galaxy phones
 
 When your Apple or Android device pairs with the ESP32:
 
@@ -174,7 +198,8 @@ Again, my [blog post](https://www.derekseaman.com/2026/01/how-to-using-my-blueto
 
 - In Home Assistant go to Settings > ESPHome -> Your ESP32 IRK Capture Device
 - Select the appropriate BLE profile (Heart Sensor for Apple devices and Android watches, Keyboard for Android phones)
-- Pair your phone or watch with the advertising ESP32 device name (may need to toggle Bluetooth off/on to see the ESP32 device)
+- Pair your phone or watch with the advertising ESP32 device name shown in **BLE Device Name** (may need to toggle Bluetooth off/on to see the ESP32 device)
+- If the ESP32 doesn't appear, press **Refresh BLE Identity** to give it a new name and MAC address. Your phone may briefly list older names too; pair with the one that matches BLE Device Name
 - Watch the Sensors IRK value and it should display the captured IRK
 - Paste the captured IRK into the Private BLE Device integration in Home Assistant
 
@@ -193,7 +218,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
 | **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, or `no_irk` |
 | **Forget All Bonds** | Button | Clears this session's capture list so a run can start from a clean slate, and clears stored bonds when no device is connected |
-| **Restart Device** | Button | Restart the ESP32 - Clears all pairing information |
+| **Restart Device** | Button | Restart the ESP32 - Clears all pairing information and restores the default BLE name |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
 | **Internal Temp** | Sensor | ESP32 internal temperature (diagnostic) |
 | **IP** | Text Sensor | Device IP address (diagnostic) |
@@ -203,17 +228,11 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Wi-Fi Disconnects (since boot)** | Sensor | Number of Wi-Fi disconnections since boot (diagnostic) |
 | **Wi-Fi Signal** | Sensor | Wi-Fi signal strength in dBm (diagnostic) |
 
-The advertising switch represents the requested state and stays ON while a device is connected.
-An explicit switch `restore_mode` controls its startup state; omitting it or using `DISABLED`
-delegates startup to `irk_capture.start_on_boot`. The shared package uses `DISABLED`, so
-existing `start_on_boot: false` configurations still start with advertising OFF.
-If you explicitly set `ALWAYS_ON`, advertising starts ON even when `start_on_boot` is false.
+**BLE Advertising switch.** This switch controls whether the ESP32 advertises so phones and watches can find it. It's ON after every boot by default. While a device is connected, the ESP32 pauses advertising but the switch stays ON, and advertising resumes when the device disconnects.
 
-If advertising or random-address setup fails, retry delays increase through 1, 2, 4, and 8 seconds.
-After the fifth failure, automatic recovery continues once per minute while the switch stays ON.
-An error marks the transition to slow recovery; continuing failures are logged at most once every
-five minutes. Successful recovery is also logged. Turning the switch OFF cancels retries;
-turning it back ON starts a fresh attempt. Recovery does not reboot or clear captures/bonds.
+If advertising fails to start, the ESP32 keeps retrying on its own, quickly at first and then once a minute, for as long as the switch is ON. It doesn't reboot or lose your captures while it does. Turning the switch off stops the retries, and turning it back on tries again right away.
+
+*Advanced:* to have advertising start OFF, add `start_on_boot: false` under `irk_capture:` in your device YAML. Setting a `restore_mode` on the switch itself overrides this.
 
 ### Status and building a capture flow on top of it
 
@@ -229,20 +248,9 @@ several entities change at once:
 | `captured` | A key was just captured (or the device was deliberately re-paired) |
 | `no_irk` | Pairing completed but the peer sent no identity key - see the IRK sensor |
 
-`captured` and `no_irk` are held briefly so a polling UI cannot miss them between updates,
-and remain visible while that completed connection is still open. A newer completed result
-replaces the previous status. A bonded device reconnecting and republishing the same key does
-not re-trigger `captured`, and never replaces another device's displayed result. It only restores
-the IRK sensor when that sensor is showing a `Failed: IRK not used` result.
+`captured` and `no_irk` stay on screen for a few seconds so you don't miss them. A device you already captured that reconnects in the background won't replace the result you're looking at.
 
-**Forget All Bonds** clears this session's capture list, and also clears stored bonds when no
-device is connected. Bond deletion briefly pauses advertising and is serialized with BLE
-events so it cannot interrupt an in-flight pairing. If a device is connected or BLE maintenance is
-busy, the bonds are retained; press the button again once idle. Capture counts and reconnect
-deduplication are retained, so clearing the list does not reset the session's capture limit.
-A subsequent capture can add a device back to the list without counting it as a new identity.
-Refresh BLE Identity already clears the bond store as part of rotating the address, so reach for
-Forget All Bonds when you want a clean capture list without changing the identity.
+**Forget All Bonds** clears this session's list of captured devices without changing the ESP32's name or MAC address. If a device is connected, press it again after it disconnects.
 
 ## Tested Devices
 
@@ -269,9 +277,11 @@ This is most common on some Android devices and happens when you input the captu
 ### ESP32 Device Name Not Appearing in Bluetooth Settings
 
 - **Turn off Bluetooth** on your device
-- Press the **"Restart Device"** button to reset the ESP32's BLE stack
 - Ensure the **"BLE Advertising"** switch is ON
-- Turn your device's Bluetooth back on and connect to the ESP32
+- Press **"Refresh BLE Identity"** to give the ESP32 a new name and MAC address. iOS hides an accessory whose name it has already seen, so a new MAC address alone is often not enough
+- Turn your device's Bluetooth back on and connect to the name shown in **BLE Device Name**
+- If there are several IRK entries, turn Bluetooth off and back on
+- If the ESP32 still does not appear, press **"Restart Device"** to reset its BLE stack
 - If ESP32 device does not appear on Android, see the section below
 
 ### Android Phone can't see ESP32 Device Name
@@ -281,7 +291,7 @@ Samsung One UI 7 (Galaxy S25, S24, etc.) aggressively filters BLE devices in Blu
 1. **Enable Developer Options**: Settings → About Phone → Software Information → Tap "Build Number" 7 times
 2. **Enable BLE visibility**: Settings → Developer Options → Scroll down and enable **"Show unsupported Bluetooth LE devices in Bluetooth settings"**
 3. Return to Bluetooth settings and scan again — the ESP32 device should now appear
-4. Tap on the device (e.g., "Logitech K380" when using Keyboard profile) and tap pair. The IRK should appear in the ESP32 logs and ESPHome device page in Home Assistant
+4. Tap on the device (the name shown in BLE Device Name, e.g. "Logitech K380" when using Keyboard profile) and tap pair. The IRK should appear in the ESP32 logs and ESPHome device page in Home Assistant
 
 ### Android Phone still not visible after Developer Options fix
 
@@ -289,7 +299,7 @@ If the Developer Options fix doesn't work, or you're on a non-Samsung Android de
 
 1. Install **nRF Connect** from the Play Store (by Nordic Semiconductor)
 2. Open the app and tap "Scan"
-3. Look for "Logitech K380" in the device list (when using Keyboard profile)
+3. Look for the name shown in BLE Device Name (e.g. "Logitech K380" when using Keyboard profile)
 4. Tap on it to connect
 5. The pairing dialog should appear, allowing the bonding process to complete
 6. Look for the captured IRK in the ESP32 logs or the ESPHome device page
@@ -351,7 +361,7 @@ Below is a sample log showing a successful IRK capture:
 ```text
 [13:44:01.976][C][mdns:259]: mDNS:
 [13:44:01.976][C][mdns:259]:   Hostname: irk-capture-esp32-c3
-[13:44:01.976][C][irk_capture:1890]: IRK Capture v1.7.0: profile=Heart Sensor name='IRK Capture' adv=YES
+[13:44:01.976][C][irk_capture:1890]: IRK Capture v1.7.1: profile=Heart Sensor name='IRK Capture' adv=YES
 [13:44:13.357][I][irk_capture:1265][nimble_host]: Connection established successfully
 [13:44:13.360][I][irk_capture:2923][nimble_host]: Conn start: handle=1 enc_ready=0 was_adv=1
 [13:44:13.448][I][irk_capture:2925][nimble_host]: Connected; handle=1, initiating security
