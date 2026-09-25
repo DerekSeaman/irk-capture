@@ -2636,19 +2636,16 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
       mac_rotation_ready_time_ = 0;
       if (identity_refresh_pending_) {
         identity_refresh_pending_ = false;
-        // The Keyboard profile advertises as "Logitech K380" to get past
-        // Samsung's BLE filtering, so a refresh changes only its address.
-        // Generating a name there would trade the Galaxy path for the iOS one;
-        // a name entered in Home Assistant is the user's explicit choice.
-        if (ble_profile_ != BLEProfile::KEYBOARD) {
-          // "HR" rather than the profile's own abbreviation because Keyboard is
-          // the only other profile and it never reaches this branch.
-          // mac[1], mac[0] are the low two octets: NimBLE stores the address
-          // little-endian, so these are the pair printed last by Effective MAC.
-          ble_name_ = identity_name("HR", mac[1], mac[0]);
-          pending_ble_name_pub_ = true;
-          pending_ble_name_ = ble_name_;
-        }
+        const bool keyboard = ble_profile_ == BLEProfile::KEYBOARD;
+        // mac[1], mac[0] are the low two octets: NimBLE stores the address
+        // little-endian, so these are the pair printed last by Effective MAC.
+        ble_name_ = identity_name(keyboard ? "KB" : "HR", mac[1], mac[0]);
+        // Keyboard boots as "Logitech K380", which gets it past Samsung's BLE
+        // filtering. A refresh is a deliberate request for a new name, so it
+        // replaces that until the next reboot, like a name set in Home Assistant.
+        if (keyboard) keyboard_name_custom_ = true;
+        pending_ble_name_pub_ = true;
+        pending_ble_name_ = ble_name_;
       }
     } else {
       retries = ++mac_rotation_retries_;

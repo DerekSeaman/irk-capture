@@ -257,10 +257,10 @@ class IRKCaptureComponent : public Component {
   void set_advertising_requested(bool requested);
   void refresh_mac();
 
-  // Rotates the address and, in a profile whose name is not fixed, adopts a
-  // name carrying the new address's low two octets. Both halves change
-  // together because rotating the address alone leaves the device invisible
-  // to a phone that has cached the old name.
+  // Rotates the address and adopts a name carrying the profile and the new
+  // address's low two octets ("IRK HR 7F3A", "IRK KB 7F3A") until the next
+  // reboot. Both halves change together because rotating the address alone
+  // leaves the device invisible to a phone that has cached the old name.
   void refresh_identity();
   bool is_advertising();            // Thread-safe check of actual advertising state
   bool is_advertising_requested();  // Thread-safe check of the user's desired state

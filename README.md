@@ -14,7 +14,7 @@ The **Identity Resolving Key (IRK)** is a cryptographic key exchanged during BLE
 
 Capturing IRKs from devices can be very tricky, as the Bluetooth stack can very widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes.
 
-The ESP32 uses a **random static address** for BLE advertising, which is regenerated each time the device boots. This address serves as both the advertised MAC address and the identity address for pairing. The "Refresh BLE Identity" button also changes this address, and outside the Keyboard profile it renames the device at the same time, to `IRK HR` plus the last four characters of the new address (`IRK HR 7F3A`) so the name on your phone matches the Effective MAC sensor. Both halves change together because a new address alone is often not enough: iOS hides an accessory whose **name** it has already seen, even on an address it has never seen, so a phone that has met the ESP32 once may show it for a second and then drop it. If your phone or watch has previously paired with the ESP32, it may also still have cached bond information, so **forget the pairing** on the phone or watch as well before pairing again.
+The ESP32 uses a **random static address** for BLE advertising, which is regenerated each time the device boots. This address serves as both the advertised MAC address and the identity address for pairing. The "Refresh BLE Identity" button also changes this address, and renames the device at the same time, to `IRK HR` (Heart Sensor) or `IRK KB` (Keyboard) plus the last four characters of the new address (`IRK HR 7F3A`) so the name on your phone matches the Effective MAC sensor. The generated name lasts until the next reboot, which restores the default name. Both halves change together because a new address alone is often not enough: iOS hides an accessory whose **name** it has already seen, even on an address it has never seen, so a phone that has met the ESP32 once may show it for a second and then drop it. If your phone or watch has previously paired with the ESP32, it may also still have cached bond information, so **forget the pairing** on the phone or watch as well before pairing again.
 
 ## Track Who's in Each Room with ESPHome + Bermuda BLE
 
@@ -185,9 +185,9 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | Entity | Type | Description |
 | :--- | :--- | :--- |
 | **BLE Advertising** | Switch | Keep Bluetooth advertising enabled between connections (starts ON by default) |
-| **BLE Device Name** | Text Input | Change the advertised name until the next reboot (defaults: "IRK Capture" for Heart Sensor, "Logitech K380" for Keyboard). In Heart Sensor, Refresh BLE Identity writes a generated name here |
+| **BLE Device Name** | Text Input | Change the advertised name until the next reboot (defaults: "IRK Capture" for Heart Sensor, "Logitech K380" for Keyboard). Refresh BLE Identity writes a generated name here |
 | **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple) or "Keyboard" (Android). Changing profiles triggers a reboot. |
-| **Refresh BLE Identity** | Button | Rotate the advertised address and, outside the Keyboard profile, rename the device to match it (`IRK HR 7F3A`), so a phone that cached the old name sees a new accessory |
+| **Refresh BLE Identity** | Button | Rotate the advertised address and rename the device to match it (`IRK HR 7F3A` or `IRK KB 7F3A`) until the next reboot, so a phone that cached the old name sees a new accessory |
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
 | **Effective MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
@@ -329,7 +329,7 @@ Missing bond records, incomplete pairing, and invalid key bytes are not reported
 
 - After pairing, **forget/unpair the BLE device** from your device's Bluetooth settings
 - Turn Bluetooth OFF on your device
-- Press **Refresh BLE Identity**, which changes both the name and the address in one step (in the Keyboard profile it changes only the address; to rename it, set BLE Device Name)
+- Press **Refresh BLE Identity**, which changes both the name and the address in one step
 - Turn Bluetooth ON on your device
 - Try pairing to the ESP32 again
 - If that still fails, power cycle your phone/watch/tablet, power cycle your ESP32, press Refresh BLE Identity again, and try pairing again
