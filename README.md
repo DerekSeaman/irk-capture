@@ -170,7 +170,7 @@ packages:
 
 ## Usage Instructions
 
-Again, my blog post covers usage in detail. However, the super short version is as follows:
+Again, my [blog post](https://www.derekseaman.com/2026/01/how-to-using-my-bluetooth-irk-capture-package.html) covers usage in detail. However, the super short version is as follows:
 
 - In Home Assistant go to Settings > ESPHome -> Your ESP32 IRK Capture Device
 - Select the appropriate BLE profile (Heart Sensor for Apple devices and Android watches, Keyboard for Android phones)
