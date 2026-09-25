@@ -174,7 +174,7 @@ Again, my [blog post](https://www.derekseaman.com/2026/01/how-to-using-my-blueto
 
 - In Home Assistant go to Settings > ESPHome -> Your ESP32 IRK Capture Device
 - Select the appropriate BLE profile (Heart Sensor for Apple devices and Android watches, Keyboard for Android phones)
-- Pair your phone or watch with the advertising ESP32 device name
+- Pair your phone or watch with the advertising ESP32 device name (may need to toggle Bluetooth off/on to see the ESP32 device)
 - Watch the Sensors IRK value and it should display the captured IRK
 - Paste the captured IRK into the Private BLE Device integration in Home Assistant
 
@@ -244,8 +244,6 @@ A subsequent capture can add a device back to the list without counting it as a 
 Generate New MAC already clears the bond store as part of rotating the address, so reach for
 Forget All Bonds when you want a clean capture list without changing the address.
 
-For a guided, multi-device flow built on these entities, see the optional wizard package.
-
 ## Tested Devices
 
 This ESPHome IRK capture component has been successfully tested with:
@@ -264,7 +262,7 @@ This ESPHome IRK capture component has been successfully tested with:
 
 ## Troubleshooting Tips
 
-### The Provided IRK does not match any BLE devices that Home Assistant can see
+### "The Provided IRK does not match any BLE devices that Home Assistant can see"
 
 This is most common on some Android devices and happens when you input the captured IRK into the Private BLE Device field. This happens because Home Assistant can’t see the corresponding BLE device that matches the IRK. Some Android devices only broadcast BLE beacons very infrequently. This means Home Assistant may not have recently seen the BLE device, thus it can’t match the IRK. Unfortunately the solution to this is very device and OS specific, and may not be solvable. I suggest Googling your device and see if any settings can be changed to increase the frequency of the BLE advertising.
 
