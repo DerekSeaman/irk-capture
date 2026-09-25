@@ -506,6 +506,9 @@ class IRKCaptureComponent : public Component {
   // drained only on the ESPHome main task in loop().
   void stage_advertising_publish_(bool value);
   void flush_pending_publishes_();
+  // Reboots from the main loop. Safe to call from any task, including after
+  // the component has been marked failed.
+  void request_reboot_();
 
   // Main-task-only helpers (called from loop()).
   void update_status_sensor_(uint32_t now);

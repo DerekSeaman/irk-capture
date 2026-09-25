@@ -2875,12 +2875,10 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
              "Profile change requires restart to update GATT database - "
              "scheduling safe reboot...");
     // set_ble_profile() can be reached from a caller that is not the main task
-    // (the wizard serves it from esp_http_server's task), and App.safe_reboot()
-    // tears down every component, which must happen on the main task. defer()
-    // is safe to call from another task and runs on the main loop, which also
-    // lets the caller finish first - an HTTP handler gets to send its response
-    // instead of the connection dropping mid-reply.
-    this->defer([]() { App.safe_reboot(); });
+    // (the wizard serves it from esp_http_server's task). Deferring the reboot
+    // also lets the caller finish first - an HTTP handler gets to send its
+    // response instead of the connection dropping mid-reply.
+    request_reboot_();
   }
 }
 
@@ -2924,12 +2922,10 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
       }
     }
     if (terminate_failed) {
-      // on_connect() runs on the NimBLE host task, but App.safe_reboot() tears
-      // down every component and so has to run on the main task. Rebooting
-      // from here also did it while ble_op_mutex_ was still held. defer()
-      // hands the reboot to the main loop, after this handler has returned and
-      // released the guard.
-      this->defer([]() { App.safe_reboot(); });
+      // on_connect() runs on the NimBLE host task, and rebooting from here also
+      // did it while ble_op_mutex_ was still held. The reboot now runs on the
+      // main loop, after this handler has returned and released the guard.
+      request_reboot_();
     }
     return;
   }
@@ -3629,6 +3625,16 @@ void IRKCaptureComponent::stage_advertising_publish_(bool value) {
   MutexGuard lock(state_mutex_);
   pending_adv_val_ = value;
   pending_adv_pub_ = true;
+}
+
+void IRKCaptureComponent::request_reboot_() {
+  // App.safe_reboot() tears down every component, so it has to run on the main
+  // task, and callers include the NimBLE host task and the wizard's HTTP
+  // handler. A zero-delay timeout goes through the scheduler's thread-safe
+  // defer queue, like defer(). defer() itself is not used because the
+  // scheduler drops a failed component's callbacks, and a profile change after
+  // a failed setup still has to reboot; the self-keyed overload always fires.
+  App.scheduler.set_timeout(this, 0, []() { App.safe_reboot(); });
 }
 
 void IRKCaptureComponent::flush_pending_publishes_() {
