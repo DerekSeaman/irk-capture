@@ -349,33 +349,46 @@ Skipping the clean step can result in stale cached object files being linked aga
 Below is a sample log showing a successful IRK capture:
 
 ```text
-[16:15:01.812][D][switch:065]: 'BLE Advertising': Sending state ON
-[16:15:01.814][D][irk_capture:1690]: Advertising with profile: Heart Sensor
-[16:15:01.861][D][sensor:135]: 'Wi‑Fi RSSI': Sending state -30.00000 dBm with 0 decimals of accuracy
-[16:15:16.669][I][irk_capture:866][nimble_host]: Connection established successfully
-[16:15:16.669][I][irk_capture:1832][nimble_host]: Conn start: handle=0 enc_ready=0 was_adv=1
-[16:15:16.669][I][irk_capture:1835][nimble_host]: Connected; handle=0, initiating security
-[16:15:16.669][I][irk_capture:362][nimble_host]: sec: enc=0 bonded=0 auth=0 key_size=0
-[16:15:16.669][I][irk_capture:366][nimble_host]: peer ota=4A:1B:2C:3D:4E:5F type=1
-[16:15:16.669][I][irk_capture:368][nimble_host]: peer id =A1:B2:C3:D4:E5:F6 type=0
-[16:15:16.669][D][irk_capture:372][nimble_host]: conn params: interval=24 latency=0 supervision_timeout=500
-[16:15:16.672][D][irk_capture:376][nimble_host]: role=slave our_ota=C0:FF:EE:12:34:56
-[16:15:18.724][I][irk_capture:2105]: Retrying security initiate after 2050 ms
-[16:15:18.727][D][irk_capture:2107]: Retry security initiate rc=2
-[16:15:19.117][D][irk_capture:1458][nimble_host]: Pairing complete: handle=0
-[16:15:19.121][D][irk_capture:1195][nimble_host]: Peer identity resolved using IRK
-[16:15:19.121][I][irk_capture:988][nimble_host]: ENC_CHANGE status=0 (0x00)
-[16:15:19.121][I][irk_capture:1045][nimble_host]: Encryption established; attempting immediate IRK capture
-[16:15:19.121][I][irk_capture:522][nimble_host]: Pairing completed; publishing IRK again
-[16:15:19.121][I][irk_capture:425][nimble_host]:
-[16:15:19.121][I][irk_capture:428][nimble_host]: *** IRK CAPTURED *** (REPAIR)
-[16:15:19.121][I][irk_capture:607][nimble_host]: Identity Address: A1:B2:C3:D4:E5:F6
-[16:15:19.121][I][irk_capture:608][nimble_host]: IRK: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
-[16:15:19.121][I][irk_capture:609][nimble_host]: Capture events this session: 2
-[16:15:19.121][I][irk_capture:610][nimble_host]: Unique devices this session: 1
-[16:15:19.121][I][irk_capture:425][nimble_host]:
-[16:15:19.211][I][irk_capture:893][nimble_host]: Disconnect reason=534 (0x216)
-[16:15:19.211][I][irk_capture:1932][nimble_host]: Disconnected
+[13:44:01.976][C][mdns:259]: mDNS:
+[13:44:01.976][C][mdns:259]:   Hostname: irk-capture-esp32-c3
+[13:44:01.976][C][irk_capture:1890]: IRK Capture v1.7.0: profile=Heart Sensor name='IRK Capture' adv=YES
+[13:44:13.357][I][irk_capture:1265][nimble_host]: Connection established successfully
+[13:44:13.360][I][irk_capture:2923][nimble_host]: Conn start: handle=1 enc_ready=0 was_adv=1
+[13:44:13.448][I][irk_capture:2925][nimble_host]: Connected; handle=1, initiating security
+[13:44:13.448][I][irk_capture:497][nimble_host]: sec: enc=0 bonded=0 auth=0 key_size=0
+[13:44:13.448][I][irk_capture:501][nimble_host]: peer ota=4A:1B:2C:3D:4E:5F type=1
+[13:44:13.448][I][irk_capture:503][nimble_host]: peer id =A1:B2:C3:D4:E5:F6 type=0
+[13:44:13.451][D][irk_capture:507][nimble_host]: conn params: interval=24 latency=0 supervision_timeout=72
+[13:44:13.452][D][irk_capture:511][nimble_host]: role=slave our_ota=C0:FF:EE:12:34:56
+[13:44:13.527][S][text_sensor]: 'Status' >> 'pairing'
+[13:44:13.938][I][irk_capture:1604][nimble_host]: MTU updated: 256
+[13:44:14.347][D][irk_capture:1655][nimble_host]: Subscription changed: handle=1 attr=8 notify=0 indicate=1 reason=1
+[13:44:14.362][W][irk_capture:1560][nimble_host]: Repeat pairing from A1:B2:C3:D4:E5:F6 (clearing stale peer bond)
+[13:44:15.472][I][irk_capture:3248]: Retrying security initiate after 2042 ms
+[13:44:15.486][D][irk_capture:3267]: Retry security initiate rc=2
+[13:44:16.104][D][irk_capture:1676][nimble_host]: Pairing complete: handle=1
+[13:44:16.104][D][irk_capture:1666][nimble_host]: Peer identity resolved using IRK
+[13:44:16.104][I][irk_capture:1426][nimble_host]: ENC_CHANGE status=0 (0x00)
+[13:44:16.110][I][irk_capture:1449][nimble_host]: Encryption established; attempting immediate IRK capture
+[13:44:16.111][I][irk_capture:670][nimble_host]: Pairing completed; publishing IRK again
+[13:44:16.114][I][irk_capture:560][nimble_host]:
+[13:44:16.114][I][irk_capture:563][nimble_host]: *** IRK CAPTURED *** (REPAIR)
+[13:44:16.119][I][irk_capture:866][nimble_host]: Identity Address: A1:B2:C3:D4:E5:F6
+[13:44:16.129][I][irk_capture:867][nimble_host]: IRK: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
+[13:44:16.129][I][irk_capture:868][nimble_host]: Capture events this session: 2
+[13:44:16.129][I][irk_capture:560][nimble_host]:
+[13:44:16.291][S][text_sensor]: 'IRK' >> 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
+[13:44:16.291][S][text_sensor]: 'Device MAC' >> 'A1:B2:C3:D4:E5:F6'
+[13:44:16.291][S][text_sensor]: 'Status' >> 'captured'
+[13:44:16.517][D][irk_capture:1655][nimble_host]: Subscription changed: handle=1 attr=8 notify=0 indicate=0 reason=2
+[13:44:16.517][I][irk_capture:1297][nimble_host]: Disconnect reason=534 (0x216)
+[13:44:16.593][D][irk_capture:2974][nimble_host]: Connection closed; state reset and pending operations advanced
+[13:44:16.593][I][irk_capture:2975][nimble_host]: Disconnected
+[13:44:16.593][I][irk_capture:1397][nimble_host]: Continuous mode: restarting advertising for next device
+[13:44:16.593][D][irk_capture:2423][nimble_host]: Advertising with profile: Heart Sensor
+[13:44:16.593][D][irk_capture:3607][nimble_host]: Staged effective MAC: C0:FF:EE:12:34:56
+[13:44:16.593][S][text_sensor]: 'Effective MAC' >> 'C0:FF:EE:12:34:56'
+[13:44:20.288][S][text_sensor]: 'Status' >> 'advertising'
 ```
 
 ## Development Status
@@ -383,6 +396,8 @@ Below is a sample log showing a successful IRK capture:
 To test the latest development build, point both the package **and** the component at
 the `dev` branch. In your device YAML, change the IRK capture package `ref` to `dev`, and
 add a `substitutions:` block setting `irk_component_ref` to `dev`:
+
+![Development configuration: package ref and irk_component_ref set to dev](docs/dev-config.jpg)
 
 ```yaml
 packages:
@@ -404,8 +419,6 @@ component and fails validation with errors such as
 Board packages (such as the Seeed Studio XIAO packages) can stay on `main`. To return to
 the released version, set the package `ref` back to `main` and remove the `substitutions:`
 block.
-
-![Development configuration: package ref and irk_component_ref set to dev](docs/dev-config.jpg)
 
 ## Credits
 
