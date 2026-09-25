@@ -27,7 +27,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.7.0";
+static constexpr char VERSION[] = "1.7.1";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -2268,6 +2268,20 @@ void IRKCaptureComponent::start_advertising() {
   memset(&rsp_fields, 0, sizeof(rsp_fields));
   bool use_scan_response = false;
 
+  // Clamp defensively before the uint8_t cast. Names set from Home Assistant
+  // are capped at 12 bytes, but the Keyboard default ("Logitech K380", 13)
+  // bypasses that cap. 29 bytes is the most a 31-byte packet can carry after
+  // the field's type and length bytes.
+  uint8_t name_len;
+  {
+    size_t raw_len = name_copy.size();
+    if (raw_len > 29) {
+      ESP_LOGW(TAG, "BLE name too long (%zu bytes), truncating to 29", raw_len);
+      raw_len = 29;
+    }
+    name_len = (uint8_t) raw_len;
+  }
+
   if (current_profile == BLEProfile::KEYBOARD) {
     // Keyboard profile
     // Move name to scan response to stay within 31-byte advertising packet
@@ -2285,7 +2299,7 @@ void IRKCaptureComponent::start_advertising() {
 
     // Scan response data: device name (separate 31-byte budget)
     rsp_fields.name = (uint8_t*) name_copy.c_str();
-    rsp_fields.name_len = (uint8_t) name_copy.size();  // sanitize_ble_name() caps it at 12
+    rsp_fields.name_len = name_len;
     rsp_fields.name_is_complete = 1;
     use_scan_response = true;
   } else {
@@ -2294,18 +2308,7 @@ void IRKCaptureComponent::start_advertising() {
 
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t*) name_copy.c_str();
-    // BUG6 FIX: Clamp name length defensively before casting to uint8_t.
-    // sanitize_ble_name() enforces a 12-byte limit, but guard here in case that
-    // is ever bypassed. 29 bytes is the practical BLE adv name field maximum
-    // (31-byte packet minus 2 bytes for type+length overhead).
-    {
-      size_t raw_len = name_copy.size();
-      if (raw_len > 29) {
-        ESP_LOGW(TAG, "BLE name too long (%zu bytes), truncating to 29", raw_len);
-        raw_len = 29;
-      }
-      fields.name_len = (uint8_t) raw_len;
-    }
+    fields.name_len = name_len;
     fields.name_is_complete = 1;
     fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
     fields.appearance_is_present = 1;
