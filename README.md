@@ -201,7 +201,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **SSID** | Text Sensor | Connected Wi-Fi network name (diagnostic) |
 | **Uptime** | Sensor | Device uptime (diagnostic) |
 | **Wi-Fi Disconnects (since boot)** | Sensor | Number of Wi-Fi disconnections since boot (diagnostic) |
-| **Wi-Fi RSSI** | Sensor | Wi-Fi signal strength in dBm (diagnostic) |
+| **Wi-Fi Signal** | Sensor | Wi-Fi signal strength in dBm (diagnostic) |
 
 The advertising switch represents the requested state and stays ON while a device is connected.
 An explicit switch `restore_mode` controls its startup state; omitting it or using `DISABLED`
