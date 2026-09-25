@@ -145,14 +145,14 @@ void IRKWizardComponent::refresh_snapshot_() {
   next.irk = irk_sensor_ ? irk_sensor_->state : "";
   next.device_mac = device_mac_sensor_ ? device_mac_sensor_->state : "";
   next.effective_mac = effective_mac_sensor_ ? effective_mac_sensor_->state : "";
-  next.ble_name = irk_capture_->get_ble_name();
   next.next_capture_label = irk_capture_->get_next_capture_label();
   const bool keyboard = irk_capture_->get_ble_profile() == irk_capture::BLEProfile::KEYBOARD;
   next.profile = keyboard ? "Keyboard" : "Heart Sensor";
-  // The Keyboard profile advertises a fixed Logitech name, so this is what
-  // the user must actually look for on the phone - telling them to look for
-  // the configured BLE name there would send them hunting for the wrong entry.
-  next.advertised_name = keyboard ? "Logitech K380" : next.ble_name;
+  // get_ble_name() is the name on air, already accounting for the Keyboard
+  // profile's "Logitech K380" and for anything that has replaced it since
+  // boot. Deciding it here instead would send the user hunting for a name the
+  // device stopped advertising the moment the identity was refreshed.
+  next.advertised_name = irk_capture_->get_ble_name();
   next.advertising = irk_capture_->is_advertising_requested();
   next.stop_after_capture = irk_capture_->get_stop_after_capture();
   if (next.history_json.empty()) next.history_json = "[]";
@@ -309,7 +309,6 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
 
   std::string json = "{";
   json += "\"status\":\"" + json_escape(s.status) + "\",";
-  json += "\"ble_name\":\"" + json_escape(s.ble_name) + "\",";
   json += "\"next_capture_label\":\"" + json_escape(s.next_capture_label) + "\",";
   json += "\"advertised_name\":\"" + json_escape(s.advertised_name) + "\",";
   json += "\"profile\":\"" + json_escape(s.profile) + "\",";

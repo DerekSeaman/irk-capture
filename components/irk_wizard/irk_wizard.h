@@ -31,9 +31,9 @@ struct WizardSnapshot {
   std::string irk;
   std::string device_mac;
   std::string effective_mac;
-  std::string ble_name;
-  // What the phone will actually show in its Bluetooth list. Differs from
-  // ble_name in the Keyboard profile, which poses as a Logitech K380.
+  // What the phone shows in its Bluetooth list: the Keyboard profile's
+  // "Logitech K380", or whatever a rename or an identity refresh replaced it
+  // with since boot.
   std::string advertised_name;
   std::string next_capture_label;
   std::string profile { "Heart Sensor" };

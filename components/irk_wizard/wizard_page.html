@@ -279,7 +279,7 @@ function setPill(node,status){
 }
 
 function render(d){
-  var advName = d.advertised_name || d.ble_name || '-';
+  var advName = d.advertised_name || '-';
 
   /* panel */
   el('deviceName').textContent = advName + ' · ' + d.profile;
