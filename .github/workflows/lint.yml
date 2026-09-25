@@ -54,6 +54,55 @@ jobs:
           # (never committed) and CI passes green, hiding real problems.
           globs: "**/*.md"
 
+  # identity_name.h is free of ESP-IDF includes so the name a Refresh BLE
+  # Identity press adopts can be asserted on the host, where a wrong suffix or
+  # an over-length name is visible without flashing anything.
+  host-tests:
+    name: Host Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Generate tests
+        run: |
+          cat > "${RUNNER_TEMP}/identity_name_test.cpp" <<'EOF'
+          #include "identity_name.h"
+          #include <cassert>
+          #include <cstdio>
+
+          using namespace esphome::irk_capture;
+
+          int main() {
+            // The suffix is the address's low two octets, upper-case, so it can
+            // be read straight off the end of the Effective MAC sensor.
+            assert(identity_name("HR", 0x7F, 0x3A) == "IRK HR 7F3A");
+            assert(identity_name("HR", 0x00, 0x00) == "IRK HR 0000");
+            assert(identity_name("HR", 0xFF, 0xFF) == "IRK HR FFFF");
+            // Nibble order: a swap here would print a suffix that never matches.
+            assert(identity_name("HR", 0xAB, 0xCD) == "IRK HR ABCD");
+            assert(identity_name("KB", 0x12, 0x34) == "IRK KB 1234");
+
+            // Names must fit the advertised-name cap without relying on
+            // sanitize_ble_name() to truncate them.
+            assert(identity_name("HR", 0xFF, 0xFF).size() <= BLE_NAME_MAX_LEN);
+            assert(identity_name("KB", 0xFF, 0xFF).size() <= BLE_NAME_MAX_LEN);
+            // ... including for an abbreviation a future profile gets wrong.
+            assert(identity_name("LONGER", 0x7F, 0x3A) == "IRK LO 7F3A");
+            assert(identity_name("LONGER", 0x7F, 0x3A).size() <= BLE_NAME_MAX_LEN);
+            assert(identity_name(nullptr, 0x7F, 0x3A).size() <= BLE_NAME_MAX_LEN);
+
+            printf("identity_name: all assertions passed\n");
+            return 0;
+          }
+          EOF
+      - name: Build and run
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I components/irk_capture \
+            "${RUNNER_TEMP}/identity_name_test.cpp" -o "${RUNNER_TEMP}/identity_name_test"
+          "${RUNNER_TEMP}/identity_name_test"
+
   # Compile the component so C++ API drift, invalid code generation, or ESP-IDF
   # incompatibility fail CI (config/lint checks alone cannot catch these).
   compile:
@@ -134,8 +183,8 @@ jobs:
           button:
             - platform: irk_capture
               irk_capture_id: irk
-              new_mac:
-                name: "Generate New MAC"
+              refresh_identity:
+                name: "Refresh BLE Identity"
               forget_bonds:
                 name: "Forget All Bonds"
           text:

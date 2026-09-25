@@ -11,6 +11,7 @@
 #include "esphome/components/text/text.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/core/component.h"
+#include "identity_name.h"
 
 // ESP32-only component - requires Bluetooth hardware
 #ifdef USE_ESP32
@@ -215,8 +216,8 @@ class IRKCaptureComponent : public Component {
     advertising_switch_ = sw;
     if (sw) sw->set_parent(this);
   }
-  void set_new_mac_button(IRKCaptureButton* btn) {
-    new_mac_button_ = btn;
+  void set_refresh_identity_button(IRKCaptureButton* btn) {
+    refresh_identity_button_ = btn;
     if (btn) btn->set_parent(this);
   }
   void set_ble_name_text(IRKCaptureText* txt) {
@@ -255,6 +256,12 @@ class IRKCaptureComponent : public Component {
   void stop_advertising();
   void set_advertising_requested(bool requested);
   void refresh_mac();
+
+  // Rotates the address and, in a profile whose name is not fixed, adopts a
+  // name carrying the new address's low two octets. Both halves change
+  // together because rotating the address alone leaves the device invisible
+  // to a phone that has cached the old name.
+  void refresh_identity();
   bool is_advertising();            // Thread-safe check of actual advertising state
   bool is_advertising_requested();  // Thread-safe check of the user's desired state
   void on_ble_host_synced();        // Called when NimBLE host is ready
@@ -291,6 +298,10 @@ class IRKCaptureComponent : public Component {
  protected:
   // Configuration/state
   std::string ble_name_ { "IRK Capture" };
+  // Set by refresh_identity() and consumed when the rotation commits: the
+  // name carries the address that actually took effect, which is only known
+  // once ble_hs_id_set_rnd() has succeeded.
+  bool identity_refresh_pending_ { false };
   std::string manufacturer_name_ { "ESPresense" };  // BLE Device Info manufacturer
   bool continuous_mode_ { true };                   // Keep advertising after captures
   uint8_t max_captures_ { 10 };                     // Max unique devices (0=unlimited)
@@ -298,7 +309,7 @@ class IRKCaptureComponent : public Component {
   text_sensor::TextSensor* address_sensor_ { nullptr };
   text_sensor::TextSensor* effective_mac_sensor_ { nullptr };
   IRKCaptureSwitch* advertising_switch_ { nullptr };
-  IRKCaptureButton* new_mac_button_ { nullptr };
+  IRKCaptureButton* refresh_identity_button_ { nullptr };
   IRKCaptureText* ble_name_text_ { nullptr };
   IRKCaptureSelect* ble_profile_select_ { nullptr };
   BLEProfile ble_profile_ { BLEProfile::KEYBOARD };  // Default to Keyboard profile
@@ -408,6 +419,8 @@ class IRKCaptureComponent : public Component {
   bool pending_stop_after_capture_val_ { false };
   bool pending_label_pub_ { false };
   std::string pending_label_val_;
+  bool pending_ble_name_pub_ { false };
+  std::string pending_ble_name_;
 
   // Host state — written by NimBLE reset/sync callbacks and read by the ESPHome
   // main task. Atomic storage provides cross-core visibility without requiring
@@ -443,7 +456,8 @@ class IRKCaptureComponent : public Component {
   //           advertising_requested_, advertising_start_attempts_, advertising_failure_log_time_,
   //           random_address_ready_, host_generation_,
   //           pairing_start_time_,
-  //           ble_name_, manufacturer_name_, mac_rotation_state_, pending_mac_,
+  //           ble_name_, identity_refresh_pending_, manufacturer_name_,
+  //           mac_rotation_state_, pending_mac_,
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
   //           suppress_next_adv_, adv_restart_time_, capture_events_,
   //           unique_devices_, irk_cache_ (deduplication state),
@@ -452,7 +466,8 @@ class IRKCaptureComponent : public Component {
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
   //           connection_timeout_,
   //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
-  //           pending_adv_/pending_irk_/pending_effmac_, last_result_generation_
+  //           pending_adv_/pending_irk_/pending_effmac_/pending_ble_name_,
+  //           last_result_generation_
   SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Serializes BLE control operations that can be called from both NimBLE and

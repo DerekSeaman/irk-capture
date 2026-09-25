@@ -143,9 +143,10 @@ switch:
 button:
   - platform: irk_capture
     irk_capture_id: irk
-    new_mac:
-      id: new_mac_btn
-      name: "Generate New MAC"
+    refresh_identity:
+      id: refresh_identity_btn
+      name: "Refresh BLE Identity"
+      icon: mdi:bluetooth-settings
     forget_bonds:
       id: forget_bonds_btn
       name: "Forget All Bonds"

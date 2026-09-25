@@ -1158,8 +1158,8 @@ void IRKCaptureSwitch::write_state(bool state) {
 }
 
 void IRKCaptureButton::press_action() {
-  ESP_LOGI(TAG, "Refreshing MAC address...");
-  parent_->refresh_mac();
+  ESP_LOGI(TAG, "Refreshing BLE identity...");
+  parent_->refresh_identity();
 }
 
 void IRKCaptureForgetBondsButton::press_action() {
@@ -1191,7 +1191,7 @@ void IRKCaptureSwitch::dump_config() {
 }
 
 void IRKCaptureButton::dump_config() {
-  ESP_LOGCONFIG(TAG, "IRK Capture New MAC Button");
+  ESP_LOGCONFIG(TAG, "IRK Capture Refresh Identity Button");
 }
 
 void IRKCaptureForgetBondsButton::dump_config() {
@@ -2050,6 +2050,7 @@ void IRKCaptureComponent::setup_ble() {
     g_irk_instance->mac_rotation_state_ = MacRotationState::IDLE;
     g_irk_instance->mac_rotation_retries_ = 0;
     g_irk_instance->mac_rotation_ready_time_ = 0;
+    g_irk_instance->identity_refresh_pending_ = false;
   };
   ble_hs_cfg.sync_cb = []() {
     ESP_LOGI(TAG, "NimBLE host synced");
@@ -2639,6 +2640,22 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
       mac_rotation_state_ = MacRotationState::ROTATION_COMPLETE;
       mac_rotation_retries_ = 0;
       mac_rotation_ready_time_ = 0;
+      if (identity_refresh_pending_) {
+        identity_refresh_pending_ = false;
+        // The Keyboard profile advertises as "Logitech K380" to get past
+        // Samsung's BLE filtering, so there the address is the only half of the
+        // identity that can change. Naming it anything else would trade the
+        // Galaxy path for the iOS one.
+        if (ble_profile_ != BLEProfile::KEYBOARD) {
+          // "HR" rather than the profile's own abbreviation because Keyboard is
+          // the only other profile and it never reaches this branch.
+          // mac[1], mac[0] are the low two octets: NimBLE stores the address
+          // little-endian, so these are the pair printed last by Effective MAC.
+          ble_name_ = identity_name("HR", mac[1], mac[0]);
+          pending_ble_name_pub_ = true;
+          pending_ble_name_ = ble_name_;
+        }
+      }
     } else {
       retries = ++mac_rotation_retries_;
       aborted = rc != BLE_HS_EINVAL || retries >= TimingConfig::MAC_ROTATION_MAX_RETRIES;
@@ -2646,6 +2663,11 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
         mac_rotation_state_ = MacRotationState::IDLE;
         mac_rotation_retries_ = 0;
         mac_rotation_ready_time_ = 0;
+        // The address never changed, so there is no new suffix to name. Leaving
+        // the request armed would rename the device as a side effect of the
+        // next plain rotation, such as the one a name change from Home
+        // Assistant triggers.
+        identity_refresh_pending_ = false;
       }
     }
   }
@@ -2660,6 +2682,19 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
     ESP_LOGW(TAG, "MAC rotation rc=%d, retry %u/%u", rc, retries,
              TimingConfig::MAC_ROTATION_MAX_RETRIES);
   }
+}
+
+void IRKCaptureComponent::refresh_identity() {
+  {
+    MutexGuard lock(state_mutex_);
+    identity_refresh_pending_ = true;
+  }
+  // The name is deliberately not chosen here. It carries the low two octets of
+  // the address, and two different places can put an address into service:
+  // this rotation, and start_advertising()'s own fallback when no random
+  // address is set yet. Deriving the name up front would let it advertise a
+  // suffix belonging to an address that never took effect.
+  this->refresh_mac();
 }
 
 void IRKCaptureComponent::refresh_mac() {
@@ -2744,6 +2779,7 @@ void IRKCaptureComponent::refresh_mac() {
         mac_rotation_retries_ = 0;
         mac_rotation_ready_time_ = 0;
         suppress_next_adv_ = false;
+        identity_refresh_pending_ = false;
       }
       start_advertising();
     }
@@ -3641,8 +3677,8 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   // Runs on the ESPHome main task. Copy staged values out under the mutex, then
   // publish outside it (publish_state can be slow and must not hold the lock).
   bool adv_pub, adv_val, irk_pub, effmac_pub;
-  bool stop_after_pub, stop_after_val, label_pub;
-  std::string irk_hex, irk_addr, effmac, label_val;
+  bool stop_after_pub, stop_after_val, label_pub, name_pub;
+  std::string irk_hex, irk_addr, effmac, label_val, name_val;
   {
     MutexGuard lock(state_mutex_);
     adv_pub = pending_adv_pub_;
@@ -3661,6 +3697,9 @@ void IRKCaptureComponent::flush_pending_publishes_() {
     label_pub = pending_label_pub_;
     pending_label_pub_ = false;
     label_val.swap(pending_label_val_);
+    name_pub = pending_ble_name_pub_;
+    pending_ble_name_pub_ = false;
+    name_val.swap(pending_ble_name_);
   }
   if (adv_pub && advertising_switch_) advertising_switch_->publish_state(adv_val);
   if (irk_pub) {
@@ -3671,6 +3710,9 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   if (stop_after_pub && stop_after_capture_switch_)
     stop_after_capture_switch_->publish_state(stop_after_val);
   if (label_pub && next_capture_label_text_) next_capture_label_text_->publish_state(label_val);
+  // Home Assistant would otherwise keep showing the name the device stopped
+  // advertising the moment the identity was refreshed.
+  if (name_pub && ble_name_text_) ble_name_text_->publish_state(name_val);
 }
 
 //======================== Wizard-facing controls (1.7.0) ========================
