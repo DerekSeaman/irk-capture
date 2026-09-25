@@ -185,7 +185,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | Entity | Type | Description |
 | :--- | :--- | :--- |
 | **BLE Advertising** | Switch | Keep Bluetooth advertising enabled between connections (starts ON by default) |
-| **BLE Device Name** | Text Input | Change the Heart Sensor profile name (default: "IRK Capture"); Keyboard is fixed to "Logitech K380". Refresh BLE Identity writes a generated name here |
+| **BLE Device Name** | Text Input | Change the advertised name until the next reboot (defaults: "IRK Capture" for Heart Sensor, "Logitech K380" for Keyboard). In Heart Sensor, Refresh BLE Identity writes a generated name here |
 | **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple) or "Keyboard" (Android). Changing profiles triggers a reboot. |
 | **Refresh BLE Identity** | Button | Rotate the advertised address and, outside the Keyboard profile, rename the device to match it (`IRK HR 7F3A`), so a phone that cached the old name sees a new accessory |
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
@@ -329,7 +329,7 @@ Missing bond records, incomplete pairing, and invalid key bytes are not reported
 
 - After pairing, **forget/unpair the BLE device** from your device's Bluetooth settings
 - Turn Bluetooth OFF on your device
-- Press **Refresh BLE Identity**, which changes both the name and the address in one step (in the Keyboard profile the name is fixed, so only the address changes)
+- Press **Refresh BLE Identity**, which changes both the name and the address in one step (in the Keyboard profile it changes only the address; to rename it, set BLE Device Name)
 - Turn Bluetooth ON on your device
 - Try pairing to the ESP32 again
 - If that still fails, power cycle your phone/watch/tablet, power cycle your ESP32, press Refresh BLE Identity again, and try pairing again

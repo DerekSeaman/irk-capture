@@ -1029,10 +1029,9 @@ int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt
     if (is_manufacturer) {
       value_copy = self->manufacturer_name_;
     } else {
-      // Model Number: reflect the effective advertised identity so GATT stays
-      // consistent with the advertised name (Keyboard profile poses as a
-      // "Logitech K380", so ble_name_ would otherwise leak the real device name).
-      value_copy = (self->ble_profile_ == BLEProfile::KEYBOARD) ? "Logitech K380" : self->ble_name_;
+      // Model Number mirrors the advertised name so GATT stays consistent with
+      // it (in Keyboard, ble_name_ would otherwise leak the Heart Sensor name).
+      value_copy = self->advertised_name_();
     }
   }
 
@@ -1129,14 +1128,6 @@ std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
 //======================== Entity impls ========================
 
 void IRKCaptureText::control(const std::string& value) {
-  if (parent_->get_ble_profile() == BLEProfile::KEYBOARD) {
-    ESP_LOGW(TAG,
-             "BLE Device Name is fixed to 'Logitech K380' in Keyboard profile; "
-             "switch to Heart Sensor to customize it");
-    publish_state("Logitech K380");
-    return;
-  }
-
   // Sanitize and validate user input from Home Assistant
   std::string sanitized = parent_->sanitize_ble_name(value);
 
@@ -1837,12 +1828,12 @@ void IRKCaptureComponent::setup() {
   // on_ble_host_synced() applies the resolved intent when NimBLE becomes ready.
 
   if (ble_name_text_) {
-    // Update name based on profile
-    if (ble_profile_ == BLEProfile::KEYBOARD) {
-      ble_name_text_->publish_state("Logitech K380");
-    } else {
-      ble_name_text_->publish_state(ble_name_);
+    std::string name;
+    {
+      MutexGuard lock(state_mutex_);
+      name = advertised_name_();
     }
+    ble_name_text_->publish_state(name);
   }
   if (ble_profile_select_) {
     // Initialize select to persisted profile
@@ -1875,13 +1866,12 @@ void IRKCaptureComponent::dump_config() {
   BLEProfile current_profile;
   {
     MutexGuard lock(state_mutex_);
-    name_copy = ble_name_;
+    name_copy = advertised_name_();
     adv_state = advertising_;
     current_profile = ble_profile_;
   }
 
-  const char* effective_name =
-      (current_profile == BLEProfile::KEYBOARD) ? "Logitech K380" : name_copy.c_str();
+  const char* effective_name = name_copy.c_str();
   const char* profile_name =
       (current_profile == BLEProfile::KEYBOARD) ? "Keyboard" : "Heart Sensor";
 
@@ -2252,7 +2242,7 @@ void IRKCaptureComponent::start_advertising() {
   {
     MutexGuard lock(state_mutex_);
     current_profile = ble_profile_;
-    name_copy = ble_name_;
+    name_copy = advertised_name_();
     requested = advertising_requested_;
     connected = connected_;
     rotating = mac_rotation_state_ != MacRotationState::IDLE || bond_clear_pending_;
@@ -2267,7 +2257,6 @@ void IRKCaptureComponent::start_advertising() {
     return;
   }
 
-  static const char* keyboard_name = "Logitech K380";
   struct ble_hs_adv_fields fields;
   memset(&fields, 0, sizeof(fields));
 
@@ -2280,7 +2269,7 @@ void IRKCaptureComponent::start_advertising() {
   bool use_scan_response = false;
 
   if (current_profile == BLEProfile::KEYBOARD) {
-    // Keyboard profile: Logitech K380
+    // Keyboard profile
     // Move name to scan response to stay within 31-byte advertising packet
     // limit
     profile_name = "Keyboard";
@@ -2295,8 +2284,8 @@ void IRKCaptureComponent::start_advertising() {
     // Do NOT put name in advertising packet - put it in scan response
 
     // Scan response data: device name (separate 31-byte budget)
-    rsp_fields.name = (uint8_t*) keyboard_name;
-    rsp_fields.name_len = strlen(keyboard_name);
+    rsp_fields.name = (uint8_t*) name_copy.c_str();
+    rsp_fields.name_len = (uint8_t) name_copy.size();  // sanitize_ble_name() caps it at 12
     rsp_fields.name_is_complete = 1;
     use_scan_response = true;
   } else {
@@ -2362,10 +2351,8 @@ void IRKCaptureComponent::start_advertising() {
       if (stop_rc != 0 && stop_rc != BLE_HS_EALREADY && stop_rc != BLE_HS_EINVAL) {
         ESP_LOGD(TAG, "ble_gap_adv_stop before start rc=%d", stop_rc);
       }
-      const char* target_name =
-          (current_profile == BLEProfile::KEYBOARD) ? keyboard_name : name_copy.c_str();
       operation = "GAP name update";
-      rc = ble_svc_gap_device_name_set(target_name);
+      rc = ble_svc_gap_device_name_set(name_copy.c_str());
     }
 
     if (rc == 0) {
@@ -2542,6 +2529,13 @@ BLEProfile IRKCaptureComponent::get_ble_profile() {
 
 std::string IRKCaptureComponent::get_ble_name() {
   MutexGuard lock(state_mutex_);
+  return advertised_name_();
+}
+
+std::string IRKCaptureComponent::advertised_name_() {
+  // Keyboard poses as a "Logitech K380" to get past Samsung's BLE filtering,
+  // unless a name was entered in Home Assistant since the last reboot.
+  if (ble_profile_ == BLEProfile::KEYBOARD && !keyboard_name_custom_) return "Logitech K380";
   return ble_name_;
 }
 
@@ -2643,9 +2637,9 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
       if (identity_refresh_pending_) {
         identity_refresh_pending_ = false;
         // The Keyboard profile advertises as "Logitech K380" to get past
-        // Samsung's BLE filtering, so there the address is the only half of the
-        // identity that can change. Naming it anything else would trade the
-        // Galaxy path for the iOS one.
+        // Samsung's BLE filtering, so a refresh changes only its address.
+        // Generating a name there would trade the Galaxy path for the iOS one;
+        // a name entered in Home Assistant is the user's explicit choice.
         if (ble_profile_ != BLEProfile::KEYBOARD) {
           // "HR" rather than the profile's own abbreviation because Keyboard is
           // the only other profile and it never reaches this branch.
@@ -2799,7 +2793,7 @@ bool IRKCaptureComponent::update_ble_name(const std::string& name) {
   // Compare the sanitized name before any operation that could disrupt pairing.
   {
     MutexGuard lock(state_mutex_);
-    if (ble_name_ == name) return true;
+    if (advertised_name_() == name) return true;
   }
 
   // Update GAP device name
@@ -2821,6 +2815,8 @@ bool IRKCaptureComponent::update_ble_name(const std::string& name) {
   {
     MutexGuard lock(state_mutex_);
     ble_name_ = name;
+    // In Keyboard this replaces "Logitech K380" until the next reboot.
+    if (ble_profile_ == BLEProfile::KEYBOARD) keyboard_name_custom_ = true;
   }
 
   // NOTE: devinfo_chrs[1].arg already points to 'this' (set in

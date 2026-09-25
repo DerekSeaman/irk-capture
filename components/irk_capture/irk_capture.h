@@ -302,6 +302,10 @@ class IRKCaptureComponent : public Component {
   // name carries the address that actually took effect, which is only known
   // once ble_hs_id_set_rnd() has succeeded.
   bool identity_refresh_pending_ { false };
+  // Set when a name is entered in Home Assistant while in the Keyboard
+  // profile. Until then, and again after any reboot, Keyboard advertises as
+  // "Logitech K380".
+  bool keyboard_name_custom_ { false };
   std::string manufacturer_name_ { "ESPresense" };  // BLE Device Info manufacturer
   bool continuous_mode_ { true };                   // Keep advertising after captures
   uint8_t max_captures_ { 10 };                     // Max unique devices (0=unlimited)
@@ -456,7 +460,7 @@ class IRKCaptureComponent : public Component {
   //           advertising_requested_, advertising_start_attempts_, advertising_failure_log_time_,
   //           random_address_ready_, host_generation_,
   //           pairing_start_time_,
-  //           ble_name_, identity_refresh_pending_, manufacturer_name_,
+  //           ble_name_, identity_refresh_pending_, keyboard_name_custom_, manufacturer_name_,
   //           mac_rotation_state_, pending_mac_,
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
   //           suppress_next_adv_, adv_restart_time_, capture_events_,
@@ -481,6 +485,7 @@ class IRKCaptureComponent : public Component {
   void setup_ble();
   bool register_gatt_services();
   std::string sanitize_ble_name(const std::string& name);
+  std::string advertised_name_();  // Caller holds state_mutex_
   void handle_advertising_failure_(int rc, uint32_t host_generation, const char* operation);
 
   // IRK validation and deduplication helpers
