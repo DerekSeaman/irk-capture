@@ -50,7 +50,6 @@ irk_wizard:
   irk_id: last_irk
   device_mac_id: last_addr
   effective_mac_id: effective_mac
-  ble_name_id: ble_name_input
   port: 8080
   # A captured IRK permanently resolves a phone's randomized BLE address, so
   # the wizard should not be left open on the network. Add these two secrets

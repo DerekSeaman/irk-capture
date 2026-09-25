@@ -63,17 +63,6 @@ inline bool is_json_content_type(const char* value) {
   return value[i] == '\0' || value[i] == ';';
 }
 
-// A name a phone has not seen before. iOS in particular hides an accessory
-// whose name it already knows, even when the address is new, so "try again"
-// needs a different name rather than just a different MAC. Fixed at 12
-// bytes: irk_capture caps BLE names there so Samsung phones can see them.
-inline std::string fresh_ble_name(uint32_t rnd) {
-  static const char* const HEXU = "0123456789ABCDEF";
-  std::string name = "IRK Cap ";
-  for (int shift = 12; shift >= 0; shift -= 4) name += HEXU[(rnd >> shift) & 0xF];
-  return name;
-}
-
 // Slows down password guessing: after MAX_FAILURES bad attempts in a row,
 // everything is refused for LOCKOUT_MS. A success clears the count.
 struct AuthThrottle {

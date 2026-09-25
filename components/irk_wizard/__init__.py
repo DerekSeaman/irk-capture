@@ -13,7 +13,7 @@ from pathlib import Path
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import esp32, text, text_sensor
+from esphome.components import esp32, text_sensor
 from esphome.components.irk_capture import CONF_IRK_CAPTURE_ID, IRKCaptureComponent
 from esphome.const import CONF_ID
 
@@ -21,7 +21,7 @@ CODEOWNERS = ["@davidcoulson"]
 # network: the server start is gated on network::is_connected(), so the
 # network component must be pulled into the build even for a config that
 # does not otherwise declare wifi/ethernet.
-DEPENDENCIES = ["irk_capture", "network", "text", "text_sensor"]
+DEPENDENCIES = ["irk_capture", "network", "text_sensor"]
 
 CONF_PAGE_DATA_ID = "page_data_id"
 CONF_PORT = "port"
@@ -31,7 +31,6 @@ CONF_STATUS_ID = "status_id"
 CONF_IRK_ID = "irk_id"
 CONF_DEVICE_MAC_ID = "device_mac_id"
 CONF_EFFECTIVE_MAC_ID = "effective_mac_id"
-CONF_BLE_NAME_ID = "ble_name_id"
 
 irk_wizard_ns = cg.esphome_ns.namespace("irk_wizard")
 IRKWizardComponent = irk_wizard_ns.class_("IRKWizardComponent", cg.Component)
@@ -49,9 +48,6 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_IRK_ID): cv.use_id(text_sensor.TextSensor),
         cv.Required(CONF_DEVICE_MAC_ID): cv.use_id(text_sensor.TextSensor),
         cv.Required(CONF_EFFECTIVE_MAC_ID): cv.use_id(text_sensor.TextSensor),
-        # Optional: the BLE Device Name text entity, so a rename made by the
-        # wizard also shows up in Home Assistant.
-        cv.Optional(CONF_BLE_NAME_ID): cv.use_id(text.Text),
         cv.Optional(CONF_PORT, default=8080): cv.int_range(min=1, max=65535),
         # Optional HTTP Basic auth. Strongly recommended: without it anyone
         # on the LAN can read captured IRKs (which permanently deanonymize a
@@ -77,10 +73,6 @@ async def to_code(config):
     cg.add(var.set_device_mac_sensor(device_mac))
     effective_mac = await cg.get_variable(config[CONF_EFFECTIVE_MAC_ID])
     cg.add(var.set_effective_mac_sensor(effective_mac))
-    if CONF_BLE_NAME_ID in config:
-        ble_name = await cg.get_variable(config[CONF_BLE_NAME_ID])
-        cg.add(var.set_ble_name_text(ble_name))
-
     # Gzip the page here rather than shipping it as source text: roughly a
     # quarter of the flash, and the browser inflates it for free. mtime=0
     # keeps the output byte-identical between builds.

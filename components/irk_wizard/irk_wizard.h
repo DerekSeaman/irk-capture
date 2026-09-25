@@ -65,11 +65,6 @@ class IRKWizardComponent : public Component {
   void set_effective_mac_sensor(text_sensor::TextSensor* s) {
     effective_mac_sensor_ = s;
   }
-  // Optional: irk_capture's BLE Device Name entity. Renaming through it keeps
-  // Home Assistant showing the name the device is really using.
-  void set_ble_name_text(text::Text* t) {
-    ble_name_text_ = t;
-  }
   // Gives the device a name and address the phone has not seen. Callable from
   // any task; the work itself is deferred to the main loop.
   void fresh_identity();
@@ -118,7 +113,6 @@ class IRKWizardComponent : public Component {
   text_sensor::TextSensor* irk_sensor_ { nullptr };
   text_sensor::TextSensor* device_mac_sensor_ { nullptr };
   text_sensor::TextSensor* effective_mac_sensor_ { nullptr };
-  text::Text* ble_name_text_ { nullptr };
   uint16_t port_ { 8080 };
   const uint8_t* page_data_ { nullptr };
   size_t page_size_ { 0 };
