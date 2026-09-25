@@ -380,16 +380,6 @@ Below is a sample log showing a successful IRK capture:
 [16:15:19.211][I][irk_capture:1932][nimble_host]: Disconnected
 ```
 
-## Credits
-
-Based on [ESPresense](https://github.com/ESPresense/ESPresense) enrollment functionality.
-
-Original package: [github://KyleTeal/irk-capture/irk-capture-package.yaml@main](https://github.com/KyleTeal/irk-capture)
-
-## License
-
-MIT License - See LICENSE file for details
-
 ## Development Status
 
 To test the latest development build, point both the package **and** the component at
@@ -418,3 +408,13 @@ the released version, set the package `ref` back to `main` and remove the `subst
 block.
 
 ![Development configuration: package ref and irk_component_ref set to dev](docs/dev-config.jpg)
+
+## Credits
+
+Based on [ESPresense](https://github.com/ESPresense/ESPresense) enrollment functionality.
+
+Original package: [github://KyleTeal/irk-capture/irk-capture-package.yaml@main](https://github.com/KyleTeal/irk-capture)
+
+## License
+
+MIT License - See LICENSE file for details
