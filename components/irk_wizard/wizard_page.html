@@ -5,6 +5,7 @@
 :root{--bg:#10181a;--surf:#172124;--surf2:#1c2729;--border:#2a3739;--ink1:#eef3f2;--ink2:#aebcbc;--ink3:#7f9294;
 --accent:#3fc3c2;--accentInk:#06282a;--amber:#e3a94a;--green:#6fc98d;--red:#e18a82}
 *{box-sizing:border-box}
+a{color:var(--accent)}
 body{margin:0;background:var(--bg);color:var(--ink1);font:15px/1.5 -apple-system,system-ui,sans-serif;padding:20px 16px 60px}
 .wrap{max-width:540px;margin:0 auto}
 h1{font-size:20px;margin:0 0 4px}
@@ -98,11 +99,11 @@ ol.pair li{margin-bottom:5px}
   <div class="card hide" id="step3">
     <div class="stepno">Step 3 of 5</div>
     <h2>Clear any old pairing</h2>
-    <p class="help">If this phone has paired with this device before, it will silently reuse the old
-      pairing and no new key is captured. This is the most common reason a capture never happens.</p>
-    <div class="callout">On your device open <b>Bluetooth settings</b>, find the prior advertising
-      name and choose <b>Forget This Device</b>. Apple tip: tap the &#9432; first.</div>
-    <div class="btnrow"><button class="danger" onclick="wizForget()">Also clear it on this device</button></div>
+    <p class="help">If your device has paired with this ESP32 before, it may silently reuse the old
+      pairing and no new key will be captured. This is the most common reason a capture never happens.</p>
+    <div class="callout">On your device open <b>Bluetooth settings</b>, find the prior advertised
+      name and choose <b>Forget This Device</b>. Apple tip: tap the &#9432; first. If it is not listed, nothing to do.</div>
+    <div class="btnrow"><button class="danger" onclick="wizForget()">Clear Pairings</button></div>
     <p class="help ok hide" id="forgetDone">Cleared on this device.</p>
     <div class="btnrow"><button class="primary" onclick="wizStart()">Next: start pairing</button>
       <button onclick="wizGo(2)">Back</button></div>
@@ -112,11 +113,15 @@ ol.pair li{margin-bottom:5px}
     <div class="stepno">Step 4 of 5</div>
     <h2>Pair from your phone now</h2>
     <div class="row"><span class="k">Device status</span><span id="wizPill" class="pill idle">idle</span></div>
-    <div class="target"><div class="cap">Look for this name</div><div class="nm" id="wizAdvName">-</div></div>
+    <div class="target"><div class="cap">Bluetooth Name</div><div class="nm" id="wizAdvName">-</div></div>
     <ol class="pair" id="wizSteps"></ol>
-    <div class="callout" id="wizHint">Waiting for your phone to connect. Keep this page open.</div>
-    <p class="help" id="freshHelp">Not in the list, or it flashes up and vanishes? Phones hide names
-      they have seen before. Turn Bluetooth off and on again, then give the device a new identity:</p>
+    <div class="callout hide" id="gearTip">If the advertised name does not show up on your Android watch, try the
+      <a href="https://play.google.com/store/apps/details?id=com.limegreenv.geartracker" target="_blank"
+      rel="noopener noreferrer">Gear Tracker II</a> app, then pair using that app.</div>
+    <div class="callout" id="wizHint">Waiting for your device to connect. Keep this page open.</div>
+    <p class="help" id="freshHelp">If the advertised name does not show up, turn Bluetooth off and on
+      again, then wait a few seconds. If that does not work, turn Bluetooth off, click the
+      "Refresh BLE Identity" button below, then turn Bluetooth back on.</p>
     <div class="btnrow"><button id="freshBtn" onclick="wizFresh()">Refresh BLE Identity</button></div>
     <div class="btnrow"><button onclick="wizStop()">Stop</button><button onclick="wizGo(3)">Back</button></div>
   </div>
@@ -241,17 +246,10 @@ function copyIrk(){
 }
 
 /* ---------- pairing instructions ---------- */
-function pairSteps(profile,name){
-  if(profile==='Keyboard'){
-    return ['Open Settings, then Connections, then Bluetooth.',
-            'Tap Scan if the list does not refresh on its own.',
-            'Tap "'+name+'" in the list of available devices.',
-            'Confirm the pairing request if one appears.'];
-  }
-  return ['Open Settings, then Bluetooth (make sure Bluetooth is on).',
-          'Look under "Other Devices" for "'+name+'".',
-          'Tap it, then tap Pair if asked.',
-          'For an Apple Watch, pair from a heart-rate app instead.'];
+function pairSteps(){
+  return ['Open the Bluetooth settings on your device.',
+          'Look for the advertised Bluetooth name.',
+          'Tap it, then tap Pair if asked.'];
 }
 
 /* ---------- panel wiring ---------- */
@@ -320,20 +318,22 @@ function render(d){
   if(wizStep===4){
     setPill(el('wizPill'), d.status);
     el('wizAdvName').textContent = advName;
+    // Android watches pair through the Heart Sensor profile only.
+    el('gearTip').classList.toggle('hide', d.profile !== 'Heart Sensor');
     var ol=el('wizSteps'); ol.textContent='';
-    pairSteps(d.profile, advName).forEach(function(t){
+    pairSteps().forEach(function(t){
       var li=document.createElement('li'); li.textContent=t; ol.appendChild(li);
     });
     var hint=el('wizHint');
     if(d.status==='no_irk'){
-      hint.textContent='Your phone paired but did not hand over an identity key. '+
+      hint.textContent='Your device paired but did not hand over an identity key. '+
         'Forget this device in its Bluetooth settings, then go back a step and try again.';
     } else if(d.status==='pairing'||d.status==='capturing'){
-      hint.textContent='Your phone is connected - finishing the key exchange. Do not touch anything.';
+      hint.textContent='Your device is connected - finishing the key exchange. Do not touch anything.';
     } else if(!d.advertising){
       hint.textContent='Advertising is off. Go back a step and press "Next: start pairing".';
     } else {
-      hint.textContent='Waiting for your phone to connect. Keep this page open.';
+      hint.textContent='Waiting for your device to connect. Keep this page open.';
     }
     // The capture itself is what advances the wizard.
     if(awaitingCapture && d.status==='captured' && d.irk && d.irk !== irkAtStart){
