@@ -113,7 +113,7 @@ ol.pair li{margin-bottom:5px}
       name and choose <b>Forget This Device</b>. Apple tip: tap the &#9432; first. If it is not listed, nothing to do.</div>
     <div class="btnrow"><button class="danger" id="wizForgetBtn" onclick="wizForget()">Clear Pairings</button></div>
     <p class="help hide" id="forgetDone" role="status"></p>
-    <div class="btnrow"><button class="primary" onclick="wizStart()">Next: start pairing</button>
+    <div class="btnrow"><button class="primary" onclick="wizStart()">Next: Start Pairing</button>
       <button onclick="wizGo(2)">Back</button></div>
   </div>
 
@@ -208,6 +208,7 @@ var captureAttempt = null;
 var acceptedCapture = null;
 var captureMessage = '';
 var pendingClear = null;
+var wizardClearRun = 0;
 var writeQueue = Promise.resolve();
 var statusEpoch = 0;
 var refreshInFlight = null;
@@ -342,7 +343,7 @@ async function trackReboot(url,body,profile){
 /* ---------- view switching ---------- */
 function showPanel(){ cancelCapture(true); wizStep=0; el('wizView').classList.add('hide'); el('panelView').classList.remove('hide');
   window.scrollTo(0,0); refresh(); }
-function showWizard(){ cancelCapture(true); acceptedCapture=null; wizGo(1); el('panelView').classList.add('hide'); el('wizView').classList.remove('hide');
+function showWizard(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizGo(1); el('panelView').classList.add('hide'); el('wizView').classList.remove('hide');
   window.scrollTo(0,0); }
 function wizGo(n){
   if(wizStep===4 && n!==4 && n!==5) cancelCapture(true);
@@ -360,32 +361,45 @@ function wizGo(n){
 async function wizSaveLabel(){
   if(await action('/api/label',{label:el('wizLabel').value})) wizGo(3);
 }
-function clearMessage(text,success){
-  ['forgetDone','panelForgetDone'].forEach(function(id){
-    el(id).textContent=text; el(id).classList.remove('hide'); el(id).classList.toggle('ok',!!success);
-  });
+function hideClearMessage(id){
+  el(id).textContent=''; el(id).classList.add('hide'); el(id).classList.remove('ok');
+}
+function resetWizardClearFeedback(){ ++wizardClearRun; hideClearMessage('forgetDone'); }
+function clearMessage(text,success,request){
+  // A clear from the panel or an earlier wizard run must not look like a
+  // completed action in the current wizard. The operation itself stays tracked.
+  if(request.source==='panel' || request.run===wizardClearRun){
+    var node=el(request.source==='panel' ? 'panelForgetDone' : 'forgetDone');
+    node.textContent=text; node.classList.remove('hide'); node.classList.toggle('ok',!!success);
+  }
   el('wizForgetBtn').disabled=el('forgetBtn').disabled=!!pendingClear;
 }
 function clearOutcome(op){
+  var request=pendingClear;
+  if(!request) return;
   if(op.state==='pending'){
-    clearMessage('Clearing pairings...'); return;
+    clearMessage('Clearing pairings...',false,request); return;
   }
   pendingClear=null;
-  if(op.state==='succeeded') clearMessage(op.history_cleared ? 'Pairings and session history cleared.' : 'Pairings cleared.',true);
+  if(op.state==='succeeded') clearMessage(op.history_cleared ? 'Pairings and session history cleared.' : 'Pairings cleared.',true,request);
   else clearMessage((op.history_cleared ? 'History cleared; ' : '')+
     (op.state==='busy' ? 'pairings retained. ' : 'pairings may remain. ')+
-    (op.reason || 'The request was cancelled. Please try again.'));
+    (op.reason || 'The request was cancelled. Please try again.'),false,request);
 }
-async function wizForget(){
+async function wizForget(source){
   if(pendingClear) return;
-  var request={operation_id:null,boot_id:null}; pendingClear=request;
-  clearMessage('Clearing pairings...'); clearError();
+  var request={operation_id:null,boot_id:null,source:source || 'wizard',run:wizardClearRun}; pendingClear=request;
+  hideClearMessage('forgetDone'); hideClearMessage('panelForgetDone');
+  clearMessage('Clearing pairings...',false,request); clearError();
   try{
     var op=await post('/api/forget_bonds',{});
     request.operation_id=op.operation_id; request.boot_id=op.boot_id;
-    clearOutcome(op); refresh();
+    // A delayed reply from the previous boot must not restore old success text.
+    // Let a fresh status poll resolve an unknown or different boot first.
+    if(lastData && lastData.boot_id===op.boot_id) clearOutcome(op);
+    refresh();
   }catch(e){
-    pendingClear=null; clearMessage('Could not confirm that pairings were cleared. Please try again.'); showError(e);
+    pendingClear=null; clearMessage('Could not confirm that pairings were cleared. Please try again.',false,request); showError(e);
   }
 }
 async function wizStart(){
@@ -412,7 +426,7 @@ function wizStop(){
   cancelCapture(false); captureMessage='Capture stopped. Go back a step to start again.';
   action('/api/advertising',{on:false}); if(lastData) render(lastData);
 }
-function wizRestart(){ cancelCapture(true); acceptedCapture=null; el('wizLabel').value=''; wizGo(1); }
+function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); el('wizLabel').value=''; wizGo(1); }
 
 function copyText(txt, done){
   // navigator.clipboard is unavailable over plain HTTP, so fall back.
@@ -473,7 +487,7 @@ el('advBtn').addEventListener('click',function(){
 });
 el('freshIdBtn').addEventListener('click',function(){action('/api/fresh_identity',{})});
 el('forgetBtn').addEventListener('click',function(){
-  if(confirm('Clear all cached bonds and this session history?')) wizForget();
+  if(confirm('Clear all cached bonds and this session history?')) wizForget('panel');
 });
 el('rebootBtn').addEventListener('click',rebootDevice);
 el('stopAfterSwitch').addEventListener('click',function(){
@@ -491,13 +505,13 @@ function render(d){
   var advName = d.advertised_name || '-';
 
   if(pendingClear && pendingClear.operation_id!==null){
-    var clear=d.bond_clear;
+    var clear=d.bond_clear, request=pendingClear;
     if(d.boot_id!==pendingClear.boot_id){
-      pendingClear=null; clearMessage('Device rebooted before clearing could be confirmed. Please try again.');
+      pendingClear=null; clearMessage('Device rebooted before clearing could be confirmed. Please try again.',false,request);
     } else if(clear && clear.operation_id===pendingClear.operation_id){
       clearOutcome(clear);
     } else if(clear && newer(clear.operation_id,pendingClear.operation_id)){
-      pendingClear=null; clearMessage('Another clear request replaced this one. Please try again.');
+      pendingClear=null; clearMessage('Another clear request replaced this one. Please try again.',false,request);
     }
   }
 
@@ -593,7 +607,7 @@ function render(d){
     } else if(d.status==='pairing'||d.status==='capturing'){
       hint.textContent='Your device is connected - finishing the key exchange. Do not touch anything.';
     } else if(!d.advertising){
-      hint.textContent='Advertising is off. Go back a step and press "Next: start pairing".';
+      hint.textContent='Advertising is off. Go back a step and press "Next: Start Pairing".';
     } else {
       hint.textContent='Waiting for your device to connect. Keep this page open.';
     }
@@ -613,6 +627,9 @@ function refresh(){
       var d=await requestJson('/api/status');
       if(epoch!==statusEpoch) return;
       if(!validBootId(d.boot_id)) throw new Error('Invalid device status');
+      if(lastData && d.boot_id!==lastData.boot_id){
+        hideClearMessage('forgetDone'); hideClearMessage('panelForgetDone');
+      }
       if(pendingReboot && pendingReboot.confirming){
         if(d.boot_id!==pendingReboot.boot_id){
           if(pendingReboot.profile && d.profile!==pendingReboot.profile)
