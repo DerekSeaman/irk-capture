@@ -11,6 +11,7 @@ namespace irk_capture {
 // service UUID, so sanitize_ble_name() truncates to this and the names built
 // here stay inside it by construction.
 static constexpr size_t BLE_NAME_MAX_LEN = 12;
+static constexpr char KEYBOARD_DEFAULT_NAME[] = "Logitech K380";
 
 // The name a "Refresh BLE Identity" press adopts, e.g. "IRK HR 7F3A".
 //

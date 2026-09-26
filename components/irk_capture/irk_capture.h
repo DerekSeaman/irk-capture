@@ -144,6 +144,10 @@ class IRKCaptureLabelText : public text::Text, public Component {
   IRKCaptureComponent* parent_ { nullptr };
 };
 
+// Copy this provenance with each store read and fallback timer. A later
+// connection must not change whether an older result came from a re-pair.
+enum class CaptureOrigin : uint8_t { UNKNOWN, FRESH, BONDED, REPAIR };
+
 // Free-function helpers (external linkage). Definitions live in the .cpp.
 int handle_gap_connect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
 int handle_gap_disconnect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -151,7 +155,8 @@ int handle_gap_enc_change(class IRKCaptureComponent* self, struct ble_gap_event*
 int handle_gap_repeat_pairing(class IRKCaptureComponent* self, struct ble_gap_event* ev);
 void publish_and_log_irk(class IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                          const std::string& irk_hex, const char* context_tag,
-                         uint32_t connection_generation);
+                         uint32_t connection_generation,
+                         CaptureOrigin origin = CaptureOrigin::UNKNOWN);
 
 // Main component
 class IRKCaptureComponent : public Component {
@@ -178,7 +183,7 @@ class IRKCaptureComponent : public Component {
   friend int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                                   const std::string& irk_hex, const char* context_tag,
-                                  uint32_t connection_generation);
+                                  uint32_t connection_generation, CaptureOrigin origin);
 
   // Friend declarations for GATT callback functions (access protected members)
   friend int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle,
@@ -302,6 +307,11 @@ class IRKCaptureComponent : public Component {
   // name carries the address that actually took effect, which is only known
   // once ble_hs_id_set_rnd() has succeeded.
   bool identity_refresh_pending_ { false };
+  // A generated name follows subsequent address changes, including host
+  // recovery. An accepted manual name leaves this mode, even if unchanged.
+  bool generated_name_active_ { false };
+  // Same-value manual accepts supersede older GAP writes without another rotation.
+  uint32_t ble_name_generation_ { 0 };
   // Set when a name is entered in Home Assistant while in the Keyboard
   // profile. Until then, and again after any reboot, Keyboard advertises as
   // "Logitech K380".
@@ -326,8 +336,7 @@ class IRKCaptureComponent : public Component {
   uint32_t last_notify_ { 0 };
   bool connected_ { false };
   uint32_t connection_generation_ { 0 };  // Monotonic ID for coalescing capture paths
-  uint32_t pairing_generation_ { 0 };     // Generation that started without a cached bond
-  uint32_t repair_generation_ { 0 };      // Generation authorized by REPEAT_PAIRING
+  CaptureOrigin connection_origin_ { CaptureOrigin::UNKNOWN };
 
   // Security/pairing state
   bool enc_ready_ { false };
@@ -440,6 +449,7 @@ class IRKCaptureComponent : public Component {
     ble_addr_t peer_id {};
     uint32_t connection_generation { 0 };
     bool pairing_completed { false };
+    CaptureOrigin origin { CaptureOrigin::UNKNOWN };
   };
   std::array<PeerTimer, PEER_TIMER_CAPACITY> post_disc_timers_ {};
   std::array<PeerTimer, PEER_TIMER_CAPACITY> late_enc_timers_ {};
@@ -460,13 +470,15 @@ class IRKCaptureComponent : public Component {
   //           advertising_requested_, advertising_start_attempts_, advertising_failure_log_time_,
   //           random_address_ready_, host_generation_,
   //           pairing_start_time_,
-  //           ble_name_, identity_refresh_pending_, keyboard_name_custom_, manufacturer_name_,
+  //           ble_name_, ble_name_generation_, identity_refresh_pending_, generated_name_active_,
+  //           keyboard_name_custom_,
+  //           manufacturer_name_,
   //           mac_rotation_state_, pending_mac_,
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
   //           suppress_next_adv_, adv_restart_time_, capture_events_,
   //           unique_devices_, irk_cache_ (deduplication state),
   //           bond_clear_pending_, bond_clear_host_generation_,
-  //           connection_generation_, pairing_generation_, repair_generation_,
+  //           connection_generation_, connection_origin_,
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
   //           connection_timeout_,
   //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
@@ -481,21 +493,26 @@ class IRKCaptureComponent : public Component {
 
   // Internal helpers
   bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out,
-                   uint32_t connection_generation);
+                   uint32_t connection_generation, CaptureOrigin origin = CaptureOrigin::UNKNOWN);
   void setup_ble();
   bool register_gatt_services();
   std::string sanitize_ble_name(const std::string& name);
-  std::string advertised_name_();  // Caller holds state_mutex_
+  std::string advertised_name_();                   // Caller holds state_mutex_
+  void commit_generated_name_(const uint8_t* mac);  // Caller holds state_mutex_
+  bool request_mac_rotation_(bool refresh_name, const std::string* accepted_name = nullptr,
+                             uint32_t expected_host_generation = 0,
+                             uint32_t expected_rotation_generation = 0,
+                             uint32_t expected_name_generation = 0);
   void handle_advertising_failure_(int rc, uint32_t host_generation, const char* operation);
 
   // IRK validation and deduplication helpers
   bool is_valid_irk(const uint8_t irk[16]);
   void publish_no_irk_(const ble_addr_t& peer_id, uint32_t connection_generation,
-                       bool pairing_completed);
+                       bool pairing_completed, CaptureOrigin origin = CaptureOrigin::UNKNOWN);
   bool should_publish_irk(const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
                           uint32_t connection_generation, bool force_pairing_publish,
                           bool& out_should_stop_adv, bool& out_is_new_device,
-                          bool& out_limit_just_reached);
+                          bool& out_limit_just_reached, bool& out_key_changed);
   void restore_capture_history_(IRKCacheEntry& entry);  // Caller holds state_mutex_
   void notify_bond_clear_();                            // Nonblocking worker wake-up
   void queue_bond_clear_();                             // Worker task only
@@ -504,10 +521,13 @@ class IRKCaptureComponent : public Component {
   // Timer handlers
   bool enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers,
                            const ble_addr_t& peer_id, uint32_t connection_generation,
-                           uint32_t delay_ms, bool pairing_completed = false);
+                           uint32_t delay_ms, bool pairing_completed = false,
+                           CaptureOrigin origin = CaptureOrigin::UNKNOWN);
   void schedule_post_disconnect_check(const ble_addr_t& peer_id, uint32_t connection_generation,
-                                      bool pairing_completed = false);
-  void schedule_late_enc_check(const ble_addr_t& peer_id, uint32_t connection_generation);
+                                      bool pairing_completed = false,
+                                      CaptureOrigin origin = CaptureOrigin::UNKNOWN);
+  void schedule_late_enc_check(const ble_addr_t& peer_id, uint32_t connection_generation,
+                               CaptureOrigin origin = CaptureOrigin::UNKNOWN);
   void handle_post_disconnect_timer(uint32_t now);
   void handle_late_enc_timer(uint32_t now);
 
@@ -530,8 +550,8 @@ class IRKCaptureComponent : public Component {
   // the component has been marked failed.
   void request_reboot_();
 
-  // Main-task-only helpers (called from loop()).
-  void update_status_sensor_(uint32_t now);
+  // Caller holds state_mutex_ while snapshotting the pending result values.
+  const char* status_value_locked_(uint32_t now);
 };
 
 }  // namespace irk_capture
