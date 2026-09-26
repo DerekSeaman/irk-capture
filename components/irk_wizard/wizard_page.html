@@ -78,8 +78,8 @@ ol.pair li{margin-bottom:5px}
     <h2>What are you capturing from?</h2>
     <p class="help">This picks how the device disguises itself so your phone will show it.</p>
     <select id="wizProfile">
-      <option value="Heart Sensor">iPhone or Apple Watch</option>
-      <option value="Keyboard">Samsung Galaxy / Android phone</option>
+      <option value="Heart Sensor">Apple (iPhone, Watch, iPad) and Android watches (Heart Sensor)</option>
+      <option value="Keyboard">Android phones and tablets (Keyboard)</option>
     </select>
     <div class="callout" id="profileWarn">Changing this <b>reboots the device</b> and takes about 15 seconds. The page reconnects on its own.</div>
     <div class="btnrow"><button class="primary" onclick="wizGo(2)">Next</button>
@@ -100,9 +100,8 @@ ol.pair li{margin-bottom:5px}
     <h2>Clear any old pairing</h2>
     <p class="help">If this phone has paired with this device before, it will silently reuse the old
       pairing and no new key is captured. This is the most common reason a capture never happens.</p>
-    <div class="callout">On your phone: open <b>Bluetooth settings</b>, find
-      <b id="forgetName">IRK Capture</b>, and choose <b>Forget This Device</b> (iPhone: tap the
-      &#9432; first). If it is not listed, nothing to do.</div>
+    <div class="callout">On your device open <b>Bluetooth settings</b>, find the prior advertising
+      name and choose <b>Forget This Device</b>. Apple tip: tap the &#9432; first.</div>
     <div class="btnrow"><button class="danger" onclick="wizForget()">Also clear it on this device</button></div>
     <p class="help ok hide" id="forgetDone">Cleared on this device.</p>
     <div class="btnrow"><button class="primary" onclick="wizStart()">Next: start pairing</button>
@@ -154,8 +153,8 @@ ol.pair li{margin-bottom:5px}
   <div class="card">
     <label>Target device</label>
     <select id="profile">
-      <option value="Heart Sensor">iPhone / Apple Watch (Heart Sensor)</option>
-      <option value="Keyboard">Samsung Galaxy (Keyboard)</option>
+      <option value="Heart Sensor">Apple (iPhone, Watch, iPad) and Android watches (Heart Sensor)</option>
+      <option value="Keyboard">Android phones and tablets (Keyboard)</option>
     </select>
     <div style="height:10px"></div>
     <label>Label this capture (optional)</label>
@@ -315,7 +314,6 @@ function render(d){
   /* wizard */
   if(wizStep===0) return;
   el('wizProfile').value = d.profile;
-  el('forgetName').textContent = advName;
   if(document.activeElement !== el('wizLabel') && !el('wizLabel').value && d.next_capture_label)
     el('wizLabel').value = d.next_capture_label;
 
