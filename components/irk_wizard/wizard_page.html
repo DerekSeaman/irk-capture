@@ -37,9 +37,12 @@ button.big{display:block;width:100%;padding:14px;font-size:15px;margin-bottom:18
 .switch::after{content:"";position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px;transition:.15s}
 .switch.on::after{left:18px}
 .hist{display:flex;flex-direction:column;gap:6px}
-.hist .item{display:flex;justify-content:space-between;background:var(--surf2);border:1px solid var(--border);
-border-radius:8px;padding:8px 10px;font-size:12.5px}
-.hist .mac{font-family:ui-monospace,monospace;color:var(--ink3)}
+.hist .item{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--surf2);
+border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12.5px}
+.hist .info{display:flex;flex-direction:column;min-width:0}
+.hist .lbl{color:var(--ink3);font-size:11.5px}
+.hist .irk{font-family:ui-monospace,monospace;color:var(--ink1);word-break:break-all}
+.hist button{flex-shrink:0;padding:6px 12px}
 .empty{color:var(--ink3);font-size:13px;text-align:center;padding:10px 0}
 label{display:block;font-size:12px;color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
 .steps{display:flex;gap:6px;margin-bottom:16px}
@@ -77,7 +80,7 @@ ol.pair li{margin-bottom:5px}
   <div class="card" id="step1">
     <div class="stepno">Step 1 of 5</div>
     <h2>What are you capturing from?</h2>
-    <p class="help">This picks how the device disguises itself so your phone will show it.</p>
+    <p class="help">Select which device type you are capturing from.</p>
     <select id="wizProfile">
       <option value="Heart Sensor">Apple (iPhone, Watch, iPad) and Android watches (Heart Sensor)</option>
       <option value="Keyboard">Android phones and tablets (Keyboard)</option>
@@ -134,8 +137,8 @@ ol.pair li{margin-bottom:5px}
     <div class="irkbox" id="wizIrk">-</div>
     <div class="btnrow"><button class="primary" onclick="copyIrk()">Copy IRK</button>
       <span id="copyMsg" class="help" style="margin:10px 0 0"></span></div>
-    <div class="callout">You can now <b>forget this device</b> in your phone's Bluetooth settings -
-      the pairing was only needed to hand over the key.</div>
+    <div class="callout">You can now <b>forget this device</b> in your device's Bluetooth settings -
+      the pairing was only needed to capture the IRK.</div>
     <div class="btnrow"><button onclick="wizRestart()">Capture another device</button>
       <button onclick="showPanel()">Done</button></div>
   </div>
@@ -151,8 +154,7 @@ ol.pair li{margin-bottom:5px}
   <div class="card">
     <div class="row"><span class="k">Status</span><span id="statusPill" class="pill idle">idle</span></div>
     <div class="row"><span class="k">Advertising as</span><span class="v" id="advName">-</span></div>
-    <div class="row"><span class="k">Effective MAC</span><span class="v" id="effMac">-</span></div>
-    <div class="row"><span class="k">Captured IRK</span><span class="v" id="irkVal">-</span></div>
+    <div class="row"><span class="k">ESP32 BLE MAC</span><span class="v" id="effMac">-</span></div>
   </div>
 
   <div class="card">
@@ -177,7 +179,7 @@ ol.pair li{margin-bottom:5px}
   </div>
 
   <div class="card">
-    <div class="k" style="margin-bottom:10px">Captured this session</div>
+    <div class="k" style="margin-bottom:10px">IRKs Captured in this session</div>
     <div class="hist" id="history"><div class="empty">No devices captured yet</div></div>
   </div>
 </div>
@@ -185,6 +187,7 @@ ol.pair li{margin-bottom:5px}
 </div>
 <script>
 function el(id){return document.getElementById(id)}
+var lastHistKey = null;   // history last rendered, see render()
 var wizStep = 0;          // 0 = panel view
 var lastData = null;
 var labelDirty = false;
@@ -231,9 +234,7 @@ function wizFresh(){ post('/api/fresh_identity',{}); }
 function wizStop(){ awaitingCapture=false; post('/api/advertising',{on:false}); }
 function wizRestart(){ awaitingCapture=false; el('wizLabel').value=''; wizGo(1); }
 
-function copyIrk(){
-  var txt = el('wizIrk').textContent;
-  function done(ok){ el('copyMsg').textContent = ok ? 'Copied.' : 'Select the key above and copy it.'; }
+function copyText(txt, done){
   // navigator.clipboard is unavailable over plain HTTP, so fall back.
   if(navigator.clipboard && window.isSecureContext){
     navigator.clipboard.writeText(txt).then(function(){done(true)},function(){done(false)});
@@ -243,6 +244,11 @@ function copyIrk(){
     var ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta);
     ta.select(); var ok=document.execCommand('copy'); document.body.removeChild(ta); done(ok);
   }catch(e){ done(false); }
+}
+function copyIrk(){
+  copyText(el('wizIrk').textContent, function(ok){
+    el('copyMsg').textContent = ok ? 'Copied.' : 'Select the key above and copy it.';
+  });
 }
 
 /* ---------- pairing instructions ---------- */
@@ -283,7 +289,6 @@ function render(d){
   setPill(el('statusPill'), d.status);
   el('advName').textContent = advName;
   el('effMac').textContent = d.effective_mac || '-';
-  el('irkVal').textContent = d.irk || '-';
   el('profile').value = d.profile;
   if(!labelDirty) el('label').value = d.next_capture_label || '';
   el('advBtn').textContent = d.advertising ? 'Stop Advertising' : 'Start Advertising';
@@ -293,20 +298,35 @@ function render(d){
   var history=[];
   // The device sends history as a real JSON array, not a string.
   if(Array.isArray(d.history)) history=d.history;
-  var histEl=el('history');
-  histEl.textContent='';
-  if(!history.length){
-    var em=document.createElement('div'); em.className='empty';
-    em.textContent='No devices captured yet'; histEl.appendChild(em);
-  } else {
-    // DOM nodes with textContent, never innerHTML: labels and MACs come from
-    // paired devices and are untrusted here.
-    history.forEach(function(h){
-      var it=document.createElement('div'); it.className='item';
-      var nm=document.createElement('span'); nm.textContent=h.label||'(unlabeled)';
-      var mc=document.createElement('span'); mc.className='mac'; mc.textContent=h.mac||'';
-      it.appendChild(nm); it.appendChild(mc); histEl.appendChild(it);
-    });
+  // Rebuild only when the list changes, so a Copy button's "Copied" state
+  // survives the next status poll.
+  var histKey=JSON.stringify(history);
+  if(histKey!==lastHistKey){
+    lastHistKey=histKey;
+    var histEl=el('history');
+    histEl.textContent='';
+    if(!history.length){
+      var em=document.createElement('div'); em.className='empty';
+      em.textContent='No devices captured yet'; histEl.appendChild(em);
+    } else {
+      // DOM nodes with textContent, never innerHTML: labels come from the
+      // user and keys from paired devices, so both are untrusted here.
+      history.forEach(function(h){
+        var it=document.createElement('div'); it.className='item';
+        var info=document.createElement('div'); info.className='info';
+        var nm=document.createElement('span'); nm.className='lbl'; nm.textContent=h.label||'(unlabeled)';
+        var key=document.createElement('span'); key.className='irk'; key.textContent=h.irk||'';
+        info.appendChild(nm); info.appendChild(key);
+        var btn=document.createElement('button'); btn.textContent='Copy';
+        btn.addEventListener('click',function(){
+          copyText(h.irk||'', function(ok){
+            btn.textContent = ok ? 'Copied' : 'Failed';
+            setTimeout(function(){ btn.textContent='Copy'; }, 1500);
+          });
+        });
+        it.appendChild(info); it.appendChild(btn); histEl.appendChild(it);
+      });
+    }
   }
 
   /* wizard */
