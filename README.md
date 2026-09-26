@@ -23,7 +23,7 @@ The ESP32's BLE identity is the name and MAC address your phone or watch sees wh
 | Heart Sensor | `IRK Capture` |
 | Keyboard | `Logitech K380` |
 
-The MAC address is a **random static address** that is regenerated each time the ESP32 boots. The current address is shown in the **Effective MAC** sensor.
+The MAC address is a **random static address** that is regenerated each time the ESP32 boots. The current address is shown in the **ESP32 BLE MAC** sensor.
 
 **Refresh BLE Identity.** Pressing this button gives the ESP32 a new MAC address and a matching new name, without a reboot. The name shows the active profile, followed by the last four characters of the new MAC address:
 
@@ -32,7 +32,7 @@ The MAC address is a **random static address** that is regenerated each time the
 | Heart Sensor | `IRK HR 7F3A` |
 | Keyboard | `IRK KB 7F3A` |
 
-The name changes along with the address because iPhones hide an accessory whose name they've already seen, even on a new MAC address. If the ESP32 doesn't show up on your phone or watch, turn Bluetooth off and back on there. Because the suffix matches the end of Effective MAC, you can tell which entry on your phone is the current one.
+The name changes along with the address because iPhones hide an accessory whose name they've already seen, even on a new MAC address. If the ESP32 doesn't show up on your phone or watch, turn Bluetooth off and back on there. Because the suffix matches the end of ESP32 BLE MAC, you can tell which entry on your phone is the current one.
 
 **Custom names.** You can also change the advertising name yourself, in either profile. Type a new name into **BLE Device Name** and press Enter, and the ESP32 starts advertising it immediately. Custom names are limited to 12 characters; letters, numbers, spaces, `-` and `_` are kept and anything else is removed. In Keyboard mode, you can also enter the exact default `Logitech K380` to restore it. Saving the current name leaves an active pairing connected.
 
@@ -214,7 +214,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple) or "Keyboard" (Android). Changing profiles triggers a reboot. |
 | **Refresh BLE Identity** | Button | Rotate the advertised address and rename the device to match it (`IRK HR 7F3A` or `IRK KB 7F3A`) until the next reboot, so a phone that cached the old name sees a new accessory |
 | **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
-| **Effective MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
+| **ESP32 BLE MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
 | **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, or `no_irk` |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information and restores the default BLE name |
@@ -444,7 +444,7 @@ Below is a sample log showing a successful IRK capture:
 [13:44:16.593][I][irk_capture:1397][nimble_host]: Continuous mode: restarting advertising for next device
 [13:44:16.593][D][irk_capture:2423][nimble_host]: Advertising with profile: Heart Sensor
 [13:44:16.593][D][irk_capture:3607][nimble_host]: Staged effective MAC: C0:FF:EE:12:34:56
-[13:44:16.593][S][text_sensor]: 'Effective MAC' >> 'C0:FF:EE:12:34:56'
+[13:44:16.593][S][text_sensor]: 'ESP32 BLE MAC' >> 'C0:FF:EE:12:34:56'
 [13:44:20.288][S][text_sensor]: 'Status' >> 'advertising'
 ```
 

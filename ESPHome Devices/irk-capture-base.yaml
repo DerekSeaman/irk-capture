@@ -122,7 +122,7 @@ text_sensor:
       name: "Device MAC"
       id: last_addr
     effective_mac:
-      name: "Effective MAC"
+      name: "ESP32 BLE MAC"
       id: effective_mac
     status:
       name: "Status"
