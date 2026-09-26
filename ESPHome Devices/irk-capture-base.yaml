@@ -147,10 +147,6 @@ button:
       id: refresh_identity_btn
       name: "Refresh BLE Identity"
       icon: mdi:bluetooth-settings
-    forget_bonds:
-      id: forget_bonds_btn
-      name: "Forget All Bonds"
-      icon: mdi:bluetooth-off
   - platform: restart
     name: "Restart Device"
 

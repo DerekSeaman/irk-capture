@@ -292,8 +292,6 @@ jobs:
               irk_capture_id: irk
               refresh_identity:
                 name: "Refresh BLE Identity"
-              forget_bonds:
-                name: "Forget All Bonds"
           text:
             - platform: irk_capture
               irk_capture_id: irk

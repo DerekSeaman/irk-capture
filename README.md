@@ -217,7 +217,6 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Effective MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
 | **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, or `no_irk` |
-| **Forget All Bonds** | Button | Clears this session's capture list so a run can start from a clean slate, and clears stored bonds when no device is connected |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information and restores the default BLE name |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
 | **Internal Temp** | Sensor | ESP32 internal temperature (diagnostic) |
@@ -249,9 +248,6 @@ several entities change at once:
 | `no_irk` | Pairing completed but the peer sent no identity key - see the IRK sensor |
 
 `captured` and `no_irk` stay on screen for a few seconds so you don't miss them. A device you already captured that reconnects in the background won't replace the result you're looking at.
-
-**Forget All Bonds** clears this session's list of captured devices without changing the ESP32's name or MAC address. If a device is connected, press it again after it disconnects.
-
 
 ## Optional: the capture wizard package
 
