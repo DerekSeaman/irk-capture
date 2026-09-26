@@ -200,6 +200,8 @@ var lastHistKey = null;   // history last rendered, see render()
 var wizStep = 0;          // 0 = panel view
 var lastData = null;
 var labelDirty = false;
+var labelEdit = 0;
+var pendingLabelSave = null;
 var awaitingCapture = false;
 var captureRun = 0;
 var captureAttempt = null;
@@ -422,8 +424,30 @@ function pairSteps(){
 }
 
 /* ---------- panel wiring ---------- */
-el('label').addEventListener('input',function(){labelDirty=true});
-el('label').addEventListener('blur',function(){action('/api/label',{label:el('label').value});labelDirty=false});
+async function savePanelLabel(){
+  if(!labelDirty || (pendingLabelSave && pendingLabelSave.edit===labelEdit)) return;
+  var request={edit:labelEdit}; pendingLabelSave=request;
+  clearError();
+  try{
+    var saved=await post('/api/label',{label:el('label').value});
+    if(!saved || typeof saved.label!=='string') throw new Error('Could not confirm the saved label. Please try again.');
+    if(request.edit===labelEdit){
+      // Keep the draft protected until the device acknowledges it. An older
+      // save must never replace text entered while that request was in flight.
+      el('label').value=saved.label;
+      if(lastData) lastData.next_capture_label=saved.label;
+      labelDirty=false;
+    }
+    refresh();
+  }catch(e){
+    // Retain the draft so leaving the field again can retry a failed save.
+    if(request.edit===labelEdit) showError(e);
+  }finally{
+    if(pendingLabelSave===request) pendingLabelSave=null;
+  }
+}
+el('label').addEventListener('input',function(){labelDirty=true; ++labelEdit;});
+el('label').addEventListener('blur',savePanelLabel);
 el('profile').addEventListener('change',function(){action('/api/profile',{profile:el('profile').value})});
 el('wizProfile').addEventListener('change',function(){action('/api/profile',{profile:el('wizProfile').value})});
 el('advBtn').addEventListener('click',function(){
@@ -465,7 +489,7 @@ function render(d){
   el('advName').textContent = advName;
   el('effMac').textContent = d.effective_mac || '-';
   el('profile').value = d.profile;
-  if(!labelDirty) el('label').value = d.next_capture_label || '';
+  if(!labelDirty && document.activeElement!==el('label')) el('label').value = d.next_capture_label || '';
   el('advBtn').textContent = d.advertising ? 'Stop Advertising' : 'Start Advertising';
   el('advBtn').dataset.on = d.advertising ? '1' : '0';
   el('stopAfterSwitch').classList.toggle('on', !!d.stop_after_capture);

@@ -391,6 +391,9 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   WizardSnapshot s = self->get_snapshot();
+  // Label edits and consume-once capture updates must be visible immediately,
+  // even when the main task has not rebuilt its periodic snapshot yet.
+  if (self->irk_capture()) s.next_capture_label = self->irk_capture()->get_next_capture_label();
 
   std::string json = "{";
   json += "\"boot_id\":" + std::to_string(s.capture_result.boot_id) + ",";
@@ -460,12 +463,18 @@ static esp_err_t handle_post_label(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
   if (!json_request(req)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  std::string body = read_request_body(req);
-  std::string label;
-  if (json_extract_string(body, "label", label) && self->irk_capture()) {
-    self->irk_capture()->set_next_capture_label(label);
+  if (!self->irk_capture()) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return send_json(req, "{\"error\":\"Capture component unavailable\"}");
   }
-  return send_ok(req);
+  const std::string body = read_request_body(req);
+  std::string label;
+  if (!json_extract_string(body, "label", label)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return send_json(req, "{\"error\":\"label must be a string\"}");
+  }
+  const std::string saved_label = self->irk_capture()->set_next_capture_label(label);
+  return send_json(req, "{\"ok\":true,\"label\":\"" + json_escape(saved_label) + "\"}");
 }
 
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
