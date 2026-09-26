@@ -22,8 +22,8 @@ external_components:
     components: [irk_wizard]
     refresh: always
 
-# Entities used by the wizard flow. They are ordinary irk_capture entities,
-# so they show up in Home Assistant too.
+# Entities used by the wizard flow. The switch is also exposed to Home Assistant;
+# the capture label stays internal for use through the wizard.
 switch:
   - platform: irk_capture
     irk_capture_id: irk
@@ -42,6 +42,7 @@ text:
     next_capture_label:
       id: next_capture_label
       name: "Next Capture Label"
+      internal: true
       mode: text
 
 irk_wizard:

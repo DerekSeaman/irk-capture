@@ -213,7 +213,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **BLE Device Name** | Text Input | Change the advertised name until the next reboot (defaults: "IRK Capture" for Heart Sensor, "Logitech K380" for Keyboard). Refresh BLE Identity writes a generated name here |
 | **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple) or "Keyboard" (Android). Changing profiles triggers a reboot. |
 | **Refresh BLE Identity** | Button | Rotate the advertised address and rename the device to match it (`IRK HR 7F3A` or `IRK KB 7F3A`) until the next reboot, so a phone that cached the old name sees a new accessory |
-| **Device MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
+| **Device BLE MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
 | **ESP32 BLE MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
 | **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, or `no_irk` |
@@ -278,8 +278,10 @@ BLE address, so the wizard is never left open on the network. Five wrong passwor
 it out for 30 seconds. Traffic is plain HTTP, like
 ESPHome's own `web_server`, so keep the device on a network you trust.
 
-The package adds **Stop Advertising After Capture** and **Next Capture Label** as entities, plus
-the UI. It walks through picking the target device, labelling the capture, clearing any old
+The package adds the **Stop Advertising After Capture** entity and the wizard UI.
+**Next Capture Label** stays internal, so labels are entered through the wizard and the field
+is hidden from the standard ESPHome web UI and Home Assistant. The wizard walks through
+picking the target device, labelling the capture, clearing any old
 pairing, pairing, and collecting the key.
 
 You can return to the wizard after using your phone's Bluetooth settings: it remembers a
@@ -380,7 +382,7 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 
 ### IRK Not Captured After Pairing
 
-Some devices, including some Garmin watches, use a fixed BLE address and do not provide an IRK. When a completed pairing stores a bond without an IRK, the Home Assistant IRK sensor shows **`Failed: IRK not used`**, and **Device MAC** identifies that peer. This replaces the previous sensor value so it reflects the latest completed attempt; prior values remain in Home Assistant's recorded history. A later successful capture replaces the failure with the 32-character IRK, including when a previously captured device reconnects.
+Some devices, including some Garmin watches, use a fixed BLE address and do not provide an IRK. When a completed pairing stores a bond without an IRK, the Home Assistant IRK sensor shows **`Failed: IRK not used`**, and **Device BLE MAC** identifies that peer. This replaces the previous sensor value so it reflects the latest completed attempt; prior values remain in Home Assistant's recorded history. A later successful capture replaces the failure with the 32-character IRK, including when a previously captured device reconnects.
 
 Missing bond records, incomplete pairing, and invalid key bytes are not reported as "IRK not used." A public identity address alone does not establish whether a device uses BLE privacy.
 
@@ -435,7 +437,7 @@ Below is a sample log showing a successful IRK capture:
 [13:44:16.129][I][irk_capture:868][nimble_host]: Capture events this session: 2
 [13:44:16.129][I][irk_capture:560][nimble_host]:
 [13:44:16.291][S][text_sensor]: 'IRK' >> 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
-[13:44:16.291][S][text_sensor]: 'Device MAC' >> 'A1:B2:C3:D4:E5:F6'
+[13:44:16.291][S][text_sensor]: 'Device BLE MAC' >> 'A1:B2:C3:D4:E5:F6'
 [13:44:16.291][S][text_sensor]: 'Status' >> 'captured'
 [13:44:16.517][D][irk_capture:1655][nimble_host]: Subscription changed: handle=1 attr=8 notify=0 indicate=0 reason=2
 [13:44:16.517][I][irk_capture:1297][nimble_host]: Disconnect reason=534 (0x216)

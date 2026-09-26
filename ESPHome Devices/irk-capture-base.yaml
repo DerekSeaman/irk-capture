@@ -119,7 +119,7 @@ text_sensor:
       name: "IRK"
       id: last_irk
     last_address:
-      name: "Device MAC"
+      name: "Device BLE MAC"
       id: last_addr
     effective_mac:
       name: "ESP32 BLE MAC"
