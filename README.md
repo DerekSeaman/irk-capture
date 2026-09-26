@@ -32,7 +32,7 @@ The MAC address is a **random static address** that is regenerated each time the
 | Heart Sensor | `IRK HR 7F3A` |
 | Keyboard | `IRK KB 7F3A` |
 
-The name changes along with the address because iPhones hide an accessory whose name they've already seen, even on a new MAC address. If the ESP32 doesn't show up on your phone or watch, turn Bluetooth off and back on there. Because the suffix matches the end of ESP32 BLE MAC, you can tell which entry on your phone is the current one.
+The name changes along with the address because devices may hide an accessory whose name they've already seen, even on a new MAC address. If the ESP32 doesn't show up on your phone or watch, turn Bluetooth off and back on there. Because the suffix matches the end of ESP32 BLE MAC, you can tell which entry on your phone is the current one.
 
 **Custom names.** You can also change the advertising name yourself, in either profile. Type a new name into **BLE Device Name** and press Enter, and the ESP32 starts advertising it immediately. Custom names are limited to 12 characters; letters, numbers, spaces, `-` and `_` are kept and anything else is removed. In Keyboard mode, you can also enter the exact default `Logitech K380` to restore it. Saving the current name leaves an active pairing connected.
 
@@ -251,11 +251,11 @@ several entities change at once:
 
 ## Optional: the capture wizard package
 
-`irk-capture-wizard.yaml` adds a guided capture UI served by the ESP32 itself, on its own port
+`irk-capture-wizard.yaml` adds a capture UI served by the ESP32 itself, on its own port
 (default 8080), alongside ESPHome's `web_server:`. It needs no Home Assistant, no dashboard and no
 internet, so it also works from the fallback AP.
 
-Most people capture straight from the device page in Home Assistant and won't need it. It is off
+Most people capture straight from the ESPHome device page in Home Assistant and won't need it. It is off
 unless you add it, as a second `packages:` entry:
 
 ```yaml
@@ -278,15 +278,17 @@ BLE address, so the wizard is never left open on the network. Five wrong passwor
 it out for 30 seconds. Traffic is plain HTTP, like
 ESPHome's own `web_server`, so keep the device on a network you trust.
 
-The package adds the **Stop Advertising After Capture** entity and the wizard UI.
-**Next Capture Label** stays internal, so labels are entered through the wizard and the field
-is hidden from the standard ESPHome web UI and Home Assistant. The wizard walks through
-picking the target device, labelling the capture, clearing any old
-pairing, pairing, and collecting the key.
+The UI offers two workflows:
 
-You can return to the wizard after using your phone's Bluetooth settings: it remembers a
-successful capture even after the Status changes. The final step keeps the same key available
-to copy until you start another capture.
+- **Express Capture** provides quick capture from one screen. Select the target device type,
+  enter an optional label, start advertising if needed, then pair with the displayed Bluetooth
+  name. Copy the captured IRK from the session history.
+- **IRK Wizard** guides you through five steps: select the device type, add an optional label,
+  clear any old pairing, pair using the displayed Bluetooth name and device-specific instructions,
+  then copy the IRK for Home Assistant's **Private BLE Device** integration.
+
+The package also adds the **Stop Advertising After Capture** entity.
+This will stop the BLE advertising after the capture is complete.
 
 **Clear Pairings** clears the session history and reports when stored pairings have actually
 been removed. If a device is connected or Bluetooth is busy, follow the displayed retry
@@ -297,9 +299,6 @@ on air is not always the configured BLE name. The Keyboard profile boots as **Lo
 a rename or a **Refresh BLE Identity** replaces either profile's name until the next reboot
 (`IRK HR 7F3A`, `IRK KB 7F3A`). The wizard always shows the name the ESP32 is advertising right
 now, so you are never left scanning for the wrong one.
-
-Capture history is served from the wizard's own HTTP API rather than published as an entity, since
-Home Assistant caps a state at 255 characters and the JSON passes that at the third device.
 
 ## Tested Devices
 
