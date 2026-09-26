@@ -51,6 +51,7 @@ label{display:block;font-size:12px;color:var(--ink3);text-transform:uppercase;le
 .steps .s.now{background:var(--accent);opacity:.55}
 .stepno{font-size:12px;color:var(--accent);text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:6px}
 h2{font-size:17px;margin:0 0 8px}
+h2.section{margin:22px 0 10px}
 p.help{color:var(--ink2);font-size:13.5px;margin:0 0 12px}
 .callout{background:var(--surf2);border-left:3px solid var(--amber);border-radius:6px;padding:10px 12px;font-size:13px;color:var(--ink2);margin:12px 0}
 .callout b{color:var(--ink1)}
@@ -97,7 +98,7 @@ ol.pair li{margin-bottom:5px}
     <div class="stepno">Step 2 of 5</div>
     <h2>Whose device is this?</h2>
     <p class="help">Optional. The name is stored with the captured key so you can tell them apart later.</p>
-    <input type="text" id="wizLabel" placeholder="e.g. Daves iPhone" maxlength="24">
+    <input type="text" id="wizLabel" placeholder="e.g. Dave's iPhone" maxlength="24">
     <div class="btnrow"><button class="primary" onclick="wizSaveLabel()">Next</button>
       <button onclick="wizGo(1)">Back</button></div>
   </div>
@@ -148,17 +149,21 @@ ol.pair li{margin-bottom:5px}
 
 <!-- ============ PANEL VIEW ============ -->
 <div id="panelView">
-  <h1>IRK Capture</h1>
-  <p class="sub" id="deviceName">-</p>
-
-  <button class="big primary" onclick="showWizard()">Start IRK Wizard &rarr;</button>
+  <h1 style="margin-bottom:18px">IRK Capture Tool</h1>
 
   <div class="card">
     <div class="row"><span class="k">Status</span><span id="statusPill" class="pill idle">idle</span></div>
     <div class="row"><span class="k">Advertising as</span><span class="v" id="advName">-</span></div>
+    <div class="row"><span class="k">BLE Profile</span><span class="v" id="profileName">-</span></div>
     <div class="row"><span class="k">ESP32 BLE MAC</span><span class="v" id="effMac">-</span></div>
   </div>
 
+  <div class="card">
+    <div class="row toggle"><span class="k">Stop advertising after capture</span>
+      <div class="switch" id="stopAfterSwitch"></div></div>
+  </div>
+
+  <h2 class="section">Express Capture</h2>
   <div class="card">
     <label>Target device</label>
     <select id="profile">
@@ -167,7 +172,7 @@ ol.pair li{margin-bottom:5px}
     </select>
     <div style="height:10px"></div>
     <label>Label this capture (optional)</label>
-    <input type="text" id="label" placeholder="e.g. Daves iPhone" maxlength="24">
+    <input type="text" id="label" placeholder="e.g. Dave's iPhone" maxlength="24">
     <div class="btnrow">
       <button class="primary" id="advBtn">Start Advertising</button>
       <button id="freshIdBtn">Refresh BLE Identity</button>
@@ -175,15 +180,14 @@ ol.pair li{margin-bottom:5px}
     </div>
   </div>
 
-  <div class="card">
-    <div class="row toggle"><span class="k">Stop advertising after capture</span>
-      <div class="switch" id="stopAfterSwitch"></div></div>
-  </div>
+  <button class="big primary" onclick="showWizard()">Start IRK Wizard &rarr;</button>
 
   <div class="card">
-    <div class="k" style="margin-bottom:10px">IRKs Captured in this session</div>
+    <div class="k" style="margin-bottom:10px">IRK<span style="text-transform:none">s</span> Captured in this session</div>
     <div class="hist" id="history"><div class="empty">No devices captured yet</div></div>
   </div>
+
+  <button class="big danger" id="rebootBtn">Reboot ESP32</button>
 </div>
 
 </div>
@@ -279,6 +283,10 @@ el('freshIdBtn').addEventListener('click',function(){post('/api/fresh_identity',
 el('forgetBtn').addEventListener('click',function(){
   if(confirm('Clear all cached bonds and this session history?')) post('/api/forget_bonds',{});
 });
+el('rebootBtn').addEventListener('click',function(){
+  if(confirm('Reboot the ESP32? The list of IRKs captured in this session will be cleared.'))
+    post('/api/reboot',{});
+});
 el('stopAfterSwitch').addEventListener('click',function(){
   post('/api/stop_after_capture',{enabled:!el('stopAfterSwitch').classList.contains('on')});
 });
@@ -294,7 +302,7 @@ function render(d){
   var advName = d.advertised_name || '-';
 
   /* panel */
-  el('deviceName').textContent = advName + ' · ' + d.profile;
+  el('profileName').textContent = d.profile || '-';
   setPill(el('statusPill'), d.status);
   el('advName').textContent = advName;
   el('effMac').textContent = d.effective_mac || '-';

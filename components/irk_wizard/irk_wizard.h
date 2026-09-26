@@ -72,6 +72,9 @@ class IRKWizardComponent : public Component {
   // task; set_ble_profile() publishes entities directly, so the call itself
   // is deferred to the main loop.
   void set_profile(bool keyboard);
+  // Reboots the ESP32 shortly after the request has answered. Callable from
+  // any task; the reboot itself runs on the main loop.
+  void reboot();
   void set_port(uint16_t port) {
     port_ = port;
   }

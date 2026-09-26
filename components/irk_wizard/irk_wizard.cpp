@@ -6,6 +6,7 @@
 
 #include "esphome/components/network/util.h"
 #include "wizard_util.h"
+#include "esphome/core/application.h"
 #include "esphome/core/log.h"
 
 namespace esphome {
@@ -142,6 +143,13 @@ void IRKWizardComponent::set_profile(bool keyboard) {
   });
 }
 
+void IRKWizardComponent::reboot() {
+  // App.safe_reboot() tears down every component, so it must run on the main
+  // task. The short delay lets this request's response reach the browser
+  // first, and the fixed name folds repeated presses into one reboot.
+  this->set_timeout("reboot", 500, []() { App.safe_reboot(); });
+}
+
 WizardSnapshot IRKWizardComponent::get_snapshot() {
   MutexGuard lock(snapshot_mutex_);
   return snapshot_;
@@ -180,6 +188,7 @@ static esp_err_t handle_post_profile(httpd_req_t* req);
 static esp_err_t handle_post_label(httpd_req_t* req);
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req);
 static esp_err_t handle_post_fresh_identity(httpd_req_t* req);
+static esp_err_t handle_post_reboot(httpd_req_t* req);
 static esp_err_t handle_post_stop_after_capture(httpd_req_t* req);
 
 static esp_err_t send_json(httpd_req_t* req, const std::string& body) {
@@ -231,6 +240,7 @@ bool IRKWizardComponent::start_server_() {
     { "/api/label", HTTP_POST, handle_post_label },
     { "/api/forget_bonds", HTTP_POST, handle_post_forget_bonds },
     { "/api/fresh_identity", HTTP_POST, handle_post_fresh_identity },
+    { "/api/reboot", HTTP_POST, handle_post_reboot },
     { "/api/stop_after_capture", HTTP_POST, handle_post_stop_after_capture },
   };
 
@@ -396,6 +406,14 @@ static esp_err_t handle_post_fresh_identity(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
   if (!json_request(req)) return ESP_OK;
   static_cast<IRKWizardComponent*>(req->user_ctx)->fresh_identity();
+  return send_ok(req);
+}
+
+static esp_err_t handle_post_reboot(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  ESP_LOGI(TAG, "Reboot requested from the wizard");
+  static_cast<IRKWizardComponent*>(req->user_ctx)->reboot();
   return send_ok(req);
 }
 
