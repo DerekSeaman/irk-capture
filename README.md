@@ -286,9 +286,11 @@ The package adds **Stop Advertising After Capture** and **Next Capture Label** a
 the UI. It walks through picking the target device, labelling the capture, clearing any old
 pairing, pairing, and collecting the key.
 
-The step that matters most is the one people get stuck on: in the Keyboard profile the ESP32
-advertises as **Logitech K380**, not the configured BLE name, so the wizard shows the name to look
-for rather than leaving you to scan for the wrong one.
+The step that matters most is the one people get stuck on: knowing what name to look for. The name
+on air is not always the configured BLE name. The Keyboard profile boots as **Logitech K380**, and
+a rename or a **Refresh BLE Identity** replaces either profile's name until the next reboot
+(`IRK HR 7F3A`, `IRK KB 7F3A`). The wizard always shows the name the ESP32 is advertising right
+now, so you are never left scanning for the wrong one.
 
 Capture history is served from the wizard's own HTTP API rather than published as an entity, since
 Home Assistant caps a state at 255 characters and the JSON passes that at the third device.
