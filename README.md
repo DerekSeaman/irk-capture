@@ -208,10 +208,10 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | :--- | :--- | :--- |
 | **BLE Advertising** | Switch | Keep Bluetooth advertising enabled between connections (starts ON by default) |
 | **BLE Device Name** | Text Input | Change the advertised name until the next reboot (defaults: "IRK Capture" for Heart Sensor, "Logitech K380" for Keyboard). Refresh BLE Identity writes a generated name here |
-| **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple) or "Keyboard" (Android). Changing profiles triggers a reboot. |
-| **Refresh BLE Identity** | Button | Rotate the advertised address and rename the device to match it (`IRK HR 7F3A` or `IRK KB 7F3A`) until the next reboot, so a phone that cached the old name sees a new accessory |
+| **BLE Profile** | Select | Choose BLE advertising profile: "Heart Sensor" (Apple devices and Android watches) or "Keyboard" (Android phones). Changing profiles triggers a reboot. |
+| **Refresh BLE Identity** | Button | Rotate the advertised address and rename the device to match it (`IRK HR 7F3A` or `IRK KB 7F3A`) until the next reboot, so a device that cached the old name sees a new accessory |
 | **Device BLE MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
-| **ESP32 BLE MAC** | Text Sensor | Current BLE MAC address being advertised by the ESP32 |
+| **ESP32 BLE MAC** | Text Sensor | Current Bluetooth MAC address being advertised by the ESP32 |
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
 | **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, or `no_irk` |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information and restores the default BLE name |
