@@ -4,6 +4,8 @@
 
 This ESPHome package will capture Apple and Android Bluetooth Identity Resolving Keys (IRK) using an ESP32 running ESPHome. Use the captured IRKs with the [Private BLE Device](https://www.home-assistant.io/integrations/private_ble_device/) integration in Home Assistant for reliable room-level presence detection. I use the [Bermuda BLE Trilateration](https://github.com/agittins/bermuda?tab=readme-ov-file) integration with IRKs for room-level presence detection.
 
+You can capture IRKs through two interfaces: the ESP32's ESPHome device page in Home Assistant, or an optional standalone web wizard served by the ESP32. The wizard guides you through the capture process in your browser without needing Home Assistant. See [Optional: The Capture Wizard Package](#optional-the-capture-wizard-package) later in this README for setup instructions.
+
 This ESPHome IRK capture package is only designed to capture IRKs and can NOT pull double duty as a Bluetooth proxy. You can either flash this to a spare ESP32 device and keep it in a sock drawer when not being used, or temporarily flash this package to an ESP32 then flash back to your generic Bluetooth proxy ESPHome configuration. IRKs are generally permanent and do not change over time.
 
 ## What is a BLE IRK and Why Is It Needed?
@@ -13,6 +15,10 @@ Modern Apple and Android devices use **BLE privacy features** that randomize the
 The **Identity Resolving Key (IRK)** is a cryptographic key exchanged during BLE pairing that allows authorized devices to resolve these random MAC addresses back to the original device. By capturing a device's IRK, you can reliably track it for presence detection even as it randomizes its MAC address.
 
 Capturing IRKs from devices can be very tricky, as the Bluetooth stack can vary widely among OS versions and device vendors. Some devices may not play well with this package, or need pairing code tweaks to successfully capture the IRK. I have added a lot of debugging code which could help your favorite vibe coding LLM read the debug logs and provide suggested code changes.
+
+## Track Who's in Each Room with ESPHome + Bermuda BLE
+
+For a complete guide for room-level presence detection using Bermuda BLE Trilateration with Home Assistant, check out my post: [Track Who's in Each Room with ESPHome + Bermuda BLE](https://www.derekseaman.com/2025/12/home-assistant-track-whos-in-each-room-with-esphome-bermuda-ble.html)
 
 ## BLE Identity
 
@@ -39,10 +45,6 @@ The name changes along with the address because devices may hide an accessory wh
 **After a reboot**, whether from Restart Device, a power cycle, or changing the BLE profile, the ESP32 goes back to the default name for its profile and a new random MAC address. A refreshed or custom name only lasts until then.
 
 If your phone or watch has paired with the ESP32 before, **forget the pairing** on it before pairing again.
-
-## Track Who's in Each Room with ESPHome + Bermuda BLE
-
-For a complete guide for room-level presence detection using Bermuda BLE Trilateration with Home Assistant, check out my post: [Track Who's in Each Room with ESPHome + Bermuda BLE](https://www.derekseaman.com/2025/12/home-assistant-track-whos-in-each-room-with-esphome-bermuda-ble.html)
 
 ## What This Package Does
 
@@ -80,13 +82,11 @@ The super abbreviated installation instructions are as follows:
 - Add the shown **packages:** section at the bottom
 - Connect your ESP32 device and flash it
 
-ESPHome Device Builder pulls the package and component from the `main` branch, so clean builds always get the latest version. My blog post includes optional Seeed Studio XIAO S3, C3, C5 and C6 device profile enhancements.
+ESPHome Device Builder pulls the package and component from the `main` branch, so clean builds always get the latest version.
 
 ![Device YAML Configuration](docs/YAML-screenshot.jpg)
 
-Here's the same thing as plain, copyable YAML — a generic ESPHome Device
-Builder device with the **packages:** section added at the bottom (replace the
-placeholder key/passwords with your own device's values):
+Here's the same thing as plain, copyable YAML — a generic ESPHome Device Builder device with the **packages:** section added at the bottom (replace the placeholder key/passwords with your own device's values):
 
 ```yaml
 # Board: Seeed XIAO ESP32C3 (Seeed Studio)
@@ -141,10 +141,7 @@ and diagnostics package as a second `packages:` entry alongside the one above:
 
 ### Full Example: Seeed XIAO ESP32-C3
 
-Here's a complete device YAML for the Seeed XIAO ESP32-C3, combining the
-generic device config above with **both** `packages:` entries — the main
-IRK Capture package and the C3-specific hardware/diagnostics package
-(replace the placeholder key/passwords with your own device's values):
+Here's a complete device YAML for the Seeed XIAO ESP32-C3, combining the generic device config above with **both** `packages:` entries — the main IRK Capture package and the C3-specific hardware/diagnostics package (replace the placeholder key/passwords with your own device's values):
 
 ```yaml
 # Board: Seeed XIAO ESP32C3 (Seeed Studio)
@@ -227,7 +224,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Wi-Fi Disconnects (since boot)** | Sensor | Number of Wi-Fi disconnections since boot (diagnostic) |
 | **Wi-Fi Signal** | Sensor | Wi-Fi signal strength in dBm (diagnostic) |
 
-**BLE Advertising switch.** This switch controls whether the ESP32 advertises so phones and watches can find it. It's ON after every boot by default. While a device is connected, the ESP32 pauses advertising but the switch stays ON, and advertising resumes when the device disconnects.
+**BLE Advertising switch.** This switch controls whether the ESP32 advertises so devices can find it. It's ON after every boot by default. While a device is connected, the ESP32 pauses advertising but the switch stays ON, and advertising resumes when the device disconnects.
 
 If advertising fails to start, the ESP32 keeps retrying on its own, quickly at first and then once a minute, for as long as the switch is ON. It doesn't reboot or lose your captures while it does. Turning the switch off stops the retries, and turning it back on tries again right away.
 
@@ -235,8 +232,7 @@ If advertising fails to start, the ESP32 keeps retrying on its own, quickly at f
 
 ### Status and building a capture flow on top of it
 
-**Status** reports where a capture attempt is, which is otherwise only inferable by watching
-several entities change at once:
+**Status** reports where a capture attempt is, which is otherwise only inferable by watching several entities change at once:
 
 | State | Meaning |
 | :--- | :--- |
@@ -251,12 +247,11 @@ several entities change at once:
 
 ## Optional: The Capture Wizard Package
 
-`irk-capture-wizard.yaml` adds a capture UI served by the ESP32 itself, on its own port
-(default 8080), alongside ESPHome's `web_server:`. It needs no Home Assistant, no dashboard and no
-internet, so it also works from the fallback AP.
+As an alternative interface, you can add an optional wizard package that uses a web page served by your ESP32 to guide you through capturing an IRK. The `irk-capture-wizard.yaml` package runs alongside the standard ESPHome web interface on a separate port (8080 by default). You can use it directly from your browser without Home Assistant, a dashboard, or an internet connection—even when connected to the ESP32's fallback Wi-Fi access point.
 
-Most people capture straight from the ESPHome device page in Home Assistant and won't need it. It is off
-unless you add it, as a second `packages:` entry:
+![IRK Capture Tool with Express Capture and Capture Wizard](docs/wizard-1.jpg)
+
+Most people capture straight from the ESPHome device page in Home Assistant and won’t need to use this wizard mode. It is completely optional. It is off unless you add it, as a second `packages:` entry:
 
 ```yaml
 packages:
@@ -272,11 +267,7 @@ packages:
     refresh: always
 ```
 
-Add `wizard_username` and `wizard_password` to your `secrets.yaml` first; the wizard requires
-both and will not compile without them. A captured IRK permanently resolves a phone's randomized
-BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock
-it out for 30 seconds. Traffic is plain HTTP, like
-ESPHome's own `web_server`, so keep the device on a network you trust.
+Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock it out for 30 seconds. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
 
 The UI offers two workflows:
 
@@ -287,18 +278,11 @@ The UI offers two workflows:
   clear any old pairing, pair using the displayed Bluetooth name and device-specific instructions,
   then copy the IRK for Home Assistant's **Private BLE Device** integration.
 
-The package also adds the **Stop Advertising After Capture** entity.
-This will stop the BLE advertising after the capture is complete.
+The package also adds the **Stop Advertising After Capture** entity. This will stop the BLE advertising after the capture is complete.
 
-**Clear Pairings** clears the session history and reports when stored pairings have actually
-been removed. If a device is connected or Bluetooth is busy, follow the displayed retry
-instructions; clearing the history alone does not mean the pairings were removed.
+**Clear Pairings** clears the session history and reports when stored pairings have actually been removed. If a device is connected or Bluetooth is busy, follow the displayed retry instructions; clearing the history alone does not mean the pairings were removed.
 
-The step that matters most is the one people get stuck on: knowing what name to look for. The name
-on air is not always the configured BLE name. The Keyboard profile boots as **Logitech K380**, and
-a rename or a **Refresh BLE Identity** replaces either profile's name until the next reboot
-(`IRK HR 7F3A`, `IRK KB 7F3A`). The wizard always shows the name the ESP32 is advertising right
-now, so you are never left scanning for the wrong one.
+When pairing, look for the Bluetooth name shown in the wizard. It shows the name the ESP32 is currently advertising. The Keyboard profile starts as **Logitech K380**. Renaming the device uses your chosen name, while **Refresh BLE Identity** generates a name such as `IRK HR 7F3A` (Heart Sensor) or `IRK KB 7F3A` (Keyboard). These changes last until the next reboot.
 
 ## Tested Devices
 
@@ -469,14 +453,9 @@ substitutions:
   irk_component_ref: dev
 ```
 
-Both settings are required. The package pulls the component from `main` by default, so
-changing only the package `ref` runs the development package against the released
-component and fails validation with errors such as
-`[status] is an invalid option for [text_sensor.irk_capture]`.
+Both settings are required. The package pulls the component from `main` by default, so changing only the package `ref` runs the development package against the released component and fails validation with errors such as `[status] is an invalid option for [text_sensor.irk_capture]`.
 
-Board packages (such as the Seeed Studio XIAO packages) can stay on `main`. To return to
-the released version, set the package `ref` back to `main` and remove the `substitutions:`
-block.
+Board packages (such as the Seeed Studio XIAO packages) can stay on `main`. To return to the released version, set the package `ref` back to `main` and remove the `substitutions:` block.
 
 ## Credits
 

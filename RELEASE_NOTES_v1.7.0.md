@@ -1,116 +1,69 @@
 # Release Notes v1.7.0
 
-This release covers everything since `v1.6.2`. It is the biggest update to IRK Capture
-so far: the ESP32 is much easier to find when your phone has seen it before, capturing
-several phones and watches in one sitting is smoother, pairing is more reliable, and Home
-Assistant shows you what the device is doing at each step.
+IRK Capture v1.7.0 gives you two ways to capture Bluetooth Identity Resolving Keys: the familiar ESPHome device page in Home Assistant and a new, optional web wizard served directly by your ESP32. This release adds guided pairing, labeled capture results, and clearer information about what the ESP32 is doing.
 
-## What's new
+These notes describe the changes from the released version on `main` to v1.7.0.
 
-### Refresh BLE Identity replaces Generate New MAC
+## Choose the interface that works for you
 
-The **Generate New MAC** button is now **Refresh BLE Identity**. Each press gives the ESP32 a
-new MAC address *and* a matching new name, without rebooting:
+| | Home Assistant device page | Standalone web wizard |
+| :--- | :--- | :--- |
+| Where you use it | The ESP32's ESPHome device page in Home Assistant | A web page served by the ESP32, opened in your browser |
+| Setup | Included in the main IRK Capture package | Add the optional wizard package and a username and password |
+| Capture workflow | Use the device controls, pair your device, and read the IRK sensor | Choose Express Capture or follow the five-step wizard |
+| Results | Shows the latest captured IRK and device BLE MAC | Shows labeled captures from the current session, with Copy buttons |
+| Home Assistant required for capture | Yes, when using this interface | No; it also works without internet and from the ESP32's fallback Wi-Fi access point |
 
-- Heart Sensor: `IRK HR 7F3A`
-- Keyboard: `IRK KB 7F3A`
+Both interfaces use the same capture functionality on the ESP32 and produce IRKs you can use with Home Assistant's **Private BLE Device** integration. You can keep using the Home Assistant device page without installing the wizard.
 
-The last four characters match the end of the **Effective MAC** sensor, so you can tell at a
-glance which entry on your phone is the ESP32. The name also shows which profile is active.
+## New: capture from your browser
 
-Why both? iPhones hide an accessory whose *name* they have already seen, even on a brand new
-MAC address. So after a previous pairing, a new MAC alone could leave the ESP32 appearing for a
-second and then vanishing. Changing both makes it look like a new accessory every time.
+The optional wizard package adds a standalone web page on port **8080** by default, alongside the standard ESPHome web interface. It offers two ways to capture:
 
-The generated name lasts until the next reboot. Restarting the ESP32 (or changing the BLE
-profile, which restarts it) brings back the default names: "IRK Capture" for Heart Sensor and
-"Logitech K380" for Keyboard. Out of the box, nothing changes for Samsung Galaxy phones.
+- **Express Capture:** Work from one screen. Select your device type, add an optional label such as “Derek's iPhone,” and pair with the Bluetooth name shown on the page. Your captured IRK appears in the results with a Copy button.
+- **IRK Wizard:** Follow five steps to select your device type, add an optional label, clear an old pairing, pair with the ESP32 using device-specific instructions, and copy the captured IRK into Home Assistant.
 
-### Rename either profile from Home Assistant
+The page shows the current Bluetooth name, BLE profile, ESP32 BLE MAC, and capture status. Selecting a device type chooses the appropriate profile; if that requires a reboot, the page shows the restart progress and reconnects automatically.
 
-**BLE Device Name** now works in the Keyboard profile too, not just Heart Sensor. Type a name
-(up to 12 characters), press Enter, and the ESP32 starts advertising it right away. A custom
-name lasts until the next reboot, which restores the default name.
+![IRK Capture Tool with Express Capture and Capture Wizard](docs/wizard-1.jpg)
 
-### A Status sensor that shows where a capture is
+### Keep several captures organized
 
-A new **Status** sensor tells you what IRK Capture is doing right now: `advertising`
-(ready for a device to pair), `pairing`, `capturing`, `captured`, or `no_irk` if the
-device paired but didn't share its IRK. You no longer need to watch the logs or several
-entities at once to know whether a capture worked.
+Give each capture a label and copy its IRK from the session results. This is useful when capturing several devices in one sitting. Session history is temporary: copy the IRKs you need before rebooting or clearing it. Changing the BLE profile also reboots the ESP32.
 
-### Forget All Bonds button
+The optional package also adds **Stop Advertising After Capture**, available on the web page and in Home Assistant. Enable it when you want the ESP32 to stop advertising after a capture.
 
-A new **Forget All Bonds** button clears the current session's list of captured devices,
-without rebooting or changing the ESP32's name or MAC address. If a device is connected,
-press it again once it disconnects.
+The web page includes controls to refresh the Bluetooth identity, clear stored pairings, and reboot the ESP32. **Forget All Bonds** in Express Capture and **Clear Pairings** in the guided wizard let you start fresh. Follow any displayed retry instructions if a device is still connected or Bluetooth is busy. You may also need to forget the ESP32 in the device's own Bluetooth settings.
 
-### Capture as many devices as you like in one session
+To enable the web interface, follow [Optional: The Capture Wizard Package](README.md#optional-the-capture-wizard-package). Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The page uses HTTP, so use it on a network you trust.
 
-Pairing a fourth device in the same session could fail, because the Bluetooth stack only
-has room for three stored pairings. IRK Capture now makes room automatically, so you can
-keep capturing without rebooting between devices. IRKs you already captured are not
-affected.
+## What's new on the Home Assistant device page
 
-## Improvements
+### See capture progress
 
-- **More reliable pairing.** Some phones and watches could drop the connection partway
-  through pairing because a few Bluetooth details the ESP32 offered didn't behave the way
-  they expected. Those are fixed, which should mean fewer failed pairing attempts.
-- **Clear result when a device doesn't share its IRK.** If a device pairs but doesn't
-  provide an IRK, the IRK sensor now shows `Failed: IRK not used` along with the device's
-  MAC address, instead of leaving you guessing. The logs suggest using that MAC address
-  directly in that case.
-- **Your latest capture stays on screen.** A phone you paired earlier can reconnect in the
-  background. It no longer replaces the IRK and Device MAC of the device you just captured
-  while you're copying them.
-- **Advertising recovers on its own.** If Bluetooth advertising fails to start, IRK Capture
-  keeps retrying in the background instead of staying silently off. It never reboots or
-  loses your captures to do this.
-- **Stuck pairings are cleaned up.** A pairing attempt that stalls is now ended cleanly so
-  you can simply try again. An IRK captured just before the cleanup is still kept.
-- **Safer BLE Profile changes.** If a new profile can't be saved, IRK Capture keeps the
-  current profile and logs an error instead of rebooting into the wrong one.
-- **BLE Device Name fixes.** Re-entering the current name no longer disconnects anything,
-  and Home Assistant no longer shows a name the device rejected.
-- **Clearer logs.** Pairing failure reasons are now reported accurately.
+The new **Status** sensor shows whether the ESP32 is idle, advertising, pairing, capturing, or has captured a key. If a device pairs without sharing an IRK, the status reports `no_irk` and the IRK sensor shows `Failed: IRK not used`.
 
-## Tips
+### Clearer control and sensor names
 
-- Every new MAC address can show up as its own entry on your phone for a minute or two, so
-  you may briefly see several ESP32 names. Pair with the one shown in **BLE Device Name**, or
-  leave and reopen Bluetooth settings and only the current one comes back.
-- On your phone/watch, turn off Bluetooth, then turn it on to see the ESP32 faster.
+| Previous name | New name | What it means |
+| :--- | :--- | :--- |
+| **Generate New MAC** | **Refresh BLE Identity** | Gives the ESP32 a new Bluetooth address and a matching new advertising name |
+| **Device MAC** | **Device BLE MAC** | The captured device's Bluetooth address |
+| **Effective MAC** | **ESP32 BLE MAC** | The ESP32's own advertised Bluetooth address |
+
+### Make the ESP32 easier to recognize
+
+**Refresh BLE Identity** now changes both the Bluetooth address and name without rebooting. Names such as `IRK HR 7F3A` or `IRK KB 7F3A` identify the active profile and end with the last four characters of the ESP32 BLE MAC. This helps when a device remembers an earlier pairing or discovery entry.
+
+You can also set **BLE Device Name** in either profile, including Keyboard, using a custom name of up to 12 characters. Refreshed and custom names last until the next reboot. The default names remain **IRK Capture** for Heart Sensor and **Logitech K380** for Keyboard.
 
 ## Upgrading
 
-- Perform a clean build when upgrading (see **Upgrading to a New Version** in the README).
-- ESPHome 2026.7 or newer is required; this release is tested with ESPHome 2026.9.0.
-- Because the button was renamed, Home Assistant adds a new **Refresh BLE Identity** button and
-  shows the old **Generate New MAC** entity as unavailable. You can delete the old one. If an
-  automation or dashboard used the old button, point it at the new one.
-- If your own YAML configures the button, the new key is `refresh_identity`. The old `new_mac`
-  key still works.
-- Advertising startup: the shared package now lets `irk_capture.start_on_boot` decide
-  whether advertising starts at boot, which matches how most people already use it. Only
-  if your own YAML sets the BLE Advertising switch's `restore_mode` to `ALWAYS_ON` will
-  advertising now always start ON, even with `start_on_boot: false`.
+- Perform a clean build when upgrading; see [Upgrading to a New Version](README.md#upgrading-to-a-new-version).
+- The standalone web wizard is optional and is not enabled by upgrading the main package alone. Add it only if you want the browser interface.
+- Check dashboards and automations that use the renamed button or MAC sensors. Home Assistant may leave the old entities unavailable; update references to the new entities and remove obsolete entries as needed.
+- Existing captured IRKs do not need to be collected again just to use this release.
 
-## Thanks to David Coulson
+## Thanks
 
-Many of this release's new features came from David Coulson (@davidcoulson), who built them
-to support a guided, multi-device capture flow.
-
-- Built Refresh BLE Identity after tracking down why iPhones were hiding the ESP32. The new
-  name is derived from the MAC address only after the ESP32 has actually switched to it, so
-  the name and the Effective MAC sensor always agree, and CI tests the name format.
-- Added the Status sensor and Forget All Bonds button, with session state tracked so a
-  front end can follow each capture without parsing logs.
-- Added the component's internal groundwork for guided flows: an option to stop advertising
-  after a capture, labels for the next captured device, and capture history served over
-  HTTP rather than as a Home Assistant entity, which has a 255-character limit.
-- Made it possible to point a device at a different component branch or fork via
-  `irk_component_url` / `irk_component_ref` substitutions, which is what makes testing the
-  `dev` branch possible.
-- Moved reboots that could be requested from Bluetooth or web server tasks onto ESPHome's
-  main loop, and extended CI to compile-check all of the new entities.
+Thanks to David Coulson (@davidcoulson) for contributions that helped bring guided capture, clearer status, and Bluetooth identity refresh to this release.
