@@ -36,5 +36,7 @@ async def to_code(config):
         cg.add(parent.set_ble_name_text(txt))
 
     if CONF_NEXT_CAPTURE_LABEL in config:
-        txt = await text.new_text(config[CONF_NEXT_CAPTURE_LABEL])
+        # Matches IRKCaptureComponent::CAPTURE_LABEL_MAX_LEN, so Home Assistant
+        # limits the field instead of the device silently trimming it.
+        txt = await text.new_text(config[CONF_NEXT_CAPTURE_LABEL], max_length=24)
         cg.add(parent.set_next_capture_label_text(txt))

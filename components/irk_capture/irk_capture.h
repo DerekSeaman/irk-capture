@@ -288,8 +288,12 @@ class IRKCaptureComponent : public Component {
   void set_stop_after_capture(bool enabled);
   bool get_stop_after_capture();
   std::string get_next_capture_label();
+  // Longest capture label kept; text.py gives the Home Assistant entity the
+  // same limit.
+  static constexpr size_t CAPTURE_LABEL_MAX_LEN = 24;
   // Sanitizes, stores, and returns the label for the next device added to
-  // visible history (consumed once; charset matches BLE-name rules).
+  // visible history (consumed once). Keeps letters, digits, spaces, '-', '_'
+  // and apostrophes, up to CAPTURE_LABEL_MAX_LEN characters.
   std::string set_next_capture_label(const std::string& value);
   // Clears visible history, retaining deduplication/capture accounting. The
   // NimBLE task clears stored bonds only when no peer is connected.

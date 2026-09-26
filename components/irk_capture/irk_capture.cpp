@@ -3823,16 +3823,17 @@ std::string IRKCaptureComponent::get_next_capture_label() {
 }
 
 std::string IRKCaptureComponent::set_next_capture_label(const std::string& value) {
-  // Same safe charset as sanitize_ble_name(), but labels aren't advertised
-  // over the air, so they get a longer budget than the 12-byte BLE-name cap.
+  // Labels aren't advertised over the air, so they get a longer budget than
+  // the 12-byte BLE-name cap, and an apostrophe for names like "Dave's iPhone".
+  // Everything kept is safe unescaped inside build_history_json()'s strings.
   std::string sanitized;
-  sanitized.reserve(24);
+  sanitized.reserve(CAPTURE_LABEL_MAX_LEN);
   for (char c : value) {
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' ||
-        c == '-' || c == '_') {
+        c == '-' || c == '_' || c == '\'') {
       sanitized += c;
     }
-    if (sanitized.length() >= 24) break;
+    if (sanitized.length() >= CAPTURE_LABEL_MAX_LEN) break;
   }
   {
     MutexGuard lock(state_mutex_);
