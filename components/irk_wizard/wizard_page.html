@@ -19,7 +19,7 @@ h1{font-size:20px;margin:0 0 4px}
 .pill.idle{background:#2a3739;color:var(--ink2)}
 .pill.advertising{background:#28323a;color:var(--accent)}
 .pill.pairing,.pill.capturing,.pill.rebooting{background:#3a2f1b;color:var(--amber)}
-.pill.captured{background:#1c3626;color:var(--green)}
+.pill.captured,.pill.ready{background:#1c3626;color:var(--green)}
 .pill.no_irk{background:#3a2320;color:var(--red)}
 .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 select,input[type=text]{width:100%;background:var(--surf2);border:1px solid var(--border);color:var(--ink1);
@@ -91,7 +91,8 @@ ol.pair li{margin-bottom:5px}
       <option value="Keyboard">Android phones and tablets (Keyboard)</option>
     </select>
     <div class="callout" id="profileWarn">Changing this <b>reboots the device</b> and takes about 15 seconds. The page reconnects on its own.</div>
-    <div class="btnrow"><button class="primary" onclick="wizGo(2)">Next</button>
+    <div class="row hide" id="wizProfileStatusRow"><span class="k">Device status</span><span id="wizProfilePill" class="pill rebooting" role="status">Rebooting…</span></div>
+    <div class="btnrow"><button class="primary" id="wizNextBtn" onclick="wizGo(2)">Next</button>
       <button onclick="showPanel()">Exit wizard</button></div>
   </div>
 
@@ -217,6 +218,7 @@ var refreshInFlight = null;
 var refreshAgain = false;
 var failCount = 0;
 var pendingReboot = null;
+var wizardProfileReady = false;
 var REQUEST_TIMEOUT_MS = 5000;
 var REBOOT_WARNING_MS = 60000;
 
@@ -298,19 +300,28 @@ function rebootState(){
   });
   setPill(el('statusPill'),pendingReboot ? 'rebooting' : (lastData ? lastData.status : 'idle'));
   if(wizStep===4) setPill(el('wizPill'),pendingReboot ? 'rebooting' : (lastData ? lastData.status : 'idle'));
+  wizardProfileState();
   connectionState();
+}
+function wizardProfileState(){
+  var status=pendingReboot && pendingReboot.fromWizard ? 'rebooting' : (wizardProfileReady ? 'ready' : null);
+  el('wizProfileStatusRow').classList.toggle('hide',!status);
+  if(status) setPill(el('wizProfilePill'),status);
+  el('wizNextBtn').disabled=!!(pendingReboot && pendingReboot.fromWizard);
 }
 function rebootDevice(){
   if(pendingReboot || !confirm('Reboot the ESP32? The list of IRKs captured in this session will be cleared.')) return;
   return trackReboot('/api/reboot',{});
 }
-function changeProfile(profile){
-  return trackReboot('/api/profile',{profile:profile},profile);
+function changeProfile(profile,fromWizard){
+  return trackReboot('/api/profile',{profile:profile},profile,fromWizard);
 }
-async function trackReboot(url,body,profile){
+async function trackReboot(url,body,profile,fromWizard){
   if(pendingReboot) return;
   clearError();
-  var request={boot_id:null,started:Date.now(),sent:false,confirming:false,profile:profile};
+  wizardProfileReady=false;
+  var request={boot_id:null,started:Date.now(),sent:false,confirming:false,profile:profile,
+    fromWizard:!!fromWizard && (!lastData || profile!==lastData.profile)};
   pendingReboot=request; ++statusEpoch; rebootState();
   try{
     var ack=await post(url,body,async function(){
@@ -345,7 +356,9 @@ async function trackReboot(url,body,profile){
 /* ---------- view switching ---------- */
 function showPanel(){ cancelCapture(true); wizStep=0; el('wizView').classList.add('hide'); el('panelView').classList.remove('hide');
   window.scrollTo(0,0); refresh(); }
-function showWizard(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizGo(1); el('panelView').classList.add('hide'); el('wizView').classList.remove('hide');
+function showWizard(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback();
+  if(!pendingReboot) wizardProfileReady=false;
+  wizGo(1); el('panelView').classList.add('hide'); el('wizView').classList.remove('hide');
   window.scrollTo(0,0); }
 function wizGo(n){
   if(wizStep===4 && n!==4 && n!==5) cancelCapture(true);
@@ -357,6 +370,7 @@ function wizGo(n){
   });
   window.scrollTo(0,0);
   if(lastData) render(lastData);
+  wizardProfileState();
 }
 
 /* ---------- wizard actions ---------- */
@@ -428,7 +442,7 @@ function wizStop(){
   cancelCapture(false); captureMessage='Capture stopped. Go back a step to start again.';
   action('/api/advertising',{on:false}); if(lastData) render(lastData);
 }
-function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); el('wizLabel').value=''; wizGo(1); }
+function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizardProfileReady=false; el('wizLabel').value=''; wizGo(1); }
 
 function copyText(txt, done){
   // navigator.clipboard is unavailable over plain HTTP, so fall back.
@@ -483,7 +497,7 @@ async function savePanelLabel(){
 el('label').addEventListener('input',function(){labelDirty=true; ++labelEdit;});
 el('label').addEventListener('blur',savePanelLabel);
 el('profile').addEventListener('change',function(){return changeProfile(el('profile').value)});
-el('wizProfile').addEventListener('change',function(){return changeProfile(el('wizProfile').value)});
+el('wizProfile').addEventListener('change',function(){return changeProfile(el('wizProfile').value,true)});
 el('advBtn').addEventListener('click',function(){
   action('/api/advertising',{on: el('advBtn').dataset.on !== '1'});
 });
@@ -497,9 +511,9 @@ el('stopAfterSwitch').addEventListener('click',function(){
 });
 
 /* ---------- rendering ---------- */
-var KNOWN=['idle','advertising','pairing','capturing','captured','no_irk','rebooting'];
+var KNOWN=['idle','advertising','pairing','capturing','captured','no_irk','rebooting','ready'];
 function setPill(node,status){
-  node.textContent=status==='rebooting' ? 'Rebooting…' : status;
+  node.textContent=status==='rebooting' ? 'Rebooting…' : (status==='ready' ? 'Ready' : status);
   node.className='pill '+(KNOWN.indexOf(status)>=0?status:'idle');
 }
 
@@ -633,11 +647,13 @@ function refresh(){
       if(!validBootId(d.boot_id)) throw new Error('Invalid device status');
       if(lastData && d.boot_id!==lastData.boot_id){
         hideClearMessage('forgetDone'); hideClearMessage('panelForgetDone');
+        if(!pendingReboot) wizardProfileReady=false;
       }
       if(pendingReboot && pendingReboot.confirming){
         if(d.boot_id!==pendingReboot.boot_id){
           if(pendingReboot.profile && d.profile!==pendingReboot.profile)
             showError(new Error('The device restarted, but the selected profile was not applied. Please select the target device type again.'));
+          else if(pendingReboot.fromWizard) wizardProfileReady=true;
           pendingReboot=null;
         }else if(Date.now()-pendingReboot.started>=REBOOT_WARNING_MS){
           var retry=pendingReboot.profile ? 'Please select the target device type again.' : 'Please try Reboot ESP32 again.';
