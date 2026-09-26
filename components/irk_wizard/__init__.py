@@ -18,7 +18,7 @@ from esphome.components.irk_capture import CONF_IRK_CAPTURE_ID, IRKCaptureCompon
 from esphome.const import CONF_ID
 
 CODEOWNERS = ["@davidcoulson"]
-# network: the server start is gated on network::is_connected(), so the
+# network: the server start waits for a connected network or an active AP, so the
 # network component must be pulled into the build even for a config that
 # does not otherwise declare wifi/ethernet.
 DEPENDENCIES = ["irk_capture", "network", "text_sensor"]

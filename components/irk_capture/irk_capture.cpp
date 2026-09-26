@@ -856,7 +856,8 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
 
   // Called even for coalesced or rate-limited observations: the sensor decides
   // whether this may replace what is displayed (see publish_irk_to_sensors()).
-  self->publish_irk_to_sensors(irk_hex, addr_str.c_str(), connection_generation, capture_event);
+  self->publish_irk_to_sensors(irk_hex, addr_str.c_str(), connection_generation, capture_event,
+                               should_publish && (max_reached || stop_after_capture_hit));
 
   // Skip duplicate capture logs (deduplication happened under mutex).
   if (!should_publish) {
@@ -881,9 +882,6 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   }
 
   log_spacer();
-  if (max_reached || stop_after_capture_hit) {
-    self->set_advertising_requested(false);
-  }
 }
 
 //======================== GATT DB ========================
@@ -1754,6 +1752,11 @@ void IRKCaptureComponent::setup() {
     return;
   }
 
+  // Stable for this boot, including NimBLE host recovery. A browser can detect
+  // an MCU reboot even when its next capture has the same sequence number.
+  esp_fill_random(&capture_result_.boot_id, sizeof(capture_result_.boot_id));
+  if (capture_result_.boot_id == 0) capture_result_.boot_id = 1;
+
   // Load persisted BLE profile from NVS (before BLE stack init so GATT is
   // correct)
   nvs_handle_t nvs_handle;
@@ -2029,6 +2032,10 @@ void IRKCaptureComponent::setup_ble() {
     g_irk_instance->adv_restart_time_ = 0;
     // Cancel the request without relying on the old host event being serviced.
     // Leave its event object intact: a delayed wake-up checks current state.
+    if (g_irk_instance->bond_clear_pending_) {
+      g_irk_instance->bond_clear_result_.state = "cancelled";
+      g_irk_instance->bond_clear_result_.reason = "Bluetooth restarted; retry once ready.";
+    }
     g_irk_instance->bond_clear_pending_ = false;
     g_irk_instance->bond_clear_host_generation_ = 0;
     // A host reset proves the old controller state is gone. Abort any
@@ -2458,23 +2465,33 @@ void IRKCaptureComponent::handle_advertising_failure_(int rc, uint32_t host_gene
 void IRKCaptureComponent::stop_advertising() {
   int rc;
   bool still_active;
+  bool lock_timeout = false;
   {
     BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
     if (!ble_lock.acquired()) {
-      ESP_LOGW(TAG, "stop_advertising: ble_op_mutex timeout, skipping");
-      return;
+      lock_timeout = true;
+    } else {
+      uint32_t host_generation;
+      {
+        MutexGuard lock(state_mutex_);
+        host_generation = host_generation_;
+      }
+      rc = ble_gap_adv_stop();
+      still_active = ble_gap_adv_active() != 0;
+      // Keep BLE control serialized through the state commit. Releasing the
+      // BLE lock first permits a newer start to finish before this stale stop
+      // writes false, making subsequent OFF requests skip the live radio.
+      MutexGuard lock(state_mutex_);
+      if (host_generation != host_generation_) return;
+      advertising_ = still_active;
     }
-    rc = ble_gap_adv_stop();
-    still_active = ble_gap_adv_active() != 0;
+  }
+  if (lock_timeout) {
+    ESP_LOGW(TAG, "stop_advertising: ble_op_mutex timeout, skipping");
+    return;
   }
   if (rc != 0 && rc != BLE_HS_EALREADY && rc != BLE_HS_EINVAL) {
     ESP_LOGW(TAG, "ble_gap_adv_stop rc=%d", rc);
-  }
-
-  // Thread-safe actual-state update (after BLE stack call)
-  {
-    MutexGuard lock(state_mutex_);
-    advertising_ = still_active;
   }
 
   if (still_active) {
@@ -2511,6 +2528,30 @@ void IRKCaptureComponent::set_advertising_requested(bool requested) {
   } else if (!connected) {
     start_advertising();
   }
+}
+
+CaptureResult IRKCaptureComponent::get_capture_result() {
+  MutexGuard lock(state_mutex_);
+  return capture_result_;
+}
+
+CaptureResult IRKCaptureComponent::begin_capture() {
+  CaptureResult baseline;
+  {
+    MutexGuard lock(state_mutex_);
+    baseline = capture_result_;
+    if (!advertising_requested_) {
+      advertising_start_attempts_ = 0;
+      advertising_failure_log_time_ = 0;
+    }
+    advertising_requested_ = true;
+    pending_adv_pub_ = true;
+    pending_adv_val_ = true;
+  }
+  // A capture between this transaction and the BLE call can request OFF.
+  // start_advertising() rechecks intent so one-shot auto-stop still wins.
+  start_advertising();
+  return baseline;
 }
 
 bool IRKCaptureComponent::is_advertising() {
@@ -3684,8 +3725,8 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
 }
 
 void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str,
-                                                 uint32_t connection_generation,
-                                                 bool capture_event) {
+                                                 uint32_t connection_generation, bool capture_event,
+                                                 bool stop_after_result) {
   // Stage only; the ESPHome main loop() performs the actual publish_state().
   // Callers may run in the NimBLE task, where publish_state() is unsafe.
   MutexGuard lock(state_mutex_);
@@ -3698,11 +3739,33 @@ void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex, con
   if (connection_generation != 0 && last_result_generation_ != 0 &&
       static_cast<int32_t>(connection_generation - last_result_generation_) < 0)
     return;
+  // Commit automatic OFF with its accepted result. A new wizard begin can
+  // then snapshot that result and request ON without an older callback's
+  // logging tail switching the new attempt back off. loop() stops an idle
+  // radio; disconnect callbacks also honor this intent before restarting.
+  if (stop_after_result) {
+    if (advertising_requested_) {
+      advertising_start_attempts_ = 0;
+      advertising_failure_log_time_ = 0;
+    }
+    advertising_requested_ = false;
+    adv_restart_time_ = 0;
+    suppress_next_adv_ = false;
+    pending_adv_pub_ = true;
+    pending_adv_val_ = false;
+  }
   // Stage status and IRK under the same ordering check. Only a genuine capture
   // replaces what is on display. A bonded reconnect of an earlier device may
   // restore its IRK over a no-IRK failure (or an empty sensor), but must never
   // replace another device's result while the user is copying it.
   if (capture_event) {
+    if (connection_generation == 0 || capture_result_generation_ != connection_generation) {
+      capture_result_.sequence++;
+      if (capture_result_.sequence == 0) capture_result_.sequence = 1;
+      capture_result_.irk = irk_hex;
+      capture_result_.device_mac = addr_str;
+      capture_result_generation_ = connection_generation;
+    }
     capture_status_ = CaptureStatus::CAPTURED;
     status_result_hold_until_ = now_ms() + TimingConfig::STATUS_RESULT_HOLD_MS;
     if (status_result_hold_until_ == 0) status_result_hold_until_ = 1;
@@ -3846,8 +3909,16 @@ std::string IRKCaptureComponent::set_next_capture_label(const std::string& value
 }
 
 void IRKCaptureComponent::forget_all_bonds() {
-  bool can_queue;
-  bool worker_available;
+  request_bond_clear();
+}
+
+BondClearResult IRKCaptureComponent::get_bond_clear_result() {
+  MutexGuard lock(state_mutex_);
+  return bond_clear_result_;
+}
+
+BondClearResult IRKCaptureComponent::request_bond_clear() {
+  BondClearResult result;
   {
     MutexGuard lock(state_mutex_);
     // These entries also coalesce disconnect/timer reads and account for unique
@@ -3856,27 +3927,33 @@ void IRKCaptureComponent::forget_all_bonds() {
       entry.in_history = false;
       entry.label.clear();
     }
-    if (bond_clear_pending_) return;
-    worker_available = bond_clear_task_ != nullptr;
-    can_queue = worker_available && host_synced_ && mac_rotation_state_ == MacRotationState::IDLE;
-    if (can_queue) {
+    if (bond_clear_pending_) return bond_clear_result_;
+    if (++bond_clear_result_.operation_id == 0) ++bond_clear_result_.operation_id;
+    bond_clear_result_.history_cleared = true;
+    bond_clear_result_.reason.clear();
+    if (!bond_clear_task_) {
+      bond_clear_result_.state = "failed";
+      bond_clear_result_.reason = "Bond-clear worker unavailable; restart the device to retry.";
+    } else if (!host_synced_) {
+      bond_clear_result_.state = "busy";
+      bond_clear_result_.reason = "Bluetooth is not ready; retry once ready.";
+    } else if (mac_rotation_state_ != MacRotationState::IDLE) {
+      bond_clear_result_.state = "busy";
+      bond_clear_result_.reason = "Bluetooth identity is changing; retry once idle.";
+    } else {
+      bond_clear_result_.state = "pending";
       bond_clear_pending_ = true;
       bond_clear_host_generation_ = host_generation_;
     }
+    result = bond_clear_result_;
   }
-  if (!worker_available) {
-    ESP_LOGW(TAG,
-             "Forget All Bonds: history cleared; stored bonds retained because the "
-             "bond-clear worker is unavailable");
-    return;
+  if (result.state == "pending") {
+    notify_bond_clear_();
+  } else {
+    ESP_LOGW(TAG, "Forget All Bonds: history cleared; stored bonds retained. %s",
+             result.reason.c_str());
   }
-  if (!can_queue) {
-    ESP_LOGW(TAG,
-             "Forget All Bonds: history cleared; BLE is not ready or MAC rotation is active. "
-             "Run it again once BLE is ready to clear stored bonds.");
-    return;
-  }
-  notify_bond_clear_();
+  return result;
 }
 
 void IRKCaptureComponent::notify_bond_clear_() {
@@ -3908,27 +3985,48 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   // main-task advertising starts and MAC rotation throughout the store wipe.
   bool can_clear = false;
   int stop_rc = BLE_HS_EBUSY;
+  uint32_t operation_id;
+  uint32_t host_generation;
+  std::string state = "busy";
+  std::string reason = "Bluetooth maintenance is busy; retry once idle.";
   {
     MutexGuard lock(state_mutex_);
     if (!bond_clear_pending_) return;  // A loop retry may have queued a duplicate.
+    operation_id = bond_clear_result_.operation_id;
+    host_generation = bond_clear_host_generation_;
   }
+  // Call only while holding state_mutex_. A reset may cancel this request and
+  // a new one may start while an unlocked BLE/store operation is returning.
+  const auto still_current = [&]() {
+    return bond_clear_pending_ && bond_clear_result_.operation_id == operation_id &&
+           bond_clear_host_generation_ == host_generation && host_generation_ == host_generation;
+  };
   {
     // Do not block the host behind a main-task operation that may need it.
     BleOpGuard ble_lock(ble_op_mutex_, 0);
     if (ble_lock.acquired()) {
       {
         MutexGuard lock(state_mutex_);
-        can_clear = host_synced_ && host_generation_ == bond_clear_host_generation_ &&
-                    !connected_ && mac_rotation_state_ == MacRotationState::IDLE;
+        if (!still_current()) return;
+        can_clear = host_synced_ && !connected_ && mac_rotation_state_ == MacRotationState::IDLE;
+        if (connected_) reason = "A device is connected; disconnect it and retry.";
       }
       if (can_clear) {
         stop_rc = ble_gap_adv_stop();
         const bool active = ble_gap_adv_active() != 0;
         MutexGuard lock(state_mutex_);
+        if (!still_current()) return;
         advertising_ = active;
-        can_clear = !active && host_synced_ && host_generation_ == bond_clear_host_generation_ &&
-                    !connected_ && mac_rotation_state_ == MacRotationState::IDLE &&
+        can_clear = !active && host_synced_ && !connected_ &&
+                    mac_rotation_state_ == MacRotationState::IDLE &&
                     (stop_rc == 0 || stop_rc == BLE_HS_EALREADY || stop_rc == BLE_HS_EINVAL);
+        if (connected_) {
+          reason = "A device is connected; disconnect it and retry.";
+        } else if (active ||
+                   (stop_rc != 0 && stop_rc != BLE_HS_EALREADY && stop_rc != BLE_HS_EINVAL)) {
+          state = stop_rc == BLE_HS_EBUSY ? "busy" : "failed";
+          reason = "Bluetooth advertising could not stop; retry once idle.";
+        }
       }
     }
   }
@@ -3937,19 +4035,24 @@ void IRKCaptureComponent::handle_forget_bonds_() {
     // Flash work must not hold either component mutex.
     const int rc = ble_store_clear();
     if (rc != 0) {
-      ESP_LOGE(TAG, "Forget All Bonds: ble_store_clear failed rc=%d; run it again to retry", rc);
+      state = "failed";
+      reason = "Bond storage could not be cleared; retry.";
     } else {
-      ESP_LOGI(TAG, "All BLE bonds cleared");
+      state = "succeeded";
+      reason.clear();
     }
-  } else {
-    ESP_LOGW(TAG,
-             "Forget All Bonds: history cleared; stored bonds retained because a peer is "
-             "connected or BLE maintenance is busy (stop rc=%d). Run it again once idle.",
-             stop_rc);
   }
   {
     MutexGuard lock(state_mutex_);
+    if (!still_current()) return;
     bond_clear_pending_ = false;
+    bond_clear_result_.state = state;
+    bond_clear_result_.reason = reason;
+  }
+  if (state == "succeeded") {
+    ESP_LOGI(TAG, "All BLE bonds cleared");
+  } else {
+    ESP_LOGW(TAG, "Forget All Bonds: history cleared; pairings may remain. %s", reason.c_str());
   }
   // Re-evaluate current intent: an OFF request or capture limit reached while
   // the event was queued must not be undone by restoring an old snapshot.

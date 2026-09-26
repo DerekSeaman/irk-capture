@@ -20,6 +20,13 @@
 namespace esphome {
 namespace irk_wizard {
 
+struct CaptureStart {
+  uint32_t operation_id { 0 };
+  std::string state { "idle" };
+  uint32_t boot_id { 0 };
+  uint32_t sequence { 0 };
+};
+
 // A point-in-time copy of everything the wizard UI needs to render. Built on
 // the ESPHome main task (see loop()) and read by esp_http_server's own
 // request-handling task, so it is copied under snapshot_mutex_ on both ends
@@ -39,6 +46,9 @@ struct WizardSnapshot {
   std::string profile { "Heart Sensor" };
   bool advertising { false };
   bool stop_after_capture { false };
+  irk_capture::CaptureResult capture_result;
+  irk_capture::BondClearResult bond_clear;
+  CaptureStart capture_start;
 };
 
 class IRKWizardComponent : public Component {
@@ -72,6 +82,11 @@ class IRKWizardComponent : public Component {
   // task; set_ble_profile() publishes entities directly, so the call itself
   // is deferred to the main loop.
   void set_profile(bool keyboard);
+  // Radio changes are serialized with Home Assistant controls on the main task.
+  void set_advertising(bool on);
+  // Returns a request ID immediately; /api/status acknowledges the authoritative
+  // baseline once the main task has begun the attempt.
+  CaptureStart start_capture();
   // Reboots the ESP32 shortly after the request has answered. Callable from
   // any task; the reboot itself runs on the main loop.
   void reboot();
@@ -130,6 +145,7 @@ class IRKWizardComponent : public Component {
   httpd_handle_t server_ { nullptr };
   SemaphoreHandle_t snapshot_mutex_ { nullptr };
   WizardSnapshot snapshot_;
+  CaptureStart capture_start_;  // Protected by snapshot_mutex_, including HTTP writes
   uint32_t last_snapshot_ms_ { 0 };
   uint32_t last_start_attempt_ms_ { 0 };
   uint8_t start_attempts_ { 0 };

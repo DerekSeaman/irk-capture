@@ -36,6 +36,15 @@ namespace irk_capture {
 
 class IRKCaptureComponent;
 
+// Latest history/bond-clear request. A terminal result remains available until
+// another request starts so HTTP clients can observe asynchronous completion.
+struct BondClearResult {
+  uint32_t operation_id { 0 };
+  std::string state { "idle" };
+  std::string reason;
+  bool history_cleared { false };
+};
+
 // BLE advertising profile options
 enum class BLEProfile : uint8_t {
   HEART_SENSOR = 0,  // Heart Rate Sensor
@@ -147,6 +156,15 @@ class IRKCaptureLabelText : public text::Text, public Component {
 // Copy this provenance with each store read and fallback timer. A later
 // connection must not change whether an older result came from a re-pair.
 enum class CaptureOrigin : uint8_t { UNKNOWN, FRESH, BONDED, REPAIR };
+
+// Last successful genuine capture, retained after transient status and entity
+// updates. boot_id distinguishes a reboot from sequence rollover.
+struct CaptureResult {
+  uint32_t boot_id { 0 };
+  uint32_t sequence { 0 };
+  std::string irk;
+  std::string device_mac;
+};
 
 // Free-function helpers (external linkage). Definitions live in the .cpp.
 int handle_gap_connect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -260,6 +278,10 @@ class IRKCaptureComponent : public Component {
   void start_advertising();
   void stop_advertising();
   void set_advertising_requested(bool requested);
+  CaptureResult get_capture_result();
+  // Main-task wizard action: claim a baseline and request advertising in the
+  // same state transaction, then let the normal BLE start gates run.
+  CaptureResult begin_capture();
   void refresh_mac();
 
   // Rotates the address and adopts a name carrying the profile and the new
@@ -279,7 +301,8 @@ class IRKCaptureComponent : public Component {
 
   // Sensor publishing helper
   void publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str,
-                              uint32_t connection_generation = 0, bool capture_event = false);
+                              uint32_t connection_generation = 0, bool capture_event = false,
+                              bool stop_after_result = false);
   void publish_effective_mac();
 
   // New in 1.7.0: wizard-facing runtime controls (see README "Home Assistant
@@ -298,6 +321,8 @@ class IRKCaptureComponent : public Component {
   // Clears visible history, retaining deduplication/capture accounting. The
   // NimBLE task clears stored bonds only when no peer is connected.
   void forget_all_bonds();
+  BondClearResult request_bond_clear();
+  BondClearResult get_bond_clear_result();
   // This session's captures as a JSON array of {mac, irk, label, reconnects}.
   // Served over HTTP by the wizard rather than published as an entity: Home
   // Assistant caps a state at 255 characters and shows anything longer as
@@ -387,6 +412,8 @@ class IRKCaptureComponent : public Component {
   uint32_t capture_events_ { 0 };         // IRK publications this session
   uint32_t unique_devices_ { 0 };         // New identity addresses this session
   uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
+  CaptureResult capture_result_;
+  uint32_t capture_result_generation_ { 0 };  // Coalesces accepted successful results
 
   // A worker queues wake-ups onto NimBLE's task without blocking the main task
   // on queue capacity. Bond deletion stays serialized with pairing callbacks.
@@ -396,6 +423,7 @@ class IRKCaptureComponent : public Component {
   TaskHandle_t bond_clear_task_ { nullptr };  // Initialized once in setup()
   bool bond_clear_pending_ { false };
   uint32_t bond_clear_host_generation_ { 0 };
+  BondClearResult bond_clear_result_;
 
   // Wizard-facing session state (see README). Protected by state_mutex_ like
   // the rest of this block.
@@ -481,7 +509,8 @@ class IRKCaptureComponent : public Component {
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
   //           suppress_next_adv_, adv_restart_time_, capture_events_,
   //           unique_devices_, irk_cache_ (deduplication state),
-  //           bond_clear_pending_, bond_clear_host_generation_,
+  //           capture_result_, capture_result_generation_,
+  //           bond_clear_pending_, bond_clear_host_generation_, bond_clear_result_,
   //           connection_generation_, connection_origin_,
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
   //           connection_timeout_,

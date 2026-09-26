@@ -282,6 +282,14 @@ The package adds **Stop Advertising After Capture** and **Next Capture Label** a
 the UI. It walks through picking the target device, labelling the capture, clearing any old
 pairing, pairing, and collecting the key.
 
+You can return to the wizard after using your phone's Bluetooth settings: it remembers a
+successful capture even after the Status changes. The final step keeps the same key available
+to copy until you start another capture.
+
+**Clear Pairings** clears the session history and reports when stored pairings have actually
+been removed. If a device is connected or Bluetooth is busy, follow the displayed retry
+instructions; clearing the history alone does not mean the pairings were removed.
+
 The step that matters most is the one people get stuck on: knowing what name to look for. The name
 on air is not always the configured BLE name. The Keyboard profile boots as **Logitech K380**, and
 a rename or a **Refresh BLE Identity** replaces either profile's name until the next reboot

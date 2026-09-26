@@ -257,6 +257,9 @@ jobs:
           wifi:
             ssid: "ci-ssid"
             password: "ci-password"
+            ap:
+              ssid: "IRK CI fallback"
+              password: "ci-ap-password"
           external_components:
             - source:
                 type: local

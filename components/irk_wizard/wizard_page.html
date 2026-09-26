@@ -71,6 +71,7 @@ ol.pair li{margin-bottom:5px}
 </style></head><body><div class="wrap">
 
 <div id="offline" class="banner hide">Device is rebooting or unreachable - reconnecting...</div>
+<div id="actionError" class="banner hide" role="alert"></div>
 
 <!-- ============ WIZARD VIEW ============ -->
 <div id="wizView" class="hide">
@@ -110,8 +111,8 @@ ol.pair li{margin-bottom:5px}
       pairing and no new key will be captured. This is the most common reason a capture never happens.</p>
     <div class="callout">On your device open <b>Bluetooth settings</b>, find the prior advertised
       name and choose <b>Forget This Device</b>. Apple tip: tap the &#9432; first. If it is not listed, nothing to do.</div>
-    <div class="btnrow"><button class="danger" onclick="wizForget()">Clear Pairings</button></div>
-    <p class="help ok hide" id="forgetDone">Cleared on this device.</p>
+    <div class="btnrow"><button class="danger" id="wizForgetBtn" onclick="wizForget()">Clear Pairings</button></div>
+    <p class="help hide" id="forgetDone" role="status"></p>
     <div class="btnrow"><button class="primary" onclick="wizStart()">Next: start pairing</button>
       <button onclick="wizGo(2)">Back</button></div>
   </div>
@@ -178,6 +179,7 @@ ol.pair li{margin-bottom:5px}
       <button id="freshIdBtn">Refresh BLE Identity</button>
       <button class="danger" id="forgetBtn">Forget All Bonds</button>
     </div>
+    <p class="help hide" id="panelForgetDone" role="status"></p>
   </div>
 
   <button class="big primary" onclick="showWizard()">Start IRK Wizard &rarr;</button>
@@ -198,23 +200,59 @@ var wizStep = 0;          // 0 = panel view
 var lastData = null;
 var labelDirty = false;
 var awaitingCapture = false;
-var irkAtStart = '';
-var sawNewAttempt = false; // a non-"captured" status seen since wizStart()
+var captureRun = 0;
+var captureAttempt = null;
+var acceptedCapture = null;
+var captureMessage = '';
+var pendingClear = null;
+var writeQueue = Promise.resolve();
+var statusEpoch = 0;
+var refreshInFlight = null;
+var refreshAgain = false;
 var failCount = 0;
 
-async function post(url,body){
-  try{
-    await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
-  }catch(e){}
-  refresh();
+function showError(e){
+  el('actionError').textContent=e.message || 'Request failed. Please try again.';
+  el('actionError').classList.remove('hide');
+}
+function clearError(){ el('actionError').classList.add('hide'); }
+function post(url,body){
+  // Preserve user control order, especially START followed by Stop or Back.
+  var request=writeQueue.then(async function(){
+    ++statusEpoch;
+    try{
+      var r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+      var text=await r.text();
+      if(!r.ok) throw new Error('Request failed ('+r.status+'). '+text.slice(0,180));
+      return text ? JSON.parse(text) : {};
+    }finally{ ++statusEpoch; }
+  });
+  // Keep a rejected request from blocking subsequent controls.
+  writeQueue=request.catch(function(){});
+  return request;
+}
+async function action(url,body){
+  clearError();
+  try{ var result=await post(url,body); refresh(); return result; }
+  catch(e){ showError(e); return null; }
+}
+function newer(a,b){ var delta=(a-b)>>>0; return delta!==0 && delta<0x80000000; }
+function cancelCapture(stop){
+  var active=awaitingCapture;
+  ++captureRun; awaitingCapture=false; captureAttempt=null;
+  if(stop && active) action('/api/advertising',{on:false});
+}
+function captureFailed(message){
+  cancelCapture(false); captureMessage=message;
 }
 
 /* ---------- view switching ---------- */
-function showPanel(){ wizStep=0; el('wizView').classList.add('hide'); el('panelView').classList.remove('hide');
+function showPanel(){ cancelCapture(true); wizStep=0; el('wizView').classList.add('hide'); el('panelView').classList.remove('hide');
   window.scrollTo(0,0); refresh(); }
-function showWizard(){ wizGo(1); el('panelView').classList.add('hide'); el('wizView').classList.remove('hide');
+function showWizard(){ cancelCapture(true); acceptedCapture=null; wizGo(1); el('panelView').classList.add('hide'); el('wizView').classList.remove('hide');
   window.scrollTo(0,0); }
 function wizGo(n){
+  if(wizStep===4 && n!==4 && n!==5) cancelCapture(true);
   wizStep=n;
   for(var i=1;i<=5;i++) el('step'+i).classList.toggle('hide', i!==n);
   document.querySelectorAll('.steps .s').forEach(function(s){
@@ -226,24 +264,62 @@ function wizGo(n){
 }
 
 /* ---------- wizard actions ---------- */
-function wizSaveLabel(){ post('/api/label',{label:el('wizLabel').value}); wizGo(3); }
-function wizForget(){ post('/api/forget_bonds',{}); el('forgetDone').classList.remove('hide'); }
-function wizStart(){
-  // Remember the key showing now: entering this step while a previous
-  // capture is still inside its "captured" hold would otherwise jump
-  // straight to step 5 with that older key.
-  irkAtStart = lastData ? (lastData.irk || '') : '';
-  // A "captured" already showing belongs to an earlier capture. Once any
-  // other status has been seen, the next "captured" is this attempt's, even
-  // when it is the same device again with the same key.
-  sawNewAttempt = !lastData || lastData.status !== 'captured';
-  awaitingCapture = true;
-  post('/api/advertising',{on:true});
-  wizGo(4);
+async function wizSaveLabel(){
+  if(await action('/api/label',{label:el('wizLabel').value})) wizGo(3);
 }
-function wizFresh(){ post('/api/fresh_identity',{}); }
-function wizStop(){ awaitingCapture=false; post('/api/advertising',{on:false}); }
-function wizRestart(){ awaitingCapture=false; el('wizLabel').value=''; wizGo(1); }
+function clearMessage(text,success){
+  ['forgetDone','panelForgetDone'].forEach(function(id){
+    el(id).textContent=text; el(id).classList.remove('hide'); el(id).classList.toggle('ok',!!success);
+  });
+  el('wizForgetBtn').disabled=el('forgetBtn').disabled=!!pendingClear;
+}
+function clearOutcome(op){
+  if(op.state==='pending'){
+    clearMessage('Clearing pairings...'); return;
+  }
+  pendingClear=null;
+  if(op.state==='succeeded') clearMessage(op.history_cleared ? 'Pairings and session history cleared.' : 'Pairings cleared.',true);
+  else clearMessage((op.history_cleared ? 'History cleared; ' : '')+
+    (op.state==='busy' ? 'pairings retained. ' : 'pairings may remain. ')+
+    (op.reason || 'The request was cancelled. Please try again.'));
+}
+async function wizForget(){
+  if(pendingClear) return;
+  var request={operation_id:null,boot_id:null}; pendingClear=request;
+  clearMessage('Clearing pairings...'); clearError();
+  try{
+    var op=await post('/api/forget_bonds',{});
+    request.operation_id=op.operation_id; request.boot_id=op.boot_id;
+    clearOutcome(op); refresh();
+  }catch(e){
+    pendingClear=null; clearMessage('Could not confirm that pairings were cleared. Please try again.'); showError(e);
+  }
+}
+async function wizStart(){
+  cancelCapture(true);
+  acceptedCapture=null; captureMessage='Starting advertising...';
+  var attempt={run:captureRun,operation_id:null,boot_id:null,baseline:null};
+  captureAttempt=attempt; awaitingCapture=true; clearError();
+  wizGo(4);
+  try{
+    var op=await post('/api/capture/start',{});
+    if(attempt.run!==captureRun) return;
+    attempt.operation_id=op.operation_id; attempt.boot_id=op.boot_id;
+    refresh();
+  }catch(e){
+    if(attempt.run!==captureRun) return;
+    captureFailed('Could not start capture. Go back a step and try again.');
+    // A lost response may still have delivered START. Queue OFF to cancel it.
+    action('/api/advertising',{on:false});
+    showError(e); if(lastData) render(lastData);
+  }
+}
+function wizFresh(){ action('/api/fresh_identity',{}); }
+function wizStop(){
+  cancelCapture(false); captureMessage='Capture stopped. Go back a step to start again.';
+  action('/api/advertising',{on:false}); if(lastData) render(lastData);
+}
+function wizRestart(){ cancelCapture(true); acceptedCapture=null; el('wizLabel').value=''; wizGo(1); }
 
 function copyText(txt, done){
   // navigator.clipboard is unavailable over plain HTTP, so fall back.
@@ -257,8 +333,9 @@ function copyText(txt, done){
   }catch(e){ done(false); }
 }
 function copyIrk(){
+  if(!acceptedCapture) return;
   var btn=el('wizCopy');
-  copyText(el('wizIrk').textContent, function(ok){
+  copyText(acceptedCapture.irk, function(ok){
     btn.textContent = ok ? 'Copied' : 'Failed';
     setTimeout(function(){ btn.textContent='Copy'; }, 1500);
   });
@@ -273,22 +350,22 @@ function pairSteps(){
 
 /* ---------- panel wiring ---------- */
 el('label').addEventListener('input',function(){labelDirty=true});
-el('label').addEventListener('blur',function(){post('/api/label',{label:el('label').value});labelDirty=false});
-el('profile').addEventListener('change',function(){post('/api/profile',{profile:el('profile').value})});
-el('wizProfile').addEventListener('change',function(){post('/api/profile',{profile:el('wizProfile').value})});
+el('label').addEventListener('blur',function(){action('/api/label',{label:el('label').value});labelDirty=false});
+el('profile').addEventListener('change',function(){action('/api/profile',{profile:el('profile').value})});
+el('wizProfile').addEventListener('change',function(){action('/api/profile',{profile:el('wizProfile').value})});
 el('advBtn').addEventListener('click',function(){
-  post('/api/advertising',{on: el('advBtn').dataset.on !== '1'});
+  action('/api/advertising',{on: el('advBtn').dataset.on !== '1'});
 });
-el('freshIdBtn').addEventListener('click',function(){post('/api/fresh_identity',{})});
+el('freshIdBtn').addEventListener('click',function(){action('/api/fresh_identity',{})});
 el('forgetBtn').addEventListener('click',function(){
-  if(confirm('Clear all cached bonds and this session history?')) post('/api/forget_bonds',{});
+  if(confirm('Clear all cached bonds and this session history?')) wizForget();
 });
 el('rebootBtn').addEventListener('click',function(){
   if(confirm('Reboot the ESP32? The list of IRKs captured in this session will be cleared.'))
-    post('/api/reboot',{});
+    action('/api/reboot',{});
 });
 el('stopAfterSwitch').addEventListener('click',function(){
-  post('/api/stop_after_capture',{enabled:!el('stopAfterSwitch').classList.contains('on')});
+  action('/api/stop_after_capture',{enabled:!el('stopAfterSwitch').classList.contains('on')});
 });
 
 /* ---------- rendering ---------- */
@@ -300,6 +377,17 @@ function setPill(node,status){
 
 function render(d){
   var advName = d.advertised_name || '-';
+
+  if(pendingClear && pendingClear.operation_id!==null){
+    var clear=d.bond_clear;
+    if(d.boot_id!==pendingClear.boot_id){
+      pendingClear=null; clearMessage('Device rebooted before clearing could be confirmed. Please try again.');
+    } else if(clear && clear.operation_id===pendingClear.operation_id){
+      clearOutcome(clear);
+    } else if(clear && newer(clear.operation_id,pendingClear.operation_id)){
+      pendingClear=null; clearMessage('Another clear request replaced this one. Please try again.');
+    }
+  }
 
   /* panel */
   el('profileName').textContent = d.profile || '-';
@@ -362,7 +450,32 @@ function render(d){
       var li=document.createElement('li'); li.textContent=t; ol.appendChild(li);
     });
     var hint=el('wizHint');
-    if(d.status==='no_irk'){
+    var attempt=captureAttempt;
+    if(awaitingCapture && attempt && attempt.operation_id!==null){
+      var start=d.capture_start;
+      if(d.boot_id!==attempt.boot_id){
+        captureFailed('Device rebooted. Go back a step and start pairing again.');
+      } else if(start && newer(start.operation_id,attempt.operation_id)){
+        captureFailed('Another capture request replaced this one. Go back a step to start again.');
+      } else if(start && start.operation_id===attempt.operation_id){
+        if(start.state==='ready' && start.boot_id===attempt.boot_id){
+          attempt.baseline=start.sequence;
+          var result=d.capture_result;
+          if(result && result.boot_id===attempt.boot_id && newer(result.sequence,attempt.baseline) &&
+             /^[0-9a-f]{32}$/i.test(result.irk || '')){
+            // Freeze the accepted key and MAC; later captures and failures belong
+            // to subsequent runs, even when the browser missed the status hold.
+            acceptedCapture={boot_id:result.boot_id,sequence:result.sequence,irk:result.irk,device_mac:result.device_mac};
+            cancelCapture(false); wizGo(5); return;
+          }
+        } else if(start.state==='cancelled' || start.state==='failed'){
+          captureFailed('Capture start was '+start.state+'. Go back a step and try again.');
+        }
+      }
+    }
+    if(!awaitingCapture || !captureAttempt || captureAttempt.baseline===null){
+      hint.textContent=captureMessage;
+    } else if(d.status==='no_irk'){
       hint.textContent='Your device paired but did not hand over an identity key. '+
         'Forget this device in its Bluetooth settings, then go back a step and try again.';
     } else if(d.status==='pairing'||d.status==='capturing'){
@@ -372,27 +485,33 @@ function render(d){
     } else {
       hint.textContent='Waiting for your device to connect. Keep this page open.';
     }
-    // The capture itself is what advances the wizard.
-    if(awaitingCapture && d.status!=='captured') sawNewAttempt=true;
-    if(awaitingCapture && d.status==='captured' && d.irk && (sawNewAttempt || d.irk !== irkAtStart)){
-      awaitingCapture=false; wizGo(5);
-    }
   }
 
-  if(wizStep===5) el('wizIrk').textContent = d.irk || '-';
+  if(wizStep===5 && acceptedCapture) el('wizIrk').textContent = acceptedCapture.irk;
 }
 
-async function refresh(){
-  try{
-    var r=await fetch('/api/status');
-    if(!r.ok) throw new Error('http');
-    var d=await r.json();
-    failCount=0; el('offline').classList.add('hide');
-    lastData=d; render(d);
-  }catch(e){
-    // A profile change reboots the device; say so instead of going silent.
-    if(++failCount>2) el('offline').classList.remove('hide');
-  }
+function refresh(){
+  // Browser suspension and manual refreshes can overlap interval polls. Keep one
+  // in flight and discard snapshots that predate a completed control request.
+  if(refreshInFlight){ refreshAgain=true; return refreshInFlight; }
+  var epoch=statusEpoch;
+  refreshInFlight=(async function(){
+    try{
+      var r=await fetch('/api/status');
+      if(!r.ok) throw new Error('http');
+      var d=await r.json();
+      if(epoch!==statusEpoch) return;
+      failCount=0; el('offline').classList.add('hide');
+      lastData=d; render(d);
+    }catch(e){
+      // A profile change reboots the device; say so instead of going silent.
+      if(epoch===statusEpoch && ++failCount>2) el('offline').classList.remove('hide');
+    }finally{
+      refreshInFlight=null;
+      if(refreshAgain){ refreshAgain=false; refresh(); }
+    }
+  })();
+  return refreshInFlight;
 }
 refresh();
 setInterval(refresh, 1200);

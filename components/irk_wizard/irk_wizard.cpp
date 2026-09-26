@@ -5,6 +5,9 @@
 #include <cstring>
 
 #include "esphome/components/network/util.h"
+#if defined(USE_WIFI) && defined(USE_WIFI_AP)
+#include "esphome/components/wifi/wifi_component.h"
+#endif
 #include "wizard_util.h"
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
@@ -150,9 +153,53 @@ void IRKWizardComponent::reboot() {
   this->set_timeout("reboot", 500, []() { App.safe_reboot(); });
 }
 
+void IRKWizardComponent::set_advertising(bool on) {
+  if (!on) {
+    MutexGuard lock(snapshot_mutex_);
+    if (capture_start_.state == "pending" || capture_start_.state == "ready")
+      capture_start_.state = "cancelled";
+  }
+  this->defer([this, on]() {
+    if (irk_capture_) irk_capture_->set_advertising_requested(on);
+  });
+}
+
+CaptureStart IRKWizardComponent::start_capture() {
+  const uint32_t boot_id = irk_capture_ ? irk_capture_->get_capture_result().boot_id : 0;
+  CaptureStart request;
+  {
+    MutexGuard lock(snapshot_mutex_);
+    request.operation_id = capture_start_.operation_id + 1;
+    if (request.operation_id == 0) request.operation_id = 1;
+    request.state = "pending";
+    request.boot_id = boot_id;
+    capture_start_ = request;
+  }
+  this->defer([this, id = request.operation_id]() {
+    {
+      MutexGuard lock(snapshot_mutex_);
+      if (capture_start_.operation_id != id || capture_start_.state != "pending") return;
+    }
+    const bool available = irk_capture_ && !irk_capture_->is_failed();
+    // The core takes the baseline and installs ON intent in one state lock.
+    // A cached status response could predate a capture by several seconds.
+    const auto baseline = available ? irk_capture_->begin_capture() : irk_capture::CaptureResult {};
+    MutexGuard lock(snapshot_mutex_);
+    // OFF or another start can arrive while the radio operation runs. Its
+    // queued main-task command still owns the final intent and acknowledgement.
+    if (capture_start_.operation_id != id || capture_start_.state != "pending") return;
+    capture_start_.boot_id = baseline.boot_id;
+    capture_start_.sequence = baseline.sequence;
+    capture_start_.state = available ? "ready" : "failed";
+  });
+  return request;
+}
+
 WizardSnapshot IRKWizardComponent::get_snapshot() {
   MutexGuard lock(snapshot_mutex_);
-  return snapshot_;
+  WizardSnapshot result = snapshot_;
+  result.capture_start = capture_start_;
+  return result;
 }
 
 void IRKWizardComponent::refresh_snapshot_() {
@@ -173,6 +220,8 @@ void IRKWizardComponent::refresh_snapshot_() {
   next.advertised_name = irk_capture_->get_ble_name();
   next.advertising = irk_capture_->is_advertising_requested();
   next.stop_after_capture = irk_capture_->get_stop_after_capture();
+  next.capture_result = irk_capture_->get_capture_result();
+  next.bond_clear = irk_capture_->get_bond_clear_result();
   if (next.history_json.empty()) next.history_json = "[]";
 
   MutexGuard lock(snapshot_mutex_);
@@ -184,6 +233,7 @@ void IRKWizardComponent::refresh_snapshot_() {
 static esp_err_t handle_index(httpd_req_t* req);
 static esp_err_t handle_get_status(httpd_req_t* req);
 static esp_err_t handle_post_advertising(httpd_req_t* req);
+static esp_err_t handle_post_capture_start(httpd_req_t* req);
 static esp_err_t handle_post_profile(httpd_req_t* req);
 static esp_err_t handle_post_label(httpd_req_t* req);
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req);
@@ -203,6 +253,12 @@ static esp_err_t send_json(httpd_req_t* req, const std::string& body) {
 
 static esp_err_t send_ok(httpd_req_t* req) {
   return send_json(req, "{\"ok\":true}");
+}
+
+static std::string bond_clear_json(const irk_capture::BondClearResult& result) {
+  return "{\"operation_id\":" + std::to_string(result.operation_id) + ",\"state\":\"" +
+         json_escape(result.state) + "\",\"reason\":\"" + json_escape(result.reason) +
+         "\",\"history_cleared\":" + (result.history_cleared ? "true" : "false") + "}";
 }
 
 bool IRKWizardComponent::start_server_() {
@@ -236,6 +292,7 @@ bool IRKWizardComponent::start_server_() {
     { "/", HTTP_GET, handle_index },
     { "/api/status", HTTP_GET, handle_get_status },
     { "/api/advertising", HTTP_POST, handle_post_advertising },
+    { "/api/capture/start", HTTP_POST, handle_post_capture_start },
     { "/api/profile", HTTP_POST, handle_post_profile },
     { "/api/label", HTTP_POST, handle_post_label },
     { "/api/forget_bonds", HTTP_POST, handle_post_forget_bonds },
@@ -279,12 +336,20 @@ void IRKWizardComponent::loop() {
     // ESP-IDF/LWIP integration that fails with EHOSTDOWN until the default
     // network interface (WiFi STA) is actually up - a loopback pseudo-netif
     // existing (CONFIG_LWIP_NETIF_LOOPBACK) is not sufficient on its own.
-    // Gate on network::is_connected() instead of guessing a fixed delay.
-    if (!network::is_connected()) return;
+    // The fallback AP is also a usable interface, even without a station link.
+    bool ready = network::is_connected();
+#if defined(USE_WIFI) && defined(USE_WIFI_AP)
+    ready = ready || (wifi::global_wifi_component && wifi::global_wifi_component->is_ap_active());
+#endif
+    if (!ready) return;
     uint32_t now = millis();
     if (now - last_start_attempt_ms_ < 500) return;
     last_start_attempt_ms_ = now;
     start_attempts_++;
+    // irk_capture has a later setup priority than the wizard. Refresh after
+    // all setup() calls, before HTTP can expose the provisional boot ID/state.
+    refresh_snapshot_();
+    last_snapshot_ms_ = now;
     if (start_server_()) {
       ESP_LOGI(TAG, "Wizard listening on port %u", port_);
     } else if (start_attempts_ >= 20) {
@@ -328,6 +393,7 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   WizardSnapshot s = self->get_snapshot();
 
   std::string json = "{";
+  json += "\"boot_id\":" + std::to_string(s.capture_result.boot_id) + ",";
   json += "\"status\":\"" + json_escape(s.status) + "\",";
   json += "\"next_capture_label\":\"" + json_escape(s.next_capture_label) + "\",";
   json += "\"advertised_name\":\"" + json_escape(s.advertised_name) + "\",";
@@ -337,7 +403,16 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   json += "\"device_mac\":\"" + json_escape(s.device_mac) + "\",";
   json += "\"irk\":\"" + json_escape(s.irk) + "\",";
   json += "\"stop_after_capture\":" + std::string(s.stop_after_capture ? "true" : "false") + ",";
-  json += "\"history\":" + (s.history_json.empty() ? std::string("[]") : s.history_json);
+  json += "\"history\":" + (s.history_json.empty() ? std::string("[]") : s.history_json) + ",";
+  json += "\"capture_result\":{\"boot_id\":" + std::to_string(s.capture_result.boot_id) +
+          ",\"sequence\":" + std::to_string(s.capture_result.sequence) + ",\"irk\":\"" +
+          json_escape(s.capture_result.irk) + "\",\"device_mac\":\"" +
+          json_escape(s.capture_result.device_mac) + "\"},";
+  json += "\"capture_start\":{\"operation_id\":" + std::to_string(s.capture_start.operation_id) +
+          ",\"state\":\"" + s.capture_start.state +
+          "\",\"boot_id\":" + std::to_string(s.capture_start.boot_id) +
+          ",\"sequence\":" + std::to_string(s.capture_start.sequence) + "},";
+  json += "\"bond_clear\":" + bond_clear_json(s.bond_clear);
   json += "}";
   return send_json(req, json);
 }
@@ -348,10 +423,21 @@ static esp_err_t handle_post_advertising(httpd_req_t* req) {
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   std::string body = read_request_body(req);
   bool on = false;
-  if (json_extract_bool(body, "on", on) && self->irk_capture()) {
-    self->irk_capture()->set_advertising_requested(on);
+  if (!json_extract_bool(body, "on", on)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return send_json(req, "{\"error\":\"on must be a boolean\"}");
   }
+  self->set_advertising(on);
   return send_ok(req);
+}
+
+static esp_err_t handle_post_capture_start(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  const auto start = static_cast<IRKWizardComponent*>(req->user_ctx)->start_capture();
+  httpd_resp_set_status(req, "202 Accepted");
+  return send_json(req, "{\"operation_id\":" + std::to_string(start.operation_id) +
+                            ",\"boot_id\":" + std::to_string(start.boot_id) + "}");
 }
 
 static esp_err_t handle_post_profile(httpd_req_t* req) {
@@ -386,8 +472,16 @@ static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
   if (!json_request(req)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  if (self->irk_capture()) self->irk_capture()->forget_all_bonds();
-  return send_ok(req);
+  if (!self->irk_capture()) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return send_json(req, "{\"error\":\"Capture component unavailable\"}");
+  }
+  const auto result = self->irk_capture()->request_bond_clear();
+  std::string json = bond_clear_json(result);
+  json.pop_back();
+  json += ",\"boot_id\":" + std::to_string(self->irk_capture()->get_capture_result().boot_id) + "}";
+  if (result.state == "pending") httpd_resp_set_status(req, "202 Accepted");
+  return send_json(req, json);
 }
 
 static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
