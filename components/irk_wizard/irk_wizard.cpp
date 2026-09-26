@@ -1,0 +1,600 @@
+#include "irk_wizard.h"
+
+#ifdef USE_ESP32
+
+#include <cstring>
+
+#include "esphome/components/network/util.h"
+#if defined(USE_WIFI) && defined(USE_WIFI_AP)
+#include "esphome/components/wifi/wifi_component.h"
+#endif
+#include "wizard_util.h"
+#include "esphome/core/application.h"
+#include "esphome/core/log.h"
+
+namespace esphome {
+namespace irk_wizard {
+
+static const char* const TAG = "irk_wizard";
+
+//======================== Thread safety ========================
+// Mirrors irk_capture's MutexGuard: RAII wrapper so every lock/unlock pair
+// is exception- and early-return-safe.
+class MutexGuard {
+ public:
+  explicit MutexGuard(SemaphoreHandle_t mutex) : mutex_(mutex) {
+    if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
+  }
+  ~MutexGuard() {
+    if (mutex_) xSemaphoreGive(mutex_);
+  }
+  MutexGuard(const MutexGuard&) = delete;
+  MutexGuard& operator=(const MutexGuard&) = delete;
+
+ private:
+  SemaphoreHandle_t mutex_;
+};
+
+static esp_err_t send_unauthorized(httpd_req_t* req) {
+  httpd_resp_set_status(req, "401 Unauthorized");
+  httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"IRK Capture\"");
+  return httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
+}
+
+// Returns true when the request may proceed. On failure it has already sent
+// the response, so the handler must just return ESP_OK.
+static bool authorized(httpd_req_t* req) {
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  const std::string& expected = self->expected_auth();
+  if (expected.empty()) {
+    // The config schema requires credentials, so this means set_auth() never
+    // ran. Refuse rather than serve captured keys to anyone who asks.
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Wizard credentials not configured");
+    return false;
+  }
+
+  // Requests are handled one at a time on httpd's task, so the throttle
+  // needs no locking.
+  AuthThrottle& throttle = self->auth_throttle();
+  const uint32_t now = millis();
+  if (throttle.locked(now)) {
+    httpd_resp_set_status(req, "429 Too Many Requests");
+    httpd_resp_send(req, "Too many failed attempts, try again shortly", HTTPD_RESP_USE_STRLEN);
+    return false;
+  }
+
+  size_t len = httpd_req_get_hdr_value_len(req, "Authorization");
+  if (len == 0 || len > 256) {
+    // No header at all is a browser's first request, not a guess.
+    if (len > 256) throttle.fail(now);
+    send_unauthorized(req);
+    return false;
+  }
+  std::string got;
+  got.resize(len + 1);
+  if (httpd_req_get_hdr_value_str(req, "Authorization", &got[0], len + 1) != ESP_OK) {
+    send_unauthorized(req);
+    return false;
+  }
+  got.resize(len);
+  if (!secure_equals(got, expected)) {
+    throttle.fail(now);
+    ESP_LOGW(TAG, "Rejected request with bad credentials%s",
+             throttle.locked(now) ? "; locking out further attempts briefly" : "");
+    send_unauthorized(req);
+    return false;
+  }
+  throttle.ok();
+  self->note_request();
+  return true;
+}
+
+// CSRF defense for the state-changing endpoints. A cross-origin <form> POST
+// can only send the CORS-safelisted content types (text/plain,
+// multipart/form-data, application/x-www-form-urlencoded); requiring JSON
+// forces a preflight, which this server never answers, so a hostile page
+// can't reach these handlers even though the browser sends LAN requests.
+static bool json_request(httpd_req_t* req) {
+  char buf[64];
+  if (httpd_req_get_hdr_value_str(req, "Content-Type", buf, sizeof(buf)) != ESP_OK ||
+      !is_json_content_type(buf)) {
+    httpd_resp_set_status(req, "415 Unsupported Media Type");
+    httpd_resp_send(req, "Content-Type must be application/json", HTTPD_RESP_USE_STRLEN);
+    return false;
+  }
+  return true;
+}
+
+static std::string read_request_body(httpd_req_t* req) {
+  if (req->content_len == 0 || req->content_len > 512) return "";
+  std::string body;
+  body.resize(req->content_len);
+  int received = 0;
+  while (received < (int) req->content_len) {
+    int r = httpd_req_recv(req, &body[received], req->content_len - received);
+    if (r <= 0) return "";
+    received += r;
+  }
+  return body;
+}
+
+//======================== Snapshot ========================
+
+void IRKWizardComponent::set_auth(const std::string& username, const std::string& password) {
+  expected_auth_ = "Basic " + base64_encode(username + ":" + password);
+}
+
+void IRKWizardComponent::fresh_identity() {
+  // irk_capture owns the naming: it derives the name from the address that
+  // actually took effect, which only the rotation knows. Deferring keeps the
+  // BLE work off esp_http_server's task and lets this request answer first, so
+  // the page gets its response instead of the connection dropping mid-reply.
+  this->defer([this]() {
+    if (irk_capture_) irk_capture_->refresh_identity();
+  });
+}
+
+void IRKWizardComponent::set_profile(bool keyboard) {
+  // set_ble_profile() publishes the BLE Profile and BLE Device Name entities
+  // itself rather than staging them, and entity publishes belong on the main
+  // task. Deferring also lets this request answer before the reboot the
+  // switch schedules.
+  this->defer([this, keyboard]() {
+    const auto requested =
+        keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
+    if (irk_capture_) irk_capture_->set_ble_profile(requested);
+    // A failed NVS save restores the old profile and does not reboot. Allow a
+    // retry then; successful changes remain reserved until the new boot.
+    if (!irk_capture_ || irk_capture_->get_ble_profile() != requested) release_profile_change();
+  });
+}
+
+void IRKWizardComponent::reboot() {
+  // App.safe_reboot() tears down every component, so it must run on the main
+  // task. The short delay lets this request's response reach the browser
+  // first, and the fixed name folds repeated presses into one reboot.
+  this->set_timeout("reboot", 500, []() { App.safe_reboot(); });
+}
+
+void IRKWizardComponent::set_advertising(bool on) {
+  if (!on) {
+    MutexGuard lock(snapshot_mutex_);
+    if (capture_start_.state == "pending" || capture_start_.state == "ready")
+      capture_start_.state = "cancelled";
+  }
+  this->defer([this, on]() {
+    if (irk_capture_) irk_capture_->set_advertising_requested(on);
+  });
+}
+
+CaptureStart IRKWizardComponent::start_capture() {
+  const uint32_t boot_id = irk_capture_ ? irk_capture_->get_capture_result().boot_id : 0;
+  CaptureStart request;
+  {
+    MutexGuard lock(snapshot_mutex_);
+    request.operation_id = capture_start_.operation_id + 1;
+    if (request.operation_id == 0) request.operation_id = 1;
+    request.state = "pending";
+    request.boot_id = boot_id;
+    capture_start_ = request;
+  }
+  this->defer([this, id = request.operation_id]() {
+    {
+      MutexGuard lock(snapshot_mutex_);
+      if (capture_start_.operation_id != id || capture_start_.state != "pending") return;
+    }
+    const bool available = irk_capture_ && !irk_capture_->is_failed();
+    // The core takes the baseline and installs ON intent in one state lock.
+    // A cached status response could predate a capture by several seconds.
+    const auto baseline = available ? irk_capture_->begin_capture() : irk_capture::CaptureResult {};
+    MutexGuard lock(snapshot_mutex_);
+    // OFF or another start can arrive while the radio operation runs. Its
+    // queued main-task command still owns the final intent and acknowledgement.
+    if (capture_start_.operation_id != id || capture_start_.state != "pending") return;
+    capture_start_.boot_id = baseline.boot_id;
+    capture_start_.sequence = baseline.sequence;
+    capture_start_.state = available ? "ready" : "failed";
+  });
+  return request;
+}
+
+WizardSnapshot IRKWizardComponent::get_snapshot() {
+  MutexGuard lock(snapshot_mutex_);
+  WizardSnapshot result = snapshot_;
+  result.capture_start = capture_start_;
+  return result;
+}
+
+void IRKWizardComponent::refresh_snapshot_() {
+  if (!irk_capture_) return;
+  WizardSnapshot next;
+  next.status = status_sensor_ ? status_sensor_->state : "idle";
+  next.history_json = irk_capture_->build_history_json();
+  next.irk = irk_sensor_ ? irk_sensor_->state : "";
+  next.device_mac = device_mac_sensor_ ? device_mac_sensor_->state : "";
+  next.effective_mac = effective_mac_sensor_ ? effective_mac_sensor_->state : "";
+  next.next_capture_label = irk_capture_->get_next_capture_label();
+  const bool keyboard = irk_capture_->get_ble_profile() == irk_capture::BLEProfile::KEYBOARD;
+  next.profile = keyboard ? "Keyboard" : "Heart Sensor";
+  // get_ble_name() is the name on air, already accounting for the Keyboard
+  // profile's "Logitech K380" and for anything that has replaced it since
+  // boot. Deciding it here instead would send the user hunting for a name the
+  // device stopped advertising the moment the identity was refreshed.
+  next.advertised_name = irk_capture_->get_ble_name();
+  next.advertising = irk_capture_->is_advertising_requested();
+  next.stop_after_capture = irk_capture_->get_stop_after_capture();
+  next.capture_result = irk_capture_->get_capture_result();
+  next.bond_clear = irk_capture_->get_bond_clear_result();
+  if (next.history_json.empty()) next.history_json = "[]";
+
+  MutexGuard lock(snapshot_mutex_);
+  snapshot_ = next;
+}
+
+//======================== HTTP handlers ========================
+
+static esp_err_t handle_index(httpd_req_t* req);
+static esp_err_t handle_get_status(httpd_req_t* req);
+static esp_err_t handle_post_advertising(httpd_req_t* req);
+static esp_err_t handle_post_capture_start(httpd_req_t* req);
+static esp_err_t handle_post_profile(httpd_req_t* req);
+static esp_err_t handle_post_label(httpd_req_t* req);
+static esp_err_t handle_post_forget_bonds(httpd_req_t* req);
+static esp_err_t handle_post_fresh_identity(httpd_req_t* req);
+static esp_err_t handle_post_reboot(httpd_req_t* req);
+static esp_err_t handle_post_stop_after_capture(httpd_req_t* req);
+
+static esp_err_t send_json(httpd_req_t* req, const std::string& body) {
+  httpd_resp_set_type(req, "application/json");
+  // /api/status carries the captured IRK and the peer's identity address, which
+  // permanently deanonymize a phone. no-store keeps them out of the browser's
+  // disk cache and out of any intermediary, rather than merely requiring
+  // revalidation the way the page's no-cache does.
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  return httpd_resp_send(req, body.c_str(), body.size());
+}
+
+static esp_err_t send_ok(httpd_req_t* req) {
+  return send_json(req, "{\"ok\":true}");
+}
+
+// Reject commands whose browser baseline predates an intervening device reboot.
+// As with authorized(), failure sends its response before returning false.
+static bool matching_boot_baseline(httpd_req_t* req, const std::string& body, uint32_t& boot_id) {
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  boot_id = self->irk_capture() ? self->irk_capture()->get_capture_result().boot_id : 0;
+  if (boot_id == 0) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    send_json(req, "{\"error\":\"Boot identity unavailable; retry shortly\"}");
+    return false;
+  }
+  std::string expected_boot_id;
+  size_t value_pos = 0;
+  // Treat the browser's baseline as an opaque string. Require a complete quoted
+  // token because the small shared extractor also accepts unfinished strings.
+  bool valid_baseline =
+      json_extract_string(body, "expected_boot_id", expected_boot_id) &&
+      !expected_boot_id.empty() && expected_boot_id.size() <= 10 &&
+      expected_boot_id.find_first_not_of("0123456789") == std::string::npos &&
+      json_find_value_start(body, "expected_boot_id", value_pos) &&
+      body.compare(value_pos, expected_boot_id.size() + 2, "\"" + expected_boot_id + "\"") == 0;
+  if (valid_baseline) {
+    value_pos += expected_boot_id.size() + 2;
+    value_pos = body.find_first_not_of(" \t\r\n", value_pos);
+    valid_baseline =
+        value_pos != std::string::npos && (body[value_pos] == ',' || body[value_pos] == '}');
+  }
+  if (!valid_baseline) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    send_json(req, "{\"error\":\"expected_boot_id must be a quoted boot identity\"}");
+    return false;
+  }
+  if (expected_boot_id != std::to_string(boot_id)) {
+    httpd_resp_set_status(req, "409 Conflict");
+    send_json(req, "{\"error\":\"Device already restarted; refresh and try again\"}");
+    return false;
+  }
+  return true;
+}
+
+static std::string bond_clear_json(const irk_capture::BondClearResult& result) {
+  return "{\"operation_id\":" + std::to_string(result.operation_id) + ",\"state\":\"" +
+         json_escape(result.state) + "\",\"reason\":\"" + json_escape(result.reason) +
+         "\",\"history_cleared\":" + (result.history_cleared ? "true" : "false") + "}";
+}
+
+bool IRKWizardComponent::start_server_() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = port_;
+  // Every esp_http_server instance opens an internal UDP control socket on
+  // ctrl_port, which defaults to 32768 for ALL instances. ESPHome's own
+  // web_server: (port 80) already holds that default, so leaving it here
+  // makes our httpd_start() fail with "error in creating ctrl socket (112)".
+  // Offset it by our server port to stay clear of that and of each other.
+  config.ctrl_port = 32768 + port_;
+  config.max_uri_handlers = 12;
+  config.lru_purge_enable = true;
+  // This is a single-user on-device tool, not a public server - keep our
+  // socket footprint small since web_server:, API, OTA and mDNS are all
+  // competing for the same LWIP socket ceiling (see CONFIG_LWIP_MAX_SOCKETS
+  // in __init__.py). Default is 7; we only ever expect one browser tab.
+  config.max_open_sockets = 4;
+
+  esp_err_t err = httpd_start(&server_, &config);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "httpd_start failed on port %u: %s", port_, esp_err_to_name(err));
+    return false;
+  }
+
+  const struct {
+    const char* uri;
+    httpd_method_t method;
+    esp_err_t (*handler)(httpd_req_t*);
+  } routes[] = {
+    { "/", HTTP_GET, handle_index },
+    { "/api/status", HTTP_GET, handle_get_status },
+    { "/api/advertising", HTTP_POST, handle_post_advertising },
+    { "/api/capture/start", HTTP_POST, handle_post_capture_start },
+    { "/api/profile", HTTP_POST, handle_post_profile },
+    { "/api/label", HTTP_POST, handle_post_label },
+    { "/api/forget_bonds", HTTP_POST, handle_post_forget_bonds },
+    { "/api/fresh_identity", HTTP_POST, handle_post_fresh_identity },
+    { "/api/reboot", HTTP_POST, handle_post_reboot },
+    { "/api/stop_after_capture", HTTP_POST, handle_post_stop_after_capture },
+  };
+
+  for (const auto& route : routes) {
+    httpd_uri_t uri_handler = {};
+    uri_handler.uri = route.uri;
+    uri_handler.method = route.method;
+    uri_handler.handler = route.handler;
+    uri_handler.user_ctx = this;
+    esp_err_t rc = httpd_register_uri_handler(server_, &uri_handler);
+    if (rc != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to register %s: %s", route.uri, esp_err_to_name(rc));
+    }
+  }
+  return true;
+}
+
+void IRKWizardComponent::setup() {
+  snapshot_mutex_ = xSemaphoreCreateMutex();
+  if (!snapshot_mutex_) {
+    ESP_LOGE(TAG, "Failed to create snapshot mutex");
+    this->mark_failed(LOG_STR("snapshot mutex allocation failed"));
+    return;
+  }
+  refresh_snapshot_();
+  // Starting httpd here (even at AFTER_WIFI priority) is too early: all
+  // components' setup() run back-to-back in one pass, and LWIP's TCP/IP core
+  // isn't reliably up yet - httpd_start() fails to create its internal
+  // control socket ("error in creating ctrl socket"). loop() only begins
+  // once every component has finished setup(), which is late enough.
+}
+
+void IRKWizardComponent::loop() {
+  if (!server_ && start_attempts_ < 20) {
+    // httpd's internal control socket connects to 127.0.0.1; on this
+    // ESP-IDF/LWIP integration that fails with EHOSTDOWN until the default
+    // network interface (WiFi STA) is actually up - a loopback pseudo-netif
+    // existing (CONFIG_LWIP_NETIF_LOOPBACK) is not sufficient on its own.
+    // The fallback AP is also a usable interface, even without a station link.
+    bool ready = network::is_connected();
+#if defined(USE_WIFI) && defined(USE_WIFI_AP)
+    ready = ready || (wifi::global_wifi_component && wifi::global_wifi_component->is_ap_active());
+#endif
+    if (!ready) return;
+    uint32_t now = millis();
+    if (now - last_start_attempt_ms_ < 500) return;
+    last_start_attempt_ms_ = now;
+    start_attempts_++;
+    // irk_capture has a later setup priority than the wizard. Refresh after
+    // all setup() calls, before HTTP can expose the provisional boot ID/state.
+    refresh_snapshot_();
+    last_snapshot_ms_ = now;
+    if (start_server_()) {
+      ESP_LOGI(TAG, "Wizard listening on port %u", port_);
+    } else if (start_attempts_ >= 20) {
+      this->mark_failed(LOG_STR("httpd_start failed after retries"));
+    }
+    return;
+  }
+
+  // Each refresh takes irk_capture's state_mutex_ several times, which the
+  // NimBLE task also contends for during pairing. Poll briskly only while
+  // someone is actually using the wizard; otherwise back right off.
+  uint32_t now = millis();
+  const bool active = (now - last_request_ms_.load(std::memory_order_relaxed)) < 30000;
+  if (now - last_snapshot_ms_ < (active ? 500 : 5000)) return;
+  last_snapshot_ms_ = now;
+  refresh_snapshot_();
+}
+
+void IRKWizardComponent::dump_config() {
+  ESP_LOGCONFIG(TAG, "IRK Capture Wizard:");
+  ESP_LOGCONFIG(TAG, "  Port: %u", port_);
+}
+
+//======================== Page ========================
+// The page lives in wizard_page.html. __init__.py gzips it at build time and
+// hands it over as a flash array, so it costs about a quarter of its source
+// size and is sent as-is with Content-Encoding: gzip.
+
+static esp_err_t handle_index(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  httpd_resp_set_type(req, "text/html");
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+  httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+  return httpd_resp_send(req, reinterpret_cast<const char*>(self->page_data()), self->page_size());
+}
+
+static esp_err_t handle_get_status(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  WizardSnapshot s = self->get_snapshot();
+  // Editable values and consume-once label updates must be visible immediately,
+  // even when the main task has not rebuilt its periodic snapshot yet.
+  if (self->irk_capture()) {
+    s.next_capture_label = self->irk_capture()->get_next_capture_label();
+    s.profile = self->irk_capture()->get_ble_profile() == irk_capture::BLEProfile::KEYBOARD
+                    ? "Keyboard"
+                    : "Heart Sensor";
+  }
+
+  std::string json = "{";
+  json += "\"boot_id\":" + std::to_string(s.capture_result.boot_id) + ",";
+  json += "\"status\":\"" + json_escape(s.status) + "\",";
+  json += "\"next_capture_label\":\"" + json_escape(s.next_capture_label) + "\",";
+  json += "\"advertised_name\":\"" + json_escape(s.advertised_name) + "\",";
+  json += "\"profile\":\"" + json_escape(s.profile) + "\",";
+  json += "\"advertising\":" + std::string(s.advertising ? "true" : "false") + ",";
+  json += "\"effective_mac\":\"" + json_escape(s.effective_mac) + "\",";
+  json += "\"device_mac\":\"" + json_escape(s.device_mac) + "\",";
+  json += "\"irk\":\"" + json_escape(s.irk) + "\",";
+  json += "\"stop_after_capture\":" + std::string(s.stop_after_capture ? "true" : "false") + ",";
+  json += "\"history\":" + (s.history_json.empty() ? std::string("[]") : s.history_json) + ",";
+  json += "\"capture_result\":{\"boot_id\":" + std::to_string(s.capture_result.boot_id) +
+          ",\"sequence\":" + std::to_string(s.capture_result.sequence) + ",\"irk\":\"" +
+          json_escape(s.capture_result.irk) + "\",\"device_mac\":\"" +
+          json_escape(s.capture_result.device_mac) + "\"},";
+  json += "\"capture_start\":{\"operation_id\":" + std::to_string(s.capture_start.operation_id) +
+          ",\"state\":\"" + s.capture_start.state +
+          "\",\"boot_id\":" + std::to_string(s.capture_start.boot_id) +
+          ",\"sequence\":" + std::to_string(s.capture_start.sequence) + "},";
+  json += "\"bond_clear\":" + bond_clear_json(s.bond_clear);
+  json += "}";
+  return send_json(req, json);
+}
+
+static esp_err_t handle_post_advertising(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  std::string body = read_request_body(req);
+  bool on = false;
+  if (!json_extract_bool(body, "on", on)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return send_json(req, "{\"error\":\"on must be a boolean\"}");
+  }
+  self->set_advertising(on);
+  return send_ok(req);
+}
+
+static esp_err_t handle_post_capture_start(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  const auto start = static_cast<IRKWizardComponent*>(req->user_ctx)->start_capture();
+  httpd_resp_set_status(req, "202 Accepted");
+  return send_json(req, "{\"operation_id\":" + std::to_string(start.operation_id) +
+                            ",\"boot_id\":" + std::to_string(start.boot_id) + "}");
+}
+
+static esp_err_t handle_post_profile(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  std::string body = read_request_body(req);
+  std::string profile;
+  bool keyboard = false;
+  if (!json_extract_string(body, "profile", profile) || !parse_profile_name(profile, keyboard)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_send(req, "profile must be \"Heart Sensor\" or \"Keyboard\"", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+  }
+  uint32_t boot_id = 0;
+  if (!matching_boot_baseline(req, body, boot_id)) return ESP_OK;
+  if (!self->try_begin_profile_change()) {
+    httpd_resp_set_status(req, "409 Conflict");
+    return send_json(req,
+                     "{\"error\":\"A profile change is already in progress; retry after reboot\"}");
+  }
+  const auto requested =
+      keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
+  const bool reboot_required = self->irk_capture()->get_ble_profile() != requested;
+  // Reply before dispatching the main-task save. Persistence can still fail, so
+  // the browser confirms a new boot and the selected profile through status.
+  const esp_err_t result =
+      send_json(req, "{\"ok\":true,\"boot_id\":" + std::to_string(boot_id) +
+                         ",\"reboot_required\":" + (reboot_required ? "true" : "false") + "}");
+  if (reboot_required)
+    self->set_profile(keyboard);
+  else
+    self->release_profile_change();
+  return result;
+}
+
+static esp_err_t handle_post_label(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  if (!self->irk_capture()) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return send_json(req, "{\"error\":\"Capture component unavailable\"}");
+  }
+  const std::string body = read_request_body(req);
+  std::string label;
+  if (!json_extract_string(body, "label", label)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return send_json(req, "{\"error\":\"label must be a string\"}");
+  }
+  const std::string saved_label = self->irk_capture()->set_next_capture_label(label);
+  return send_json(req, "{\"ok\":true,\"label\":\"" + json_escape(saved_label) + "\"}");
+}
+
+static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  if (!self->irk_capture()) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return send_json(req, "{\"error\":\"Capture component unavailable\"}");
+  }
+  const auto result = self->irk_capture()->request_bond_clear();
+  std::string json = bond_clear_json(result);
+  json.pop_back();
+  json += ",\"boot_id\":" + std::to_string(self->irk_capture()->get_capture_result().boot_id) + "}";
+  if (result.state == "pending") httpd_resp_set_status(req, "202 Accepted");
+  return send_json(req, json);
+}
+
+static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  std::string body = read_request_body(req);
+  bool enabled = false;
+  if (json_extract_bool(body, "enabled", enabled) && self->irk_capture()) {
+    self->irk_capture()->set_stop_after_capture(enabled);
+  }
+  return send_ok(req);
+}
+
+static esp_err_t handle_post_fresh_identity(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  static_cast<IRKWizardComponent*>(req->user_ctx)->fresh_identity();
+  return send_ok(req);
+}
+
+static esp_err_t handle_post_reboot(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
+  if (!json_request(req)) return ESP_OK;
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  const std::string body = read_request_body(req);
+  uint32_t boot_id = 0;
+  if (!matching_boot_baseline(req, body, boot_id)) return ESP_OK;
+  ESP_LOGI(TAG, "Reboot requested from the wizard");
+  // Read the core identity, not the periodic snapshot, and finish sending the
+  // acknowledgment before starting the reboot delay. A lost response can still
+  // accompany a successful reboot; the browser confirms the new boot by polling.
+  const esp_err_t result =
+      send_json(req, "{\"ok\":true,\"boot_id\":" + std::to_string(boot_id) + "}");
+  self->reboot();
+  return result;
+}
+
+}  // namespace irk_wizard
+}  // namespace esphome
+
+#endif  // USE_ESP32

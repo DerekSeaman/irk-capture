@@ -1,0 +1,680 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IRK Capture Wizard</title>
+<style>
+:root{--bg:#10181a;--surf:#172124;--surf2:#1c2729;--border:#2a3739;--ink1:#eef3f2;--ink2:#aebcbc;--ink3:#7f9294;
+--accent:#3fc3c2;--accentInk:#06282a;--amber:#e3a94a;--green:#6fc98d;--red:#e18a82}
+*{box-sizing:border-box}
+a{color:var(--accent)}
+body{margin:0;background:var(--bg);color:var(--ink1);font:15px/1.5 -apple-system,system-ui,sans-serif;padding:20px 16px 60px}
+.wrap{max-width:540px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--ink3);font-size:13px;margin:0 0 18px}
+.card{background:var(--surf);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:14px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
+.row:last-child{margin-bottom:0}
+.k{color:var(--ink3);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.v{font-family:ui-monospace,monospace;font-size:13px;word-break:break-all;text-align:right}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:5px 10px;border-radius:99px}
+.pill.idle{background:#2a3739;color:var(--ink2)}
+.pill.advertising{background:#28323a;color:var(--accent)}
+.pill.pairing,.pill.capturing,.pill.rebooting{background:#3a2f1b;color:var(--amber)}
+.pill.captured,.pill.ready{background:#1c3626;color:var(--green)}
+.pill.no_irk{background:#3a2320;color:var(--red)}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+select,input[type=text]{width:100%;background:var(--surf2);border:1px solid var(--border);color:var(--ink1);
+border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+button{font:inherit;font-weight:600;font-size:13px;border:1px solid var(--border);background:var(--surf2);
+color:var(--ink1);border-radius:8px;padding:10px 14px;cursor:pointer}
+button.primary{background:var(--accent);color:var(--accentInk);border-color:var(--accent)}
+button.danger{color:var(--red);border-color:#4a2a26}
+button:disabled{opacity:.45;cursor:default}
+button.big{display:block;width:100%;padding:14px;font-size:15px;margin-bottom:18px}
+.toggle{display:flex;justify-content:space-between;align-items:center}
+.switch{width:38px;height:22px;border-radius:99px;background:var(--border);position:relative;cursor:pointer;flex:none}
+.switch.on{background:var(--accent)}
+.switch::after{content:"";position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px;transition:.15s}
+.switch.on::after{left:18px}
+.hist{display:flex;flex-direction:column;gap:6px}
+.hist .item{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--surf2);
+border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12.5px}
+.hist .info{display:flex;flex-direction:column;min-width:0}
+.hist .lbl{color:var(--ink3);font-size:11.5px}
+.hist .irk{font-family:ui-monospace,monospace;color:var(--ink1);word-break:break-all}
+.hist button{flex-shrink:0;padding:6px 12px}
+.empty{color:var(--ink3);font-size:13px;text-align:center;padding:10px 0}
+label{display:block;font-size:12px;color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.steps{display:flex;gap:6px;margin-bottom:16px}
+.steps .s{flex:1;height:4px;border-radius:2px;background:var(--border)}
+.steps .s.done{background:var(--accent)}
+.steps .s.now{background:var(--accent);opacity:.55}
+.stepno{font-size:12px;color:var(--accent);text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:6px}
+h2{font-size:17px;margin:0 0 8px}
+h2.section{margin:22px 0 10px}
+p.help{color:var(--ink2);font-size:13.5px;margin:0 0 12px}
+.callout{background:var(--surf2);border-left:3px solid var(--amber);border-radius:6px;padding:10px 12px;font-size:13px;color:var(--ink2);margin:12px 0}
+.callout b{color:var(--ink1)}
+.target{background:var(--surf2);border:1px solid var(--accent);border-radius:8px;padding:12px;text-align:center;margin:12px 0}
+.target .nm{font-family:ui-monospace,monospace;font-size:17px;color:var(--accent);font-weight:600;word-break:break-all}
+.target .cap{font-size:11.5px;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.irkbox{background:var(--surf2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;
+font-family:ui-monospace,monospace;font-size:14px;word-break:break-all;-webkit-user-select:all;user-select:all}
+.irkrow{display:flex;align-items:center;gap:10px;margin:12px 0}
+.irkrow .irkbox{flex:1;min-width:0;margin:0}
+.irkrow button{flex-shrink:0}
+.ok{color:var(--green)}
+.hide{display:none}
+ol.pair{margin:0 0 4px;padding-left:20px;color:var(--ink2);font-size:13.5px}
+ol.pair li{margin-bottom:5px}
+.banner{background:#3a2f1b;color:var(--amber);border-radius:8px;padding:10px 12px;font-size:13px;font-weight:500;margin-bottom:14px}
+</style></head><body><div class="wrap">
+
+<div id="offline" class="banner hide">Device is rebooting or unreachable - reconnecting...</div>
+<div id="actionError" class="banner hide" role="alert"></div>
+
+<!-- ============ WIZARD VIEW ============ -->
+<div id="wizView" class="hide">
+  <h1>IRK Wizard</h1>
+  <p class="sub" id="wizSub">Guided capture, one step at a time</p>
+  <div class="steps">
+    <div class="s" data-step="1"></div><div class="s" data-step="2"></div>
+    <div class="s" data-step="3"></div><div class="s" data-step="4"></div><div class="s" data-step="5"></div>
+  </div>
+
+  <div class="card" id="step1">
+    <div class="stepno">Step 1 of 5</div>
+    <h2>What are you capturing from?</h2>
+    <p class="help">Select which device type you are capturing from.</p>
+    <select id="wizProfile">
+      <option value="Heart Sensor">Apple (iPhone, Watch, iPad) and Android watches (Heart Sensor)</option>
+      <option value="Keyboard">Android phones and tablets (Keyboard)</option>
+    </select>
+    <div class="callout" id="profileWarn">Changing this <b>reboots the device</b> and takes about 15 seconds. The page reconnects on its own.</div>
+    <div class="row hide" id="wizProfileStatusRow"><span class="k">Device status</span><span id="wizProfilePill" class="pill rebooting" role="status">Rebooting…</span></div>
+    <div class="btnrow"><button class="primary" id="wizNextBtn" onclick="wizGo(2)">Next</button>
+      <button onclick="showPanel()">Exit wizard</button></div>
+  </div>
+
+  <div class="card hide" id="step2">
+    <div class="stepno">Step 2 of 5</div>
+    <h2>Whose device is this?</h2>
+    <p class="help">Optional. The name is stored with the captured key so you can tell them apart later.</p>
+    <input type="text" id="wizLabel" placeholder="e.g. Derek's iPhone" maxlength="24">
+    <div class="btnrow"><button class="primary" onclick="wizSaveLabel()">Next</button>
+      <button onclick="wizGo(1)">Back</button></div>
+  </div>
+
+  <div class="card hide" id="step3">
+    <div class="stepno">Step 3 of 5</div>
+    <h2>Clear any old pairing</h2>
+    <p class="help">If your device has paired with this ESP32 before, it may silently reuse the old
+      pairing and no new key will be captured. This is the most common reason a capture never happens.</p>
+    <div class="callout">On your device open <b>Bluetooth settings</b>, find the prior advertised
+      name and choose <b>Forget This Device</b>. Apple tip: tap the &#9432; first. If it is not listed, nothing to do.</div>
+    <div class="btnrow"><button class="danger" id="wizForgetBtn" onclick="wizForget()">Clear Pairings</button></div>
+    <p class="help hide" id="forgetDone" role="status"></p>
+    <div class="btnrow"><button class="primary" onclick="wizStart()">Next: Start Pairing</button>
+      <button onclick="wizGo(2)">Back</button></div>
+  </div>
+
+  <div class="card hide" id="step4">
+    <div class="stepno">Step 4 of 5</div>
+    <h2>Pair from your phone now</h2>
+    <div class="row"><span class="k">Device status</span><span id="wizPill" class="pill idle">Idle</span></div>
+    <div class="target"><div class="cap">Bluetooth Name</div><div class="nm" id="wizAdvName">-</div></div>
+    <ol class="pair" id="wizSteps"></ol>
+    <div class="callout hide" id="gearTip">If the advertised name does not show up on your Android watch, try the
+      <a href="https://play.google.com/store/apps/details?id=com.limegreenv.geartracker" target="_blank"
+      rel="noopener noreferrer">Gear Tracker II</a> app, then pair using that app.</div>
+    <div class="callout" id="wizHint">Waiting for your device to connect. Keep this page open.</div>
+    <p class="help" id="freshHelp">If the advertised name does not show up, turn Bluetooth off and on
+      again, then wait a few seconds. If that does not work, turn Bluetooth off, click the
+      "Refresh BLE Identity" button below, then turn Bluetooth back on.</p>
+    <div class="btnrow"><button id="freshBtn" onclick="wizFresh()">Refresh BLE Identity</button></div>
+    <div class="btnrow"><button onclick="wizStop()">Stop</button><button onclick="wizGo(3)">Back</button></div>
+  </div>
+
+  <div class="card hide" id="step5">
+    <div class="stepno">Step 5 of 5</div>
+    <h2 class="ok">IRK Captured</h2>
+    <p class="help">Copy this IRK into Home Assistant: <b>Settings &rarr; Devices &amp; Services &rarr;
+      Add Integration &rarr; Private BLE Device</b>.</p>
+    <div class="irkrow"><div class="irkbox" id="wizIrk">-</div>
+      <button class="primary" id="wizCopy" onclick="copyIrk()">Copy</button></div>
+    <div class="callout">You can now <b>forget this device</b> in your device's Bluetooth settings -
+      the pairing was only needed to capture the IRK.</div>
+    <div class="btnrow"><button onclick="wizRestart()">Capture another device</button>
+      <button onclick="showPanel()">Done</button></div>
+  </div>
+</div>
+
+<!-- ============ PANEL VIEW ============ -->
+<div id="panelView">
+  <h1 style="margin-bottom:18px">IRK Capture Tool</h1>
+
+  <div class="card">
+    <div class="row"><span class="k">Status</span><span id="statusPill" class="pill idle" role="status">Idle</span></div>
+    <div class="row"><span class="k">Advertising as</span><span class="v" id="advName">-</span></div>
+    <div class="row"><span class="k">BLE Profile</span><span class="v" id="profileName">-</span></div>
+    <div class="row"><span class="k">ESP32 BLE MAC</span><span class="v" id="effMac">-</span></div>
+  </div>
+
+  <div class="card">
+    <div class="row toggle"><span class="k">Stop advertising after capture</span>
+      <div class="switch" id="stopAfterSwitch"></div></div>
+  </div>
+
+  <h2 class="section">Express Capture</h2>
+  <div class="card">
+    <p class="help">Select the target device type, enter an optional label, then pair your device to the advertised BLE service.</p>
+    <label>Target device</label>
+    <select id="profile">
+      <option value="Heart Sensor">Apple (iPhone, Watch, iPad) and Android watches (Heart Sensor)</option>
+      <option value="Keyboard">Android phones and tablets (Keyboard)</option>
+    </select>
+    <div style="height:10px"></div>
+    <label>Label this capture (optional)</label>
+    <input type="text" id="label" placeholder="e.g. Derek's iPhone" maxlength="24">
+    <div class="btnrow">
+      <button class="primary" id="advBtn">Start Advertising</button>
+      <button id="freshIdBtn">Refresh BLE Identity</button>
+      <button class="danger" id="forgetBtn">Forget All Bonds</button>
+    </div>
+    <p class="help hide" id="panelForgetDone" role="status"></p>
+  </div>
+
+  <h2 class="section">Capture Wizard</h2>
+  <button class="big primary" onclick="showWizard()">Start IRK Wizard &rarr;</button>
+
+  <h2 class="section">Capture Results</h2>
+  <div class="card">
+    <div class="k" style="margin-bottom:10px">IRK<span style="text-transform:none">s</span> Captured in this session</div>
+    <div class="hist" id="history"><div class="empty">No devices captured yet</div></div>
+  </div>
+
+  <button class="big danger" id="rebootBtn">Reboot ESP32</button>
+</div>
+
+</div>
+<script>
+function el(id){return document.getElementById(id)}
+var lastHistKey = null;   // history last rendered, see render()
+var wizStep = 0;          // 0 = panel view
+var lastData = null;
+var labelDirty = false;
+var labelEdit = 0;
+var pendingLabelSave = null;
+var awaitingCapture = false;
+var captureRun = 0;
+var captureAttempt = null;
+var acceptedCapture = null;
+var captureMessage = '';
+var pendingClear = null;
+var wizardClearRun = 0;
+var writeQueue = Promise.resolve();
+var statusEpoch = 0;
+var refreshInFlight = null;
+var refreshAgain = false;
+var failCount = 0;
+var pendingReboot = null;
+var wizardProfileReady = false;
+var REQUEST_TIMEOUT_MS = 5000;
+var REBOOT_WARNING_MS = 60000;
+
+function showError(e){
+  el('actionError').textContent=e.message || 'Request failed. Please try again.';
+  el('actionError').classList.remove('hide');
+}
+function clearError(){ el('actionError').classList.add('hide'); }
+async function requestJson(url,options){
+  var controller=new AbortController(), timer, responseStatus=0;
+  try{
+    // Bound both headers and body reads. The race also releases our queues if
+    // a browser/network stack does not promptly reject an aborted request.
+    return await Promise.race([
+      (async function(){
+        var r=await fetch(url,Object.assign({},options,{cache:'no-store',signal:controller.signal}));
+        responseStatus=r.status;
+        var text=await r.text();
+        if(!r.ok) throw new Error('Request failed ('+r.status+'). '+text.slice(0,180));
+        return text ? JSON.parse(text) : {};
+      })(),
+      new Promise(function(resolve,reject){
+        timer=setTimeout(function(){
+          reject(new Error('Request timed out. Check your connection to the device.'));
+          controller.abort();
+        },REQUEST_TIMEOUT_MS);
+      })
+    ]);
+  }catch(e){
+    // A received HTTP rejection is definite even if its body stalls or is lost.
+    if(responseStatus>=400) e.httpStatus=responseStatus;
+    throw e;
+  }finally{ clearTimeout(timer); }
+}
+function post(url,body,beforeSend){
+  // Preserve user control order, especially START followed by Stop or Back.
+  var request=writeQueue.then(async function(){
+    ++statusEpoch;
+    try{
+      if(beforeSend) await beforeSend();
+      return await requestJson(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+    }finally{ ++statusEpoch; }
+  });
+  // Keep a rejected request from blocking subsequent controls.
+  writeQueue=request.catch(function(){});
+  return request;
+}
+async function action(url,body){
+  clearError();
+  try{ var result=await post(url,body); refresh(); return result; }
+  catch(e){ showError(e); return null; }
+}
+function newer(a,b){ var delta=(a-b)>>>0; return delta!==0 && delta<0x80000000; }
+function cancelCapture(stop){
+  var active=awaitingCapture;
+  ++captureRun; awaitingCapture=false; captureAttempt=null;
+  if(stop && active) action('/api/advertising',{on:false});
+}
+function captureFailed(message){
+  cancelCapture(false); captureMessage=message;
+}
+
+/* ---------- reboot tracking ---------- */
+function validBootId(id){ return Number.isInteger(id) && id>0 && id<=0xffffffff; }
+function connectionState(){
+  var waiting=pendingReboot && Date.now()-pendingReboot.started>=REBOOT_WARNING_MS;
+  el('offline').textContent=waiting
+    ? "Device hasn't reconnected yet. Reconnect to its Wi-Fi if needed; this page will keep checking."
+    : 'Device is rebooting or unreachable - reconnecting...';
+  el('offline').classList.toggle('hide',pendingReboot ? !waiting : failCount<=2);
+}
+function rebootState(){
+  el('rebootBtn').disabled=!!pendingReboot;
+  el('rebootBtn').textContent=pendingReboot ? 'Rebooting…' : 'Reboot ESP32';
+  ['profile','wizProfile'].forEach(function(id){
+    el(id).disabled=!!pendingReboot;
+    if(pendingReboot && pendingReboot.profile) el(id).value=pendingReboot.profile;
+    else if(lastData) el(id).value=lastData.profile;
+  });
+  setPill(el('statusPill'),pendingReboot ? 'rebooting' : (lastData ? lastData.status : 'idle'));
+  if(wizStep===4) setPill(el('wizPill'),pendingReboot ? 'rebooting' : (lastData ? lastData.status : 'idle'));
+  wizardProfileState();
+  connectionState();
+}
+function wizardProfileState(){
+  var status=pendingReboot && pendingReboot.fromWizard ? 'rebooting' : (wizardProfileReady ? 'ready' : null);
+  el('wizProfileStatusRow').classList.toggle('hide',!status);
+  if(status) setPill(el('wizProfilePill'),status);
+  el('wizNextBtn').disabled=!!(pendingReboot && pendingReboot.fromWizard);
+}
+function rebootDevice(){
+  if(pendingReboot || !confirm('Reboot the ESP32? The list of IRKs captured in this session will be cleared.')) return;
+  return trackReboot('/api/reboot',{});
+}
+function changeProfile(profile,fromWizard){
+  return trackReboot('/api/profile',{profile:profile},profile,fromWizard);
+}
+async function trackReboot(url,body,profile,fromWizard){
+  if(pendingReboot) return;
+  clearError();
+  wizardProfileReady=false;
+  var request={boot_id:null,started:Date.now(),sent:false,confirming:false,profile:profile,
+    fromWizard:!!fromWizard && (!lastData || profile!==lastData.profile)};
+  pendingReboot=request; ++statusEpoch; rebootState();
+  try{
+    var ack=await post(url,body,async function(){
+      // Read a fresh baseline after earlier controls finish. Cached page state
+      // may belong to a previous boot and cannot safely confirm a lost reply.
+      var before=await requestJson('/api/status');
+      if(!validBootId(before.boot_id)) throw new Error('Could not read the device status. '+
+        (profile ? 'Profile change' : 'Reboot')+' was not sent; please try again.');
+      request.boot_id=before.boot_id;
+      body.expected_boot_id=String(before.boot_id);
+      request.started=Date.now();
+      request.sent=true;
+    });
+    if(validBootId(ack.boot_id)) request.boot_id=ack.boot_id;
+    if(profile && ack.reboot_required===false){
+      // Selecting the profile already in use does not restart the device.
+      pendingReboot=null;
+      if(lastData) lastData.profile=profile;
+    }else request.confirming=true;
+  }catch(e){
+    if(!request.sent || e.httpStatus){
+      pendingReboot=null; showError(e);
+    }else{
+      // The ESP32 may reboot before delivering its reply. Never resend the
+      // command automatically; a fresh status poll must prove the boot changed.
+      request.confirming=true;
+    }
+  }
+  rebootState(); refresh();
+}
+
+/* ---------- view switching ---------- */
+function showPanel(){ cancelCapture(true); wizStep=0; el('wizView').classList.add('hide'); el('panelView').classList.remove('hide');
+  window.scrollTo(0,0); refresh(); }
+function showWizard(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback();
+  if(!pendingReboot) wizardProfileReady=false;
+  wizGo(1); el('panelView').classList.add('hide'); el('wizView').classList.remove('hide');
+  window.scrollTo(0,0); }
+function wizGo(n){
+  if(wizStep===4 && n!==4 && n!==5) cancelCapture(true);
+  wizStep=n;
+  for(var i=1;i<=5;i++) el('step'+i).classList.toggle('hide', i!==n);
+  document.querySelectorAll('.steps .s').forEach(function(s){
+    var i=parseInt(s.dataset.step,10);
+    s.className='s'+(i<n?' done':(i===n?' now':''));
+  });
+  window.scrollTo(0,0);
+  if(lastData) render(lastData);
+  wizardProfileState();
+}
+
+/* ---------- wizard actions ---------- */
+async function wizSaveLabel(){
+  if(await action('/api/label',{label:el('wizLabel').value})) wizGo(3);
+}
+function hideClearMessage(id){
+  el(id).textContent=''; el(id).classList.add('hide'); el(id).classList.remove('ok');
+}
+function resetWizardClearFeedback(){ ++wizardClearRun; hideClearMessage('forgetDone'); }
+function clearMessage(text,success,request){
+  // A clear from the panel or an earlier wizard run must not look like a
+  // completed action in the current wizard. The operation itself stays tracked.
+  if(request.source==='panel' || request.run===wizardClearRun){
+    var node=el(request.source==='panel' ? 'panelForgetDone' : 'forgetDone');
+    node.textContent=text; node.classList.remove('hide'); node.classList.toggle('ok',!!success);
+  }
+  el('wizForgetBtn').disabled=el('forgetBtn').disabled=!!pendingClear;
+}
+function clearOutcome(op){
+  var request=pendingClear;
+  if(!request) return;
+  if(op.state==='pending'){
+    clearMessage('Clearing pairings...',false,request); return;
+  }
+  pendingClear=null;
+  if(op.state==='succeeded') clearMessage(op.history_cleared ? 'Pairings and session history cleared.' : 'Pairings cleared.',true,request);
+  else clearMessage((op.history_cleared ? 'History cleared; ' : '')+
+    (op.state==='busy' ? 'pairings retained. ' : 'pairings may remain. ')+
+    (op.reason || 'The request was cancelled. Please try again.'),false,request);
+}
+async function wizForget(source){
+  if(pendingClear) return;
+  var request={operation_id:null,boot_id:null,source:source || 'wizard',run:wizardClearRun}; pendingClear=request;
+  hideClearMessage('forgetDone'); hideClearMessage('panelForgetDone');
+  clearMessage('Clearing pairings...',false,request); clearError();
+  try{
+    var op=await post('/api/forget_bonds',{});
+    request.operation_id=op.operation_id; request.boot_id=op.boot_id;
+    // A delayed reply from the previous boot must not restore old success text.
+    // Let a fresh status poll resolve an unknown or different boot first.
+    if(lastData && lastData.boot_id===op.boot_id) clearOutcome(op);
+    refresh();
+  }catch(e){
+    pendingClear=null; clearMessage('Could not confirm that pairings were cleared. Please try again.',false,request); showError(e);
+  }
+}
+async function wizStart(){
+  cancelCapture(true);
+  acceptedCapture=null; captureMessage='Starting advertising...';
+  var attempt={run:captureRun,operation_id:null,boot_id:null,baseline:null};
+  captureAttempt=attempt; awaitingCapture=true; clearError();
+  wizGo(4);
+  try{
+    var op=await post('/api/capture/start',{});
+    if(attempt.run!==captureRun) return;
+    attempt.operation_id=op.operation_id; attempt.boot_id=op.boot_id;
+    refresh();
+  }catch(e){
+    if(attempt.run!==captureRun) return;
+    captureFailed('Could not start capture. Go back a step and try again.');
+    // A lost response may still have delivered START. Queue OFF to cancel it.
+    action('/api/advertising',{on:false});
+    showError(e); if(lastData) render(lastData);
+  }
+}
+function wizFresh(){ action('/api/fresh_identity',{}); }
+function wizStop(){
+  cancelCapture(false); captureMessage='Capture stopped. Go back a step to start again.';
+  action('/api/advertising',{on:false}); if(lastData) render(lastData);
+}
+function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizardProfileReady=false; el('wizLabel').value=''; wizGo(1); }
+
+function copyText(txt, done){
+  // navigator.clipboard is unavailable over plain HTTP, so fall back.
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(txt).then(function(){done(true)},function(){done(false)});
+    return;
+  }
+  try{
+    var ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta);
+    ta.select(); var ok=document.execCommand('copy'); document.body.removeChild(ta); done(ok);
+  }catch(e){ done(false); }
+}
+function copyIrk(){
+  if(!acceptedCapture) return;
+  var btn=el('wizCopy');
+  copyText(acceptedCapture.irk, function(ok){
+    btn.textContent = ok ? 'Copied' : 'Failed';
+    setTimeout(function(){ btn.textContent='Copy'; }, 1500);
+  });
+}
+
+/* ---------- pairing instructions ---------- */
+function pairSteps(){
+  return ['Open the Bluetooth settings on your device.',
+          'Look for the advertised Bluetooth name.',
+          'Tap it, then tap Pair if asked.'];
+}
+
+/* ---------- panel wiring ---------- */
+async function savePanelLabel(){
+  if(!labelDirty || (pendingLabelSave && pendingLabelSave.edit===labelEdit)) return;
+  var request={edit:labelEdit}; pendingLabelSave=request;
+  clearError();
+  try{
+    var saved=await post('/api/label',{label:el('label').value});
+    if(!saved || typeof saved.label!=='string') throw new Error('Could not confirm the saved label. Please try again.');
+    if(request.edit===labelEdit){
+      // Keep the draft protected until the device acknowledges it. An older
+      // save must never replace text entered while that request was in flight.
+      el('label').value=saved.label;
+      if(lastData) lastData.next_capture_label=saved.label;
+      labelDirty=false;
+    }
+    refresh();
+  }catch(e){
+    // Retain the draft so leaving the field again can retry a failed save.
+    if(request.edit===labelEdit) showError(e);
+  }finally{
+    if(pendingLabelSave===request) pendingLabelSave=null;
+  }
+}
+el('label').addEventListener('input',function(){labelDirty=true; ++labelEdit;});
+el('label').addEventListener('blur',savePanelLabel);
+el('profile').addEventListener('change',function(){return changeProfile(el('profile').value)});
+el('wizProfile').addEventListener('change',function(){return changeProfile(el('wizProfile').value,true)});
+el('advBtn').addEventListener('click',function(){
+  action('/api/advertising',{on: el('advBtn').dataset.on !== '1'});
+});
+el('freshIdBtn').addEventListener('click',function(){action('/api/fresh_identity',{})});
+el('forgetBtn').addEventListener('click',function(){
+  if(confirm('Clear all cached bonds and this session history?')) wizForget('panel');
+});
+el('rebootBtn').addEventListener('click',rebootDevice);
+el('stopAfterSwitch').addEventListener('click',function(){
+  action('/api/stop_after_capture',{enabled:!el('stopAfterSwitch').classList.contains('on')});
+});
+
+/* ---------- rendering ---------- */
+var KNOWN=['idle','advertising','pairing','capturing','captured','no_irk','rebooting','ready'];
+function setPill(node,status){
+  var label=status==='no_irk' ? 'No IRK' : (status==='rebooting' ? 'Rebooting…' : String(status || 'idle'));
+  node.textContent=label.charAt(0).toUpperCase()+label.slice(1);
+  node.className='pill '+(KNOWN.indexOf(status)>=0?status:'idle');
+}
+
+function updateClearStatus(d){
+  if(pendingClear && pendingClear.operation_id!==null){
+    var clear=d.bond_clear, request=pendingClear;
+    if(d.boot_id!==pendingClear.boot_id){
+      pendingClear=null; clearMessage('Device rebooted before clearing could be confirmed. Please try again.',false,request);
+    } else if(clear && clear.operation_id===pendingClear.operation_id){
+      clearOutcome(clear);
+    } else if(clear && newer(clear.operation_id,pendingClear.operation_id)){
+      pendingClear=null; clearMessage('Another clear request replaced this one. Please try again.',false,request);
+    }
+  }
+}
+
+function render(d){
+  var advName = d.advertised_name || '-';
+
+  /* panel */
+  el('profileName').textContent = d.profile || '-';
+  setPill(el('statusPill'), pendingReboot ? 'rebooting' : d.status);
+  el('advName').textContent = advName;
+  el('effMac').textContent = d.effective_mac || '-';
+  el('profile').value = pendingReboot && pendingReboot.profile ? pendingReboot.profile : d.profile;
+  if(!labelDirty && document.activeElement!==el('label')) el('label').value = d.next_capture_label || '';
+  el('advBtn').textContent = d.advertising ? 'Stop Advertising' : 'Start Advertising';
+  el('advBtn').dataset.on = d.advertising ? '1' : '0';
+  el('stopAfterSwitch').classList.toggle('on', !!d.stop_after_capture);
+
+  var history=[];
+  // The device sends history as a real JSON array, not a string.
+  if(Array.isArray(d.history)) history=d.history;
+  // Rebuild only when the list changes, so a Copy button's "Copied" state
+  // survives the next status poll.
+  var histKey=JSON.stringify(history);
+  if(histKey!==lastHistKey){
+    lastHistKey=histKey;
+    var histEl=el('history');
+    histEl.textContent='';
+    if(!history.length){
+      var em=document.createElement('div'); em.className='empty';
+      em.textContent='No devices captured yet'; histEl.appendChild(em);
+    } else {
+      // DOM nodes with textContent, never innerHTML: labels come from the
+      // user and keys from paired devices, so both are untrusted here.
+      history.forEach(function(h){
+        var it=document.createElement('div'); it.className='item';
+        var info=document.createElement('div'); info.className='info';
+        var nm=document.createElement('span'); nm.className='lbl'; nm.textContent=h.label||'(unlabeled)';
+        var key=document.createElement('span'); key.className='irk'; key.textContent=h.irk||'';
+        info.appendChild(nm); info.appendChild(key);
+        var btn=document.createElement('button'); btn.textContent='Copy';
+        btn.addEventListener('click',function(){
+          copyText(h.irk||'', function(ok){
+            btn.textContent = ok ? 'Copied' : 'Failed';
+            setTimeout(function(){ btn.textContent='Copy'; }, 1500);
+          });
+        });
+        it.appendChild(info); it.appendChild(btn); histEl.appendChild(it);
+      });
+    }
+  }
+
+  /* wizard */
+  if(wizStep===0) return;
+  el('wizProfile').value = pendingReboot && pendingReboot.profile ? pendingReboot.profile : d.profile;
+  if(document.activeElement !== el('wizLabel') && !el('wizLabel').value && d.next_capture_label)
+    el('wizLabel').value = d.next_capture_label;
+
+  if(wizStep===4){
+    setPill(el('wizPill'), pendingReboot ? 'rebooting' : d.status);
+    el('wizAdvName').textContent = advName;
+    // Android watches pair through the Heart Sensor profile only.
+    el('gearTip').classList.toggle('hide', d.profile !== 'Heart Sensor');
+    var ol=el('wizSteps'); ol.textContent='';
+    pairSteps().forEach(function(t){
+      var li=document.createElement('li'); li.textContent=t; ol.appendChild(li);
+    });
+    var hint=el('wizHint');
+    var attempt=captureAttempt;
+    if(awaitingCapture && attempt && attempt.operation_id!==null){
+      var start=d.capture_start;
+      if(d.boot_id!==attempt.boot_id){
+        captureFailed('Device rebooted. Go back a step and start pairing again.');
+      } else if(start && newer(start.operation_id,attempt.operation_id)){
+        captureFailed('Another capture request replaced this one. Go back a step to start again.');
+      } else if(start && start.operation_id===attempt.operation_id){
+        if(start.state==='ready' && start.boot_id===attempt.boot_id){
+          attempt.baseline=start.sequence;
+          var result=d.capture_result;
+          if(result && result.boot_id===attempt.boot_id && newer(result.sequence,attempt.baseline) &&
+             /^[0-9a-f]{32}$/i.test(result.irk || '')){
+            // Freeze the accepted key and MAC; later captures and failures belong
+            // to subsequent runs, even when the browser missed the status hold.
+            acceptedCapture={boot_id:result.boot_id,sequence:result.sequence,irk:result.irk,device_mac:result.device_mac};
+            cancelCapture(false); wizGo(5); return;
+          }
+        } else if(start.state==='cancelled' || start.state==='failed'){
+          captureFailed('Capture start was '+start.state+'. Go back a step and try again.');
+        }
+      }
+    }
+    if(!awaitingCapture || !captureAttempt || captureAttempt.baseline===null){
+      hint.textContent=captureMessage;
+    } else if(d.status==='no_irk'){
+      hint.textContent='Your device paired but did not hand over an identity key. '+
+        'Forget this device in its Bluetooth settings, then go back a step and try again.';
+    } else if(d.status==='pairing'||d.status==='capturing'){
+      hint.textContent='Your device is connected - finishing the key exchange. Do not touch anything.';
+    } else if(!d.advertising){
+      hint.textContent='Advertising is off. Go back a step and press "Next: Start Pairing".';
+    } else {
+      hint.textContent='Waiting for your device to connect. Keep this page open.';
+    }
+  }
+
+  if(wizStep===5 && acceptedCapture) el('wizIrk').textContent = acceptedCapture.irk;
+}
+
+function refresh(){
+  // Browser suspension and manual refreshes can overlap interval polls. Keep one
+  // in flight and discard snapshots that predate a completed control request.
+  connectionState();
+  if(refreshInFlight){ refreshAgain=true; return refreshInFlight; }
+  var epoch=statusEpoch;
+  refreshInFlight=(async function(){
+    try{
+      var d=await requestJson('/api/status');
+      if(epoch!==statusEpoch) return;
+      if(!validBootId(d.boot_id)) throw new Error('Invalid device status');
+      if(lastData && d.boot_id!==lastData.boot_id){
+        hideClearMessage('forgetDone'); hideClearMessage('panelForgetDone');
+        if(!pendingReboot) wizardProfileReady=false;
+      }
+      if(pendingReboot && pendingReboot.confirming){
+        if(d.boot_id!==pendingReboot.boot_id){
+          if(pendingReboot.profile && d.profile!==pendingReboot.profile)
+            showError(new Error('The device restarted, but the selected profile was not applied. Please select the target device type again.'));
+          else if(pendingReboot.fromWizard) wizardProfileReady=true;
+          pendingReboot=null;
+        }else if(Date.now()-pendingReboot.started>=REBOOT_WARNING_MS){
+          var retry=pendingReboot.profile ? 'Please select the target device type again.' : 'Please try Reboot ESP32 again.';
+          pendingReboot=null;
+          showError(new Error('The device is reachable, but a reboot could not be confirmed. '+retry));
+        }
+      }
+      failCount=0;
+      lastData=d; updateClearStatus(d); render(d);
+    }catch(e){
+      // A profile change reboots the device; say so instead of going silent.
+      if(epoch===statusEpoch) ++failCount;
+    }finally{
+      rebootState();
+      refreshInFlight=null;
+      if(refreshAgain){ refreshAgain=false; refresh(); }
+    }
+  })();
+  return refreshInFlight;
+}
+refresh();
+setInterval(refresh, 1200);
+</script></body></html>

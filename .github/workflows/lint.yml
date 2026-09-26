@@ -54,6 +54,152 @@ jobs:
           # (never committed) and CI passes green, hiding real problems.
           globs: "**/*.md"
 
+  # Both headers are free of ESP-IDF includes precisely so they can be run
+  # here, where a failure is a plain assert rather than a device that quietly
+  # misbehaves. Generated rather than committed, like the compile config.
+  host-tests:
+    name: Host Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Generate tests
+        run: |
+          cat > "${RUNNER_TEMP}/identity_name_test.cpp" <<'EOF'
+          #include "identity_name.h"
+          #include <cassert>
+          #include <cstdio>
+
+          using namespace esphome::irk_capture;
+
+          int main() {
+            // The suffix is the address's low two octets, upper-case, so it can
+            // be read straight off the end of the Effective MAC sensor.
+            assert(identity_name("HR", 0x7F, 0x3A) == "IRK HR 7F3A");
+            assert(identity_name("HR", 0x00, 0x00) == "IRK HR 0000");
+            assert(identity_name("HR", 0xFF, 0xFF) == "IRK HR FFFF");
+            // Nibble order: a swap here would print a suffix that never matches.
+            assert(identity_name("HR", 0xAB, 0xCD) == "IRK HR ABCD");
+            assert(identity_name("KB", 0x12, 0x34) == "IRK KB 1234");
+
+            // Names must fit the advertised-name cap without relying on
+            // sanitize_ble_name() to truncate them.
+            assert(identity_name("HR", 0xFF, 0xFF).size() <= BLE_NAME_MAX_LEN);
+            assert(identity_name("KB", 0xFF, 0xFF).size() <= BLE_NAME_MAX_LEN);
+            // ... including for an abbreviation a future profile gets wrong.
+            assert(identity_name("LONGER", 0x7F, 0x3A) == "IRK LO 7F3A");
+            assert(identity_name("LONGER", 0x7F, 0x3A).size() <= BLE_NAME_MAX_LEN);
+            assert(identity_name(nullptr, 0x7F, 0x3A).size() <= BLE_NAME_MAX_LEN);
+
+            printf("identity_name: all assertions passed\n");
+            return 0;
+          }
+          EOF
+          cat > "${RUNNER_TEMP}/wizard_util_test.cpp" <<'EOF'
+          #include "wizard_util.h"
+          #include <cassert>
+          #include <cstdio>
+          #include <string>
+
+          using namespace esphome::irk_wizard;
+
+          int main() {
+            // base64, including both padding lengths - a wrong pad would make
+            // every Basic auth comparison fail.
+            assert(base64_encode("") == "");
+            assert(base64_encode("f") == "Zg==");
+            assert(base64_encode("fo") == "Zm8=");
+            assert(base64_encode("foo") == "Zm9v");
+            assert(base64_encode("foob") == "Zm9vYg==");
+            assert(base64_encode("user:pass") == "dXNlcjpwYXNz");
+            assert(base64_encode(std::string("\x00\xff", 2)) == "AP8=");
+
+            // constant-time compare still has to be a correct compare
+            assert(secure_equals("abc", "abc"));
+            assert(!secure_equals("abc", "abd"));
+            assert(!secure_equals("abc", "ab"));
+            assert(!secure_equals("ab", "abc"));  // both length directions
+            assert(secure_equals("", ""));
+
+            // CSRF gate: parameters are fine, a longer type is not
+            assert(is_json_content_type("application/json"));
+            assert(is_json_content_type("APPLICATION/JSON"));
+            assert(is_json_content_type("application/json; charset=utf-8"));
+            assert(is_json_content_type("application/json ;x=1"));
+            assert(!is_json_content_type("application/jsonx"));
+            assert(!is_json_content_type("text/plain"));
+            assert(!is_json_content_type(""));
+            assert(!is_json_content_type(nullptr));
+
+            bool b = false;
+            assert(json_extract_bool("{\"on\":true}", "on", b) && b);
+            assert(json_extract_bool("{\"on\": false}", "on", b) && !b);
+            assert(!json_extract_bool("{\"on\":1}", "on", b));
+            assert(!json_extract_bool("{\"off\":true}", "on", b));
+            assert(!json_extract_bool("", "on", b));
+
+            std::string v;
+            assert(json_extract_string("{\"label\":\"Daves iPhone\"}", "label", v));
+            assert(v == "Daves iPhone");
+            assert(json_extract_string("{\"label\":\"\"}", "label", v) && v.empty());
+            assert(json_extract_string("{\"label\":\"a\\\"b\"}", "label", v));
+            assert(v == "a\"b");
+            assert(!json_extract_string("{\"label\":5}", "label", v));
+            // an unterminated value must not read past the end
+            assert(json_extract_string("{\"label\":\"abc", "label", v) && v == "abc");
+
+            // escaping is what keeps the hand-built status JSON parseable
+            assert(json_escape("plain") == "plain");
+            assert(json_escape("a\"b") == "a\\\"b");
+            assert(json_escape("a\\b") == "a\\\\b");
+
+            // profile names: only the two the page sends, exactly. A switch
+            // reboots and discards the session, so nothing may fall through.
+            bool kb = false;
+            assert(parse_profile_name("Keyboard", kb) && kb);
+            assert(parse_profile_name("Heart Sensor", kb) && !kb);
+            kb = true;
+            assert(!parse_profile_name("keyboard", kb) && kb);  // untouched on reject
+            assert(!parse_profile_name("HeartSensor", kb));
+            assert(!parse_profile_name("Keyboard ", kb));
+            assert(!parse_profile_name("", kb));
+
+            // auth throttle: locks after five straight failures, a success
+            // resets it, and it expires - including across a millis() wrap
+            AuthThrottle t;
+            for (int i = 0; i < 4; i++) t.fail(1000);
+            assert(!t.locked(1000));
+            t.ok();
+            for (int i = 0; i < 4; i++) t.fail(2000);
+            assert(!t.locked(2000));  // the success cleared the earlier four
+            t.fail(2000);
+            assert(t.locked(2000));
+            assert(t.locked(2000 + AuthThrottle::LOCKOUT_MS - 1));
+            assert(!t.locked(2000 + AuthThrottle::LOCKOUT_MS));
+            assert(t.failures == 0);  // expiry starts a clean count
+            AuthThrottle w;
+            const uint32_t near_wrap = 0xFFFFFF00u;
+            for (int i = 0; i < 5; i++) w.fail(near_wrap);
+            assert(w.locked(near_wrap + 100));  // still before the wrap
+            assert(w.locked(near_wrap + 0x200));  // just after it
+            assert(!w.locked(near_wrap + AuthThrottle::LOCKOUT_MS));
+
+            printf("wizard_util: all assertions passed\n");
+            return 0;
+          }
+          EOF
+      - name: Build and run
+        run: |
+          for t in identity_name:irk_capture wizard_util:irk_wizard; do
+            name="${t%%:*}"
+            component="${t##*:}"
+            g++ -std=c++17 -Wall -Wextra -Werror \
+              -I "components/${component}" \
+              "${RUNNER_TEMP}/${name}_test.cpp" -o "${RUNNER_TEMP}/${name}_test"
+            "${RUNNER_TEMP}/${name}_test"
+          done
+
   # Compile the component so C++ API drift, invalid code generation, or ESP-IDF
   # incompatibility fail CI (config/lint checks alone cannot catch these).
   compile:
@@ -105,11 +251,20 @@ jobs:
             framework:
               type: esp-idf
           logger:
+          # The wizard serves over the network, so it declares a dependency on
+          # the network component the same way mqtt does. A real device always
+          # has one; this keeps the generated config representative.
+          wifi:
+            ssid: "ci-ssid"
+            password: "ci-password"
+            ap:
+              ssid: "IRK CI fallback"
+              password: "ci-ap-password"
           external_components:
             - source:
                 type: local
                 path: ${{ github.workspace }}/components
-              components: [irk_capture]
+              components: [irk_capture, irk_wizard]
           irk_capture:
             id: irk
             ble_name: "IRK Test"
@@ -117,32 +272,53 @@ jobs:
             - platform: irk_capture
               irk_capture_id: irk
               last_irk:
+                id: last_irk
                 name: "IRK"
               last_address:
+                id: last_addr
                 name: "Device MAC"
               effective_mac:
+                id: effective_mac
                 name: "Effective MAC"
+              status:
+                id: capture_status
+                name: "Status"
           switch:
             - platform: irk_capture
               irk_capture_id: irk
               advertising:
                 name: "BLE Advertising"
+              stop_after_capture:
+                name: "Stop Advertising After Capture"
           button:
             - platform: irk_capture
               irk_capture_id: irk
-              new_mac:
-                name: "Generate New MAC"
+              refresh_identity:
+                name: "Refresh BLE Identity"
           text:
             - platform: irk_capture
               irk_capture_id: irk
               ble_name:
+                id: ble_name_input
                 name: "BLE Device Name"
+                mode: text
+              next_capture_label:
+                name: "Next Capture Label"
                 mode: text
           select:
             - platform: irk_capture
               irk_capture_id: irk
               ble_profile:
                 name: "BLE Profile"
+          irk_wizard:
+            irk_capture_id: irk
+            status_id: capture_status
+            irk_id: last_irk
+            device_mac_id: last_addr
+            effective_mac_id: effective_mac
+            port: 8080
+            username: ci
+            password: ci-password
           EOF
 
       - name: Compile

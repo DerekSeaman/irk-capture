@@ -67,11 +67,25 @@ mdns:
 # Pull irk_capture external component. The component always tracks main so
 # devices pick up the latest component fixes automatically; the package YAML
 # version is pinned separately via the device YAML's packages: ref.
+#
+# Both can be redirected from the device YAML by setting irk_component_url /
+# irk_component_ref in its substitutions - useful for testing a branch or a
+# fork without having to edit this package. A device YAML's substitutions
+# take precedence over a package's.
+#
+# When testing a branch, set irk_component_ref to match the device YAML's
+# packages: ref. Otherwise a newer package runs against main's component and
+# fails validation on any option main does not have yet (for example
+# "[status] is an invalid option for [text_sensor.irk_capture]").
+substitutions:
+  irk_component_url: https://github.com/DerekSeaman/irk-capture
+  irk_component_ref: main
+
 external_components:
   - source:
       type: git
-      url: https://github.com/DerekSeaman/irk-capture
-      ref: main
+      url: ${irk_component_url}
+      ref: ${irk_component_ref}
     components: [irk_capture]
     refresh: always
 
@@ -105,11 +119,15 @@ text_sensor:
       name: "IRK"
       id: last_irk
     last_address:
-      name: "Device MAC"
+      name: "Device BLE MAC"
       id: last_addr
     effective_mac:
-      name: "Effective MAC"
+      name: "ESP32 BLE MAC"
       id: effective_mac
+    status:
+      name: "Status"
+      id: capture_status
+      icon: mdi:bluetooth-connect
 
 # Persistent BLE advertising intent (pauses automatically while connected)
 switch:
@@ -118,15 +136,17 @@ switch:
     advertising:
       id: ble_advertising
       name: "BLE Advertising"
-      restore_mode: ALWAYS_ON
+      # Preserve start_on_boot; an explicit restore mode can override it.
+      restore_mode: DISABLED
 
 # Buttons
 button:
   - platform: irk_capture
     irk_capture_id: irk
-    new_mac:
-      id: new_mac_btn
-      name: "Generate New MAC"
+    refresh_identity:
+      id: refresh_identity_btn
+      name: "Refresh BLE Identity"
+      icon: mdi:bluetooth-settings
   - platform: restart
     name: "Restart Device"
 

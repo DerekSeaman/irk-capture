@@ -10,6 +10,7 @@ from . import CONF_IRK_CAPTURE_ID, IRKCaptureComponent, irk_capture_ns
 CONF_LAST_IRK = "last_irk"
 CONF_LAST_ADDRESS = "last_address"
 CONF_EFFECTIVE_MAC = "effective_mac"
+CONF_STATUS = "status"
 
 IRKCaptureTextSensor = irk_capture_ns.class_(
     "IRKCaptureTextSensor", text_sensor.TextSensor, cg.Component
@@ -27,6 +28,8 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_EFFECTIVE_MAC): text_sensor.text_sensor_schema(
             IRKCaptureTextSensor
         ),
+        # One of: idle, advertising, pairing, capturing, captured, no_irk.
+        cv.Optional(CONF_STATUS): text_sensor.text_sensor_schema(IRKCaptureTextSensor),
     }
 )
 
@@ -46,3 +49,7 @@ async def to_code(config):
     if CONF_EFFECTIVE_MAC in config:
         sens = await text_sensor.new_text_sensor(config[CONF_EFFECTIVE_MAC])
         cg.add(parent.set_effective_mac_sensor(sens))
+
+    if CONF_STATUS in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_STATUS])
+        cg.add(parent.set_status_sensor(sens))
