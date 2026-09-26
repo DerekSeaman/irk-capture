@@ -18,7 +18,7 @@ h1{font-size:20px;margin:0 0 4px}
 .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:5px 10px;border-radius:99px}
 .pill.idle{background:#2a3739;color:var(--ink2)}
 .pill.advertising{background:#28323a;color:var(--accent)}
-.pill.pairing,.pill.capturing{background:#3a2f1b;color:var(--amber)}
+.pill.pairing,.pill.capturing,.pill.rebooting{background:#3a2f1b;color:var(--amber)}
 .pill.captured{background:#1c3626;color:var(--green)}
 .pill.no_irk{background:#3a2320;color:var(--red)}
 .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
@@ -153,7 +153,7 @@ ol.pair li{margin-bottom:5px}
   <h1 style="margin-bottom:18px">IRK Capture Tool</h1>
 
   <div class="card">
-    <div class="row"><span class="k">Status</span><span id="statusPill" class="pill idle">idle</span></div>
+    <div class="row"><span class="k">Status</span><span id="statusPill" class="pill idle" role="status">idle</span></div>
     <div class="row"><span class="k">Advertising as</span><span class="v" id="advName">-</span></div>
     <div class="row"><span class="k">BLE Profile</span><span class="v" id="profileName">-</span></div>
     <div class="row"><span class="k">ESP32 BLE MAC</span><span class="v" id="effMac">-</span></div>
@@ -166,6 +166,7 @@ ol.pair li{margin-bottom:5px}
 
   <h2 class="section">Express Capture</h2>
   <div class="card">
+    <p class="help">Select the target device type, enter an optional label, then pair your device to the advertised BLE service.</p>
     <label>Target device</label>
     <select id="profile">
       <option value="Heart Sensor">Apple (iPhone, Watch, iPad) and Android watches (Heart Sensor)</option>
@@ -210,21 +211,48 @@ var statusEpoch = 0;
 var refreshInFlight = null;
 var refreshAgain = false;
 var failCount = 0;
+var pendingReboot = null;
+var REQUEST_TIMEOUT_MS = 5000;
+var REBOOT_WARNING_MS = 60000;
 
 function showError(e){
   el('actionError').textContent=e.message || 'Request failed. Please try again.';
   el('actionError').classList.remove('hide');
 }
 function clearError(){ el('actionError').classList.add('hide'); }
-function post(url,body){
+async function requestJson(url,options){
+  var controller=new AbortController(), timer, responseStatus=0;
+  try{
+    // Bound both headers and body reads. The race also releases our queues if
+    // a browser/network stack does not promptly reject an aborted request.
+    return await Promise.race([
+      (async function(){
+        var r=await fetch(url,Object.assign({},options,{cache:'no-store',signal:controller.signal}));
+        responseStatus=r.status;
+        var text=await r.text();
+        if(!r.ok) throw new Error('Request failed ('+r.status+'). '+text.slice(0,180));
+        return text ? JSON.parse(text) : {};
+      })(),
+      new Promise(function(resolve,reject){
+        timer=setTimeout(function(){
+          reject(new Error('Request timed out. Check your connection to the device.'));
+          controller.abort();
+        },REQUEST_TIMEOUT_MS);
+      })
+    ]);
+  }catch(e){
+    // A received HTTP rejection is definite even if its body stalls or is lost.
+    if(responseStatus>=400) e.httpStatus=responseStatus;
+    throw e;
+  }finally{ clearTimeout(timer); }
+}
+function post(url,body,beforeSend){
   // Preserve user control order, especially START followed by Stop or Back.
   var request=writeQueue.then(async function(){
     ++statusEpoch;
     try{
-      var r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
-      var text=await r.text();
-      if(!r.ok) throw new Error('Request failed ('+r.status+'). '+text.slice(0,180));
-      return text ? JSON.parse(text) : {};
+      if(beforeSend) await beforeSend();
+      return await requestJson(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
     }finally{ ++statusEpoch; }
   });
   // Keep a rejected request from blocking subsequent controls.
@@ -244,6 +272,51 @@ function cancelCapture(stop){
 }
 function captureFailed(message){
   cancelCapture(false); captureMessage=message;
+}
+
+/* ---------- reboot tracking ---------- */
+function validBootId(id){ return Number.isInteger(id) && id>0 && id<=0xffffffff; }
+function connectionState(){
+  var waiting=pendingReboot && Date.now()-pendingReboot.started>=REBOOT_WARNING_MS;
+  el('offline').textContent=waiting
+    ? "Device hasn't reconnected yet. Reconnect to its Wi-Fi if needed; this page will keep checking."
+    : 'Device is rebooting or unreachable - reconnecting...';
+  el('offline').classList.toggle('hide',pendingReboot ? !waiting : failCount<=2);
+}
+function rebootState(){
+  el('rebootBtn').disabled=!!pendingReboot;
+  el('rebootBtn').textContent=pendingReboot ? 'Rebooting…' : 'Reboot ESP32';
+  setPill(el('statusPill'),pendingReboot ? 'rebooting' : (lastData ? lastData.status : 'idle'));
+  connectionState();
+}
+async function rebootDevice(){
+  if(pendingReboot || !confirm('Reboot the ESP32? The list of IRKs captured in this session will be cleared.')) return;
+  clearError();
+  var request={boot_id:null,started:Date.now(),sent:false,confirming:false}, body={};
+  pendingReboot=request; ++statusEpoch; rebootState();
+  try{
+    var ack=await post('/api/reboot',body,async function(){
+      // Read a fresh baseline after earlier controls finish. Cached page state
+      // may belong to a previous boot and cannot safely confirm a lost reply.
+      var before=await requestJson('/api/status');
+      if(!validBootId(before.boot_id)) throw new Error('Could not read the device status. Reboot was not sent; please try again.');
+      request.boot_id=before.boot_id;
+      body.expected_boot_id=String(before.boot_id);
+      request.started=Date.now();
+      request.sent=true;
+    });
+    if(validBootId(ack.boot_id)) request.boot_id=ack.boot_id;
+    request.confirming=true;
+  }catch(e){
+    if(!request.sent || e.httpStatus){
+      pendingReboot=null; showError(e);
+    }else{
+      // The ESP32 may reboot before delivering its reply. Never resend the
+      // command automatically; a fresh status poll must prove the boot changed.
+      request.confirming=true;
+    }
+  }
+  rebootState(); refresh();
 }
 
 /* ---------- view switching ---------- */
@@ -360,18 +433,15 @@ el('freshIdBtn').addEventListener('click',function(){action('/api/fresh_identity
 el('forgetBtn').addEventListener('click',function(){
   if(confirm('Clear all cached bonds and this session history?')) wizForget();
 });
-el('rebootBtn').addEventListener('click',function(){
-  if(confirm('Reboot the ESP32? The list of IRKs captured in this session will be cleared.'))
-    action('/api/reboot',{});
-});
+el('rebootBtn').addEventListener('click',rebootDevice);
 el('stopAfterSwitch').addEventListener('click',function(){
   action('/api/stop_after_capture',{enabled:!el('stopAfterSwitch').classList.contains('on')});
 });
 
 /* ---------- rendering ---------- */
-var KNOWN=['idle','advertising','pairing','capturing','captured','no_irk'];
+var KNOWN=['idle','advertising','pairing','capturing','captured','no_irk','rebooting'];
 function setPill(node,status){
-  node.textContent=status;
+  node.textContent=status==='rebooting' ? 'Rebooting…' : status;
   node.className='pill '+(KNOWN.indexOf(status)>=0?status:'idle');
 }
 
@@ -391,7 +461,7 @@ function render(d){
 
   /* panel */
   el('profileName').textContent = d.profile || '-';
-  setPill(el('statusPill'), d.status);
+  setPill(el('statusPill'), pendingReboot ? 'rebooting' : d.status);
   el('advName').textContent = advName;
   el('effMac').textContent = d.effective_mac || '-';
   el('profile').value = d.profile;
@@ -493,20 +563,29 @@ function render(d){
 function refresh(){
   // Browser suspension and manual refreshes can overlap interval polls. Keep one
   // in flight and discard snapshots that predate a completed control request.
+  connectionState();
   if(refreshInFlight){ refreshAgain=true; return refreshInFlight; }
   var epoch=statusEpoch;
   refreshInFlight=(async function(){
     try{
-      var r=await fetch('/api/status');
-      if(!r.ok) throw new Error('http');
-      var d=await r.json();
+      var d=await requestJson('/api/status');
       if(epoch!==statusEpoch) return;
-      failCount=0; el('offline').classList.add('hide');
+      if(!validBootId(d.boot_id)) throw new Error('Invalid device status');
+      if(pendingReboot && pendingReboot.confirming){
+        if(d.boot_id!==pendingReboot.boot_id){
+          pendingReboot=null;
+        }else if(Date.now()-pendingReboot.started>=REBOOT_WARNING_MS){
+          pendingReboot=null;
+          showError(new Error('The device is reachable, but a reboot could not be confirmed. Please try Reboot ESP32 again.'));
+        }
+      }
+      failCount=0;
       lastData=d; render(d);
     }catch(e){
       // A profile change reboots the device; say so instead of going silent.
-      if(epoch===statusEpoch && ++failCount>2) el('offline').classList.remove('hide');
+      if(epoch===statusEpoch) ++failCount;
     }finally{
+      rebootState();
       refreshInFlight=null;
       if(refreshAgain){ refreshAgain=false; refresh(); }
     }

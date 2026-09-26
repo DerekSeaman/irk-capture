@@ -506,9 +506,46 @@ static esp_err_t handle_post_fresh_identity(httpd_req_t* req) {
 static esp_err_t handle_post_reboot(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
   if (!json_request(req)) return ESP_OK;
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  const uint32_t boot_id =
+      self->irk_capture() ? self->irk_capture()->get_capture_result().boot_id : 0;
+  if (boot_id == 0) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return send_json(req, "{\"error\":\"Boot identity unavailable; retry shortly\"}");
+  }
+  const std::string body = read_request_body(req);
+  std::string expected_boot_id;
+  size_t value_pos = 0;
+  // Treat the browser's baseline as an opaque string. Require a complete quoted
+  // token because the small shared extractor also accepts unfinished strings.
+  bool valid_baseline =
+      json_extract_string(body, "expected_boot_id", expected_boot_id) &&
+      !expected_boot_id.empty() && expected_boot_id.size() <= 10 &&
+      expected_boot_id.find_first_not_of("0123456789") == std::string::npos &&
+      json_find_value_start(body, "expected_boot_id", value_pos) &&
+      body.compare(value_pos, expected_boot_id.size() + 2, "\"" + expected_boot_id + "\"") == 0;
+  if (valid_baseline) {
+    value_pos += expected_boot_id.size() + 2;
+    value_pos = body.find_first_not_of(" \t\r\n", value_pos);
+    valid_baseline =
+        value_pos != std::string::npos && (body[value_pos] == ',' || body[value_pos] == '}');
+  }
+  if (!valid_baseline) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return send_json(req, "{\"error\":\"expected_boot_id must be a quoted boot identity\"}");
+  }
+  if (expected_boot_id != std::to_string(boot_id)) {
+    httpd_resp_set_status(req, "409 Conflict");
+    return send_json(req, "{\"error\":\"Device already restarted; refresh and try again\"}");
+  }
   ESP_LOGI(TAG, "Reboot requested from the wizard");
-  static_cast<IRKWizardComponent*>(req->user_ctx)->reboot();
-  return send_ok(req);
+  // Read the core identity, not the periodic snapshot, and finish sending the
+  // acknowledgment before starting the reboot delay. A lost response can still
+  // accompany a successful reboot; the browser confirms the new boot by polling.
+  const esp_err_t result =
+      send_json(req, "{\"ok\":true,\"boot_id\":" + std::to_string(boot_id) + "}");
+  self->reboot();
+  return result;
 }
 
 }  // namespace irk_wizard
