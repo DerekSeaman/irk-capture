@@ -1,4 +1,4 @@
-# Release Notes v1.7.1
+# Release Notes v1.7.0
 
 This release covers everything since `v1.6.2`. It is the biggest update to IRK Capture
 so far: the ESP32 is much easier to find when your phone has seen it before, capturing

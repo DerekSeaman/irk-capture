@@ -48,7 +48,7 @@ For a complete guide for room-level presence detection using Bermuda BLE Trilate
 
 This IRK capture component turns your ESP32 into a BLE peripheral that can emulate different device types to capture IRKs from various platforms. It supports two BLE profiles:
 
-- **Heart Sensor Profile** (for Apple devices, Android watches): Advertises as a heart rate monitor, which Apple devices and many Android watches can discover (with third party app)
+- **Heart Sensor Profile** (for Apple devices, Android watches, GrapheneOS): Advertises as a heart rate monitor, which Apple devices and many Android watches can discover (may need third party Android watch app)
 - **Keyboard Profile** (for Android phones): Advertises as a "Logitech K380" keyboard by default, which bypasses Samsung's aggressive BLE filtering on Galaxy phones
 
 When your Apple or Android device pairs with the ESP32:
@@ -249,7 +249,7 @@ several entities change at once:
 
 `captured` and `no_irk` stay on screen for a few seconds so you don't miss them. A device you already captured that reconnects in the background won't replace the result you're looking at.
 
-## Optional: the capture wizard package
+## Optional: The Capture Wizard Package
 
 `irk-capture-wizard.yaml` adds a capture UI served by the ESP32 itself, on its own port
 (default 8080), alongside ESPHome's `web_server:`. It needs no Home Assistant, no dashboard and no
@@ -409,7 +409,7 @@ Below is a sample log showing a successful IRK capture:
 ```text
 [13:44:01.976][C][mdns:259]: mDNS:
 [13:44:01.976][C][mdns:259]:   Hostname: irk-capture-esp32-c3
-[13:44:01.976][C][irk_capture:1890]: IRK Capture v1.7.1: profile=Heart Sensor name='IRK Capture' adv=YES
+[13:44:01.976][C][irk_capture:1890]: IRK Capture v1.7.0: profile=Heart Sensor name='IRK Capture' adv=YES
 [13:44:13.357][I][irk_capture:1265][nimble_host]: Connection established successfully
 [13:44:13.360][I][irk_capture:2923][nimble_host]: Conn start: handle=1 enc_ready=0 was_adv=1
 [13:44:13.448][I][irk_capture:2925][nimble_host]: Connected; handle=1, initiating security
