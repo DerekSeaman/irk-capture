@@ -132,6 +132,18 @@ void IRKWizardComponent::fresh_identity() {
   });
 }
 
+void IRKWizardComponent::set_profile(bool keyboard) {
+  // set_ble_profile() publishes the BLE Profile and BLE Device Name entities
+  // itself rather than staging them, and entity publishes belong on the main
+  // task. Deferring also lets this request answer before the reboot the
+  // switch schedules.
+  this->defer([this, keyboard]() {
+    if (irk_capture_)
+      irk_capture_->set_ble_profile(keyboard ? irk_capture::BLEProfile::KEYBOARD
+                                             : irk_capture::BLEProfile::HEART_SENSOR);
+  });
+}
+
 WizardSnapshot IRKWizardComponent::get_snapshot() {
   MutexGuard lock(snapshot_mutex_);
   return snapshot_;
@@ -340,11 +352,13 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   std::string body = read_request_body(req);
   std::string profile;
-  if (json_extract_string(body, "profile", profile) && self->irk_capture()) {
-    self->irk_capture()->set_ble_profile(profile == "Keyboard"
-                                             ? irk_capture::BLEProfile::KEYBOARD
-                                             : irk_capture::BLEProfile::HEART_SENSOR);
+  bool keyboard = false;
+  if (!json_extract_string(body, "profile", profile) || !parse_profile_name(profile, keyboard)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_send(req, "profile must be \"Heart Sensor\" or \"Keyboard\"", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
   }
+  self->set_profile(keyboard);
   return send_ok(req);
 }
 

@@ -63,6 +63,22 @@ inline bool is_json_content_type(const char* value) {
   return value[i] == '\0' || value[i] == ';';
 }
 
+// Maps a profile name from the page to whether it is the Keyboard profile.
+// Anything else is rejected rather than defaulted: a profile switch reboots the
+// device and discards the capture session, so a typo, or a newer page talking
+// to an older device, must never switch profiles by falling through.
+inline bool parse_profile_name(const std::string& name, bool& keyboard) {
+  if (name == "Keyboard") {
+    keyboard = true;
+    return true;
+  }
+  if (name == "Heart Sensor") {
+    keyboard = false;
+    return true;
+  }
+  return false;
+}
+
 // Slows down password guessing: after MAX_FAILURES bad attempts in a row,
 // everything is refused for LOCKOUT_MS. A success clears the count.
 struct AuthThrottle {

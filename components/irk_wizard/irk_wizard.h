@@ -68,6 +68,10 @@ class IRKWizardComponent : public Component {
   // Gives the device a name and address the phone has not seen. Callable from
   // any task; the work itself is deferred to the main loop.
   void fresh_identity();
+  // Switches the BLE profile, which reboots the device. Callable from any
+  // task; set_ble_profile() publishes entities directly, so the call itself
+  // is deferred to the main loop.
+  void set_profile(bool keyboard);
   void set_port(uint16_t port) {
     port_ = port;
   }
