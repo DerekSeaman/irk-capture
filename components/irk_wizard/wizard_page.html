@@ -501,9 +501,7 @@ function setPill(node,status){
   node.className='pill '+(KNOWN.indexOf(status)>=0?status:'idle');
 }
 
-function render(d){
-  var advName = d.advertised_name || '-';
-
+function updateClearStatus(d){
   if(pendingClear && pendingClear.operation_id!==null){
     var clear=d.bond_clear, request=pendingClear;
     if(d.boot_id!==pendingClear.boot_id){
@@ -514,6 +512,10 @@ function render(d){
       pendingClear=null; clearMessage('Another clear request replaced this one. Please try again.',false,request);
     }
   }
+}
+
+function render(d){
+  var advName = d.advertised_name || '-';
 
   /* panel */
   el('profileName').textContent = d.profile || '-';
@@ -642,7 +644,7 @@ function refresh(){
         }
       }
       failCount=0;
-      lastData=d; render(d);
+      lastData=d; updateClearStatus(d); render(d);
     }catch(e){
       // A profile change reboots the device; say so instead of going silent.
       if(epoch===statusEpoch) ++failCount;

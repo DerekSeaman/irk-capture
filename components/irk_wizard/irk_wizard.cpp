@@ -140,9 +140,12 @@ void IRKWizardComponent::set_profile(bool keyboard) {
   // task. Deferring also lets this request answer before the reboot the
   // switch schedules.
   this->defer([this, keyboard]() {
-    if (irk_capture_)
-      irk_capture_->set_ble_profile(keyboard ? irk_capture::BLEProfile::KEYBOARD
-                                             : irk_capture::BLEProfile::HEART_SENSOR);
+    const auto requested =
+        keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
+    if (irk_capture_) irk_capture_->set_ble_profile(requested);
+    // A failed NVS save restores the old profile and does not reboot. Allow a
+    // retry then; successful changes remain reserved until the new boot.
+    if (!irk_capture_ || irk_capture_->get_ble_profile() != requested) release_profile_change();
   });
 }
 
@@ -501,6 +504,11 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
   }
   uint32_t boot_id = 0;
   if (!matching_boot_baseline(req, body, boot_id)) return ESP_OK;
+  if (!self->try_begin_profile_change()) {
+    httpd_resp_set_status(req, "409 Conflict");
+    return send_json(req,
+                     "{\"error\":\"A profile change is already in progress; retry after reboot\"}");
+  }
   const auto requested =
       keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
   const bool reboot_required = self->irk_capture()->get_ble_profile() != requested;
@@ -509,7 +517,10 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
   const esp_err_t result =
       send_json(req, "{\"ok\":true,\"boot_id\":" + std::to_string(boot_id) +
                          ",\"reboot_required\":" + (reboot_required ? "true" : "false") + "}");
-  if (reboot_required) self->set_profile(keyboard);
+  if (reboot_required)
+    self->set_profile(keyboard);
+  else
+    self->release_profile_change();
   return result;
 }
 

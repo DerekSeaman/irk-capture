@@ -82,6 +82,15 @@ class IRKWizardComponent : public Component {
   // task; set_ble_profile() publishes entities directly, so the call itself
   // is deferred to the main loop.
   void set_profile(bool keyboard);
+  // Reserve before acknowledging a change; retain the reservation until reboot
+  // or a failed save so another HTTP request cannot overtake deferred work.
+  bool try_begin_profile_change() {
+    bool expected = false;
+    return profile_change_pending_.compare_exchange_strong(expected, true);
+  }
+  void release_profile_change() {
+    profile_change_pending_.store(false);
+  }
   // Radio changes are serialized with Home Assistant controls on the main task.
   void set_advertising(bool on);
   // Returns a request ID immediately; /api/status acknowledges the authoritative
@@ -141,6 +150,7 @@ class IRKWizardComponent : public Component {
   AuthThrottle auth_throttle_;
   std::string expected_auth_;  // "Basic <base64>"; empty refuses every request
   std::atomic<uint32_t> last_request_ms_ { 0 };
+  std::atomic<bool> profile_change_pending_ { false };
 
   httpd_handle_t server_ { nullptr };
   SemaphoreHandle_t snapshot_mutex_ { nullptr };
