@@ -59,6 +59,9 @@ p.help{color:var(--ink2);font-size:13.5px;margin:0 0 12px}
 .target .cap{font-size:11.5px;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
 .irkbox{background:var(--surf2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;
 font-family:ui-monospace,monospace;font-size:14px;word-break:break-all;-webkit-user-select:all;user-select:all}
+.irkrow{display:flex;align-items:center;gap:10px;margin:12px 0}
+.irkrow .irkbox{flex:1;min-width:0;margin:0}
+.irkrow button{flex-shrink:0}
 .ok{color:var(--green)}
 .hide{display:none}
 ol.pair{margin:0 0 4px;padding-left:20px;color:var(--ink2);font-size:13.5px}
@@ -131,12 +134,11 @@ ol.pair li{margin-bottom:5px}
 
   <div class="card hide" id="step5">
     <div class="stepno">Step 5 of 5</div>
-    <h2 class="ok">Key captured</h2>
+    <h2 class="ok">IRK Captured</h2>
     <p class="help">Copy this IRK into Home Assistant: <b>Settings &rarr; Devices &amp; Services &rarr;
       Add Integration &rarr; Private BLE Device</b>.</p>
-    <div class="irkbox" id="wizIrk">-</div>
-    <div class="btnrow"><button class="primary" onclick="copyIrk()">Copy IRK</button>
-      <span id="copyMsg" class="help" style="margin:10px 0 0"></span></div>
+    <div class="irkrow"><div class="irkbox" id="wizIrk">-</div>
+      <button class="primary" id="wizCopy" onclick="copyIrk()">Copy</button></div>
     <div class="callout">You can now <b>forget this device</b> in your device's Bluetooth settings -
       the pairing was only needed to capture the IRK.</div>
     <div class="btnrow"><button onclick="wizRestart()">Capture another device</button>
@@ -193,6 +195,7 @@ var lastData = null;
 var labelDirty = false;
 var awaitingCapture = false;
 var irkAtStart = '';
+var sawNewAttempt = false; // a non-"captured" status seen since wizStart()
 var failCount = 0;
 
 async function post(url,body){
@@ -226,6 +229,10 @@ function wizStart(){
   // capture is still inside its "captured" hold would otherwise jump
   // straight to step 5 with that older key.
   irkAtStart = lastData ? (lastData.irk || '') : '';
+  // A "captured" already showing belongs to an earlier capture. Once any
+  // other status has been seen, the next "captured" is this attempt's, even
+  // when it is the same device again with the same key.
+  sawNewAttempt = !lastData || lastData.status !== 'captured';
   awaitingCapture = true;
   post('/api/advertising',{on:true});
   wizGo(4);
@@ -246,8 +253,10 @@ function copyText(txt, done){
   }catch(e){ done(false); }
 }
 function copyIrk(){
+  var btn=el('wizCopy');
   copyText(el('wizIrk').textContent, function(ok){
-    el('copyMsg').textContent = ok ? 'Copied.' : 'Select the key above and copy it.';
+    btn.textContent = ok ? 'Copied' : 'Failed';
+    setTimeout(function(){ btn.textContent='Copy'; }, 1500);
   });
 }
 
@@ -356,7 +365,8 @@ function render(d){
       hint.textContent='Waiting for your device to connect. Keep this page open.';
     }
     // The capture itself is what advances the wizard.
-    if(awaitingCapture && d.status==='captured' && d.irk && d.irk !== irkAtStart){
+    if(awaitingCapture && d.status!=='captured') sawNewAttempt=true;
+    if(awaitingCapture && d.status==='captured' && d.irk && (sawNewAttempt || d.irk !== irkAtStart)){
       awaitingCapture=false; wizGo(5);
     }
   }
