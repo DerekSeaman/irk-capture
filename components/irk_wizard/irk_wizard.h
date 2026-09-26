@@ -75,10 +75,10 @@ class IRKWizardComponent : public Component {
   void set_port(uint16_t port) {
     port_ = port;
   }
-  // Optional HTTP Basic auth. The expected header value is precomputed once
-  // here so request handling is a constant-time string compare with no
-  // base64 decoding (and no credentials living in RAM in plaintext beyond
-  // this encoded form).
+  // HTTP Basic auth, required by the config schema. The expected header value
+  // is precomputed once here so request handling is a constant-time string
+  // compare with no base64 decoding (and no credentials living in RAM in
+  // plaintext beyond this encoded form).
   void set_auth(const std::string& username, const std::string& password);
 
   irk_capture::IRKCaptureComponent* irk_capture() {
@@ -121,7 +121,7 @@ class IRKWizardComponent : public Component {
   const uint8_t* page_data_ { nullptr };
   size_t page_size_ { 0 };
   AuthThrottle auth_throttle_;
-  std::string expected_auth_;  // "Basic <base64>", empty = auth disabled
+  std::string expected_auth_;  // "Basic <base64>"; empty refuses every request
   std::atomic<uint32_t> last_request_ms_ { 0 };
 
   httpd_handle_t server_ { nullptr };

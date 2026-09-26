@@ -43,8 +43,10 @@ static bool authorized(httpd_req_t* req) {
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   const std::string& expected = self->expected_auth();
   if (expected.empty()) {
-    self->note_request();
-    return true;  // auth not configured
+    // The config schema requires credentials, so this means set_auth() never
+    // ran. Refuse rather than serve captured keys to anyone who asks.
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Wizard credentials not configured");
+    return false;
   }
 
   // Requests are handled one at a time on httpd's task, so the throttle
@@ -115,10 +117,6 @@ static std::string read_request_body(httpd_req_t* req) {
 //======================== Snapshot ========================
 
 void IRKWizardComponent::set_auth(const std::string& username, const std::string& password) {
-  if (username.empty() && password.empty()) {
-    expected_auth_.clear();
-    return;
-  }
   expected_auth_ = "Basic " + base64_encode(username + ":" + password);
 }
 

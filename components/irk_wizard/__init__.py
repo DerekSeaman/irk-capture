@@ -49,11 +49,11 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_DEVICE_MAC_ID): cv.use_id(text_sensor.TextSensor),
         cv.Required(CONF_EFFECTIVE_MAC_ID): cv.use_id(text_sensor.TextSensor),
         cv.Optional(CONF_PORT, default=8080): cv.int_range(min=1, max=65535),
-        # Optional HTTP Basic auth. Strongly recommended: without it anyone
-        # on the LAN can read captured IRKs (which permanently deanonymize a
-        # phone's rotating BLE address) and drive advertising/bond wiping.
-        cv.Inclusive(CONF_USERNAME, "auth"): cv.string_strict,
-        cv.Inclusive(CONF_PASSWORD, "auth"): cv.string_strict,
+        # HTTP Basic auth, required. A captured IRK permanently deanonymizes
+        # a phone's rotating BLE address, and an open device on the LAN is
+        # reachable by anything else on it, including a page in a browser.
+        cv.Required(CONF_USERNAME): cv.All(cv.string_strict, cv.Length(min=1)),
+        cv.Required(CONF_PASSWORD): cv.All(cv.string_strict, cv.Length(min=1)),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -82,8 +82,7 @@ async def to_code(config):
     cg.add(var.set_page(page_arr, len(packed)))
 
     cg.add(var.set_port(config[CONF_PORT]))
-    if CONF_USERNAME in config:
-        cg.add(var.set_auth(config[CONF_USERNAME], config[CONF_PASSWORD]))
+    cg.add(var.set_auth(config[CONF_USERNAME], config[CONF_PASSWORD]))
 
     # ESPHome 2026.9+ excludes most built-in ESP-IDF components from the
     # build unless something asks for them (irk_capture does this for "bt";

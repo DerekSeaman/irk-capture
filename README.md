@@ -276,9 +276,10 @@ packages:
     refresh: always
 ```
 
-Add `wizard_username` and `wizard_password` to your `secrets.yaml` first. A captured IRK
-permanently resolves a phone's randomized BLE address, so the wizard should not be left open on
-the network. Five wrong passwords in a row lock it out for 30 seconds. Traffic is plain HTTP, like
+Add `wizard_username` and `wizard_password` to your `secrets.yaml` first; the wizard requires
+both and will not compile without them. A captured IRK permanently resolves a phone's randomized
+BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock
+it out for 30 seconds. Traffic is plain HTTP, like
 ESPHome's own `web_server`, so keep the device on a network you trust.
 
 The package adds **Stop Advertising After Capture** and **Next Capture Label** as entities, plus
