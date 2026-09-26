@@ -255,6 +255,45 @@ static esp_err_t send_ok(httpd_req_t* req) {
   return send_json(req, "{\"ok\":true}");
 }
 
+// Reject commands whose browser baseline predates an intervening device reboot.
+// As with authorized(), failure sends its response before returning false.
+static bool matching_boot_baseline(httpd_req_t* req, const std::string& body, uint32_t& boot_id) {
+  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  boot_id = self->irk_capture() ? self->irk_capture()->get_capture_result().boot_id : 0;
+  if (boot_id == 0) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    send_json(req, "{\"error\":\"Boot identity unavailable; retry shortly\"}");
+    return false;
+  }
+  std::string expected_boot_id;
+  size_t value_pos = 0;
+  // Treat the browser's baseline as an opaque string. Require a complete quoted
+  // token because the small shared extractor also accepts unfinished strings.
+  bool valid_baseline =
+      json_extract_string(body, "expected_boot_id", expected_boot_id) &&
+      !expected_boot_id.empty() && expected_boot_id.size() <= 10 &&
+      expected_boot_id.find_first_not_of("0123456789") == std::string::npos &&
+      json_find_value_start(body, "expected_boot_id", value_pos) &&
+      body.compare(value_pos, expected_boot_id.size() + 2, "\"" + expected_boot_id + "\"") == 0;
+  if (valid_baseline) {
+    value_pos += expected_boot_id.size() + 2;
+    value_pos = body.find_first_not_of(" \t\r\n", value_pos);
+    valid_baseline =
+        value_pos != std::string::npos && (body[value_pos] == ',' || body[value_pos] == '}');
+  }
+  if (!valid_baseline) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    send_json(req, "{\"error\":\"expected_boot_id must be a quoted boot identity\"}");
+    return false;
+  }
+  if (expected_boot_id != std::to_string(boot_id)) {
+    httpd_resp_set_status(req, "409 Conflict");
+    send_json(req, "{\"error\":\"Device already restarted; refresh and try again\"}");
+    return false;
+  }
+  return true;
+}
+
 static std::string bond_clear_json(const irk_capture::BondClearResult& result) {
   return "{\"operation_id\":" + std::to_string(result.operation_id) + ",\"state\":\"" +
          json_escape(result.state) + "\",\"reason\":\"" + json_escape(result.reason) +
@@ -391,9 +430,14 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   WizardSnapshot s = self->get_snapshot();
-  // Label edits and consume-once capture updates must be visible immediately,
+  // Editable values and consume-once label updates must be visible immediately,
   // even when the main task has not rebuilt its periodic snapshot yet.
-  if (self->irk_capture()) s.next_capture_label = self->irk_capture()->get_next_capture_label();
+  if (self->irk_capture()) {
+    s.next_capture_label = self->irk_capture()->get_next_capture_label();
+    s.profile = self->irk_capture()->get_ble_profile() == irk_capture::BLEProfile::KEYBOARD
+                    ? "Keyboard"
+                    : "Heart Sensor";
+  }
 
   std::string json = "{";
   json += "\"boot_id\":" + std::to_string(s.capture_result.boot_id) + ",";
@@ -455,8 +499,18 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
     httpd_resp_send(req, "profile must be \"Heart Sensor\" or \"Keyboard\"", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
   }
-  self->set_profile(keyboard);
-  return send_ok(req);
+  uint32_t boot_id = 0;
+  if (!matching_boot_baseline(req, body, boot_id)) return ESP_OK;
+  const auto requested =
+      keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
+  const bool reboot_required = self->irk_capture()->get_ble_profile() != requested;
+  // Reply before dispatching the main-task save. Persistence can still fail, so
+  // the browser confirms a new boot and the selected profile through status.
+  const esp_err_t result =
+      send_json(req, "{\"ok\":true,\"boot_id\":" + std::to_string(boot_id) +
+                         ",\"reboot_required\":" + (reboot_required ? "true" : "false") + "}");
+  if (reboot_required) self->set_profile(keyboard);
+  return result;
 }
 
 static esp_err_t handle_post_label(httpd_req_t* req) {
@@ -516,37 +570,9 @@ static esp_err_t handle_post_reboot(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
   if (!json_request(req)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  const uint32_t boot_id =
-      self->irk_capture() ? self->irk_capture()->get_capture_result().boot_id : 0;
-  if (boot_id == 0) {
-    httpd_resp_set_status(req, "503 Service Unavailable");
-    return send_json(req, "{\"error\":\"Boot identity unavailable; retry shortly\"}");
-  }
   const std::string body = read_request_body(req);
-  std::string expected_boot_id;
-  size_t value_pos = 0;
-  // Treat the browser's baseline as an opaque string. Require a complete quoted
-  // token because the small shared extractor also accepts unfinished strings.
-  bool valid_baseline =
-      json_extract_string(body, "expected_boot_id", expected_boot_id) &&
-      !expected_boot_id.empty() && expected_boot_id.size() <= 10 &&
-      expected_boot_id.find_first_not_of("0123456789") == std::string::npos &&
-      json_find_value_start(body, "expected_boot_id", value_pos) &&
-      body.compare(value_pos, expected_boot_id.size() + 2, "\"" + expected_boot_id + "\"") == 0;
-  if (valid_baseline) {
-    value_pos += expected_boot_id.size() + 2;
-    value_pos = body.find_first_not_of(" \t\r\n", value_pos);
-    valid_baseline =
-        value_pos != std::string::npos && (body[value_pos] == ',' || body[value_pos] == '}');
-  }
-  if (!valid_baseline) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    return send_json(req, "{\"error\":\"expected_boot_id must be a quoted boot identity\"}");
-  }
-  if (expected_boot_id != std::to_string(boot_id)) {
-    httpd_resp_set_status(req, "409 Conflict");
-    return send_json(req, "{\"error\":\"Device already restarted; refresh and try again\"}");
-  }
+  uint32_t boot_id = 0;
+  if (!matching_boot_baseline(req, body, boot_id)) return ESP_OK;
   ESP_LOGI(TAG, "Reboot requested from the wizard");
   // Read the core identity, not the periodic snapshot, and finish sending the
   // acknowledgment before starting the reboot delay. A lost response can still

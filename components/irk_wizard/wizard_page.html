@@ -288,27 +288,45 @@ function connectionState(){
 function rebootState(){
   el('rebootBtn').disabled=!!pendingReboot;
   el('rebootBtn').textContent=pendingReboot ? 'Rebooting…' : 'Reboot ESP32';
+  ['profile','wizProfile'].forEach(function(id){
+    el(id).disabled=!!pendingReboot;
+    if(pendingReboot && pendingReboot.profile) el(id).value=pendingReboot.profile;
+    else if(lastData) el(id).value=lastData.profile;
+  });
   setPill(el('statusPill'),pendingReboot ? 'rebooting' : (lastData ? lastData.status : 'idle'));
+  if(wizStep===4) setPill(el('wizPill'),pendingReboot ? 'rebooting' : (lastData ? lastData.status : 'idle'));
   connectionState();
 }
-async function rebootDevice(){
+function rebootDevice(){
   if(pendingReboot || !confirm('Reboot the ESP32? The list of IRKs captured in this session will be cleared.')) return;
+  return trackReboot('/api/reboot',{});
+}
+function changeProfile(profile){
+  return trackReboot('/api/profile',{profile:profile},profile);
+}
+async function trackReboot(url,body,profile){
+  if(pendingReboot) return;
   clearError();
-  var request={boot_id:null,started:Date.now(),sent:false,confirming:false}, body={};
+  var request={boot_id:null,started:Date.now(),sent:false,confirming:false,profile:profile};
   pendingReboot=request; ++statusEpoch; rebootState();
   try{
-    var ack=await post('/api/reboot',body,async function(){
+    var ack=await post(url,body,async function(){
       // Read a fresh baseline after earlier controls finish. Cached page state
       // may belong to a previous boot and cannot safely confirm a lost reply.
       var before=await requestJson('/api/status');
-      if(!validBootId(before.boot_id)) throw new Error('Could not read the device status. Reboot was not sent; please try again.');
+      if(!validBootId(before.boot_id)) throw new Error('Could not read the device status. '+
+        (profile ? 'Profile change' : 'Reboot')+' was not sent; please try again.');
       request.boot_id=before.boot_id;
       body.expected_boot_id=String(before.boot_id);
       request.started=Date.now();
       request.sent=true;
     });
     if(validBootId(ack.boot_id)) request.boot_id=ack.boot_id;
-    request.confirming=true;
+    if(profile && ack.reboot_required===false){
+      // Selecting the profile already in use does not restart the device.
+      pendingReboot=null;
+      if(lastData) lastData.profile=profile;
+    }else request.confirming=true;
   }catch(e){
     if(!request.sent || e.httpStatus){
       pendingReboot=null; showError(e);
@@ -448,8 +466,8 @@ async function savePanelLabel(){
 }
 el('label').addEventListener('input',function(){labelDirty=true; ++labelEdit;});
 el('label').addEventListener('blur',savePanelLabel);
-el('profile').addEventListener('change',function(){action('/api/profile',{profile:el('profile').value})});
-el('wizProfile').addEventListener('change',function(){action('/api/profile',{profile:el('wizProfile').value})});
+el('profile').addEventListener('change',function(){return changeProfile(el('profile').value)});
+el('wizProfile').addEventListener('change',function(){return changeProfile(el('wizProfile').value)});
 el('advBtn').addEventListener('click',function(){
   action('/api/advertising',{on: el('advBtn').dataset.on !== '1'});
 });
@@ -488,7 +506,7 @@ function render(d){
   setPill(el('statusPill'), pendingReboot ? 'rebooting' : d.status);
   el('advName').textContent = advName;
   el('effMac').textContent = d.effective_mac || '-';
-  el('profile').value = d.profile;
+  el('profile').value = pendingReboot && pendingReboot.profile ? pendingReboot.profile : d.profile;
   if(!labelDirty && document.activeElement!==el('label')) el('label').value = d.next_capture_label || '';
   el('advBtn').textContent = d.advertising ? 'Stop Advertising' : 'Start Advertising';
   el('advBtn').dataset.on = d.advertising ? '1' : '0';
@@ -530,12 +548,12 @@ function render(d){
 
   /* wizard */
   if(wizStep===0) return;
-  el('wizProfile').value = d.profile;
+  el('wizProfile').value = pendingReboot && pendingReboot.profile ? pendingReboot.profile : d.profile;
   if(document.activeElement !== el('wizLabel') && !el('wizLabel').value && d.next_capture_label)
     el('wizLabel').value = d.next_capture_label;
 
   if(wizStep===4){
-    setPill(el('wizPill'), d.status);
+    setPill(el('wizPill'), pendingReboot ? 'rebooting' : d.status);
     el('wizAdvName').textContent = advName;
     // Android watches pair through the Heart Sensor profile only.
     el('gearTip').classList.toggle('hide', d.profile !== 'Heart Sensor');
@@ -597,10 +615,13 @@ function refresh(){
       if(!validBootId(d.boot_id)) throw new Error('Invalid device status');
       if(pendingReboot && pendingReboot.confirming){
         if(d.boot_id!==pendingReboot.boot_id){
+          if(pendingReboot.profile && d.profile!==pendingReboot.profile)
+            showError(new Error('The device restarted, but the selected profile was not applied. Please select the target device type again.'));
           pendingReboot=null;
         }else if(Date.now()-pendingReboot.started>=REBOOT_WARNING_MS){
+          var retry=pendingReboot.profile ? 'Please select the target device type again.' : 'Please try Reboot ESP32 again.';
           pendingReboot=null;
-          showError(new Error('The device is reachable, but a reboot could not be confirmed. Please try Reboot ESP32 again.'));
+          showError(new Error('The device is reachable, but a reboot could not be confirmed. '+retry));
         }
       }
       failCount=0;
