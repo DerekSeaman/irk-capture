@@ -252,6 +252,49 @@ several entities change at once:
 
 **Forget All Bonds** clears this session's list of captured devices without changing the ESP32's name or MAC address. If a device is connected, press it again after it disconnects.
 
+
+## Optional: the capture wizard package
+
+`irk-capture-wizard.yaml` adds a guided capture UI served by the ESP32 itself, on its own port
+(default 8080), alongside ESPHome's `web_server:`. It needs no Home Assistant, no dashboard and no
+internet, so it also works from the fallback AP.
+
+Most people capture straight from the device page in Home Assistant and won't need it. It is off
+unless you add it, as a second `packages:` entry:
+
+```yaml
+packages:
+  device:
+    url: https://github.com/DerekSeaman/irk-capture
+    ref: main
+    file: ESPHome Devices/irk-capture-base.yaml
+    refresh: always
+  wizard:
+    url: https://github.com/DerekSeaman/irk-capture
+    ref: main
+    file: ESPHome Devices/irk-capture-wizard.yaml
+    refresh: always
+```
+
+Add `wizard_username` and `wizard_password` to your `secrets.yaml` first; the wizard requires
+both and will not compile without them. A captured IRK permanently resolves a phone's randomized
+BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock
+it out for 30 seconds. Traffic is plain HTTP, like
+ESPHome's own `web_server`, so keep the device on a network you trust.
+
+The package adds **Stop Advertising After Capture** and **Next Capture Label** as entities, plus
+the UI. It walks through picking the target device, labelling the capture, clearing any old
+pairing, pairing, and collecting the key.
+
+The step that matters most is the one people get stuck on: knowing what name to look for. The name
+on air is not always the configured BLE name. The Keyboard profile boots as **Logitech K380**, and
+a rename or a **Refresh BLE Identity** replaces either profile's name until the next reboot
+(`IRK HR 7F3A`, `IRK KB 7F3A`). The wizard always shows the name the ESP32 is advertising right
+now, so you are never left scanning for the wrong one.
+
+Capture history is served from the wizard's own HTTP API rather than published as an entity, since
+Home Assistant caps a state at 255 characters and the JSON passes that at the third device.
+
 ## Tested Devices
 
 This ESPHome IRK capture component has been successfully tested with:

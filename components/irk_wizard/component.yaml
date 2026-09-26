@@ -1,0 +1,6 @@
+---
+# Component configuration for irk_wizard
+# ESP-IDF native esp_http_server - no external libraries needed
+
+dependencies:
+  - text_sensor

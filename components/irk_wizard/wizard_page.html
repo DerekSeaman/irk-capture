@@ -1,0 +1,363 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IRK Capture Wizard</title>
+<style>
+:root{--bg:#10181a;--surf:#172124;--surf2:#1c2729;--border:#2a3739;--ink1:#eef3f2;--ink2:#aebcbc;--ink3:#7f9294;
+--accent:#3fc3c2;--accentInk:#06282a;--amber:#e3a94a;--green:#6fc98d;--red:#e18a82}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink1);font:15px/1.5 -apple-system,system-ui,sans-serif;padding:20px 16px 60px}
+.wrap{max-width:540px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--ink3);font-size:13px;margin:0 0 18px}
+.card{background:var(--surf);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:14px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
+.row:last-child{margin-bottom:0}
+.k{color:var(--ink3);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.v{font-family:ui-monospace,monospace;font-size:13px;word-break:break-all;text-align:right}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:5px 10px;border-radius:99px}
+.pill.idle{background:#2a3739;color:var(--ink2)}
+.pill.advertising{background:#28323a;color:var(--accent)}
+.pill.pairing,.pill.capturing{background:#3a2f1b;color:var(--amber)}
+.pill.captured{background:#1c3626;color:var(--green)}
+.pill.no_irk{background:#3a2320;color:var(--red)}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+select,input[type=text]{width:100%;background:var(--surf2);border:1px solid var(--border);color:var(--ink1);
+border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+button{font:inherit;font-weight:600;font-size:13px;border:1px solid var(--border);background:var(--surf2);
+color:var(--ink1);border-radius:8px;padding:10px 14px;cursor:pointer}
+button.primary{background:var(--accent);color:var(--accentInk);border-color:var(--accent)}
+button.danger{color:var(--red);border-color:#4a2a26}
+button:disabled{opacity:.45;cursor:default}
+button.big{display:block;width:100%;padding:14px;font-size:15px;margin-bottom:18px}
+.toggle{display:flex;justify-content:space-between;align-items:center}
+.switch{width:38px;height:22px;border-radius:99px;background:var(--border);position:relative;cursor:pointer;flex:none}
+.switch.on{background:var(--accent)}
+.switch::after{content:"";position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px;transition:.15s}
+.switch.on::after{left:18px}
+.hist{display:flex;flex-direction:column;gap:6px}
+.hist .item{display:flex;justify-content:space-between;background:var(--surf2);border:1px solid var(--border);
+border-radius:8px;padding:8px 10px;font-size:12.5px}
+.hist .mac{font-family:ui-monospace,monospace;color:var(--ink3)}
+.empty{color:var(--ink3);font-size:13px;text-align:center;padding:10px 0}
+label{display:block;font-size:12px;color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.steps{display:flex;gap:6px;margin-bottom:16px}
+.steps .s{flex:1;height:4px;border-radius:2px;background:var(--border)}
+.steps .s.done{background:var(--accent)}
+.steps .s.now{background:var(--accent);opacity:.55}
+.stepno{font-size:12px;color:var(--accent);text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:6px}
+h2{font-size:17px;margin:0 0 8px}
+p.help{color:var(--ink2);font-size:13.5px;margin:0 0 12px}
+.callout{background:var(--surf2);border-left:3px solid var(--amber);border-radius:6px;padding:10px 12px;font-size:13px;color:var(--ink2);margin:12px 0}
+.callout b{color:var(--ink1)}
+.target{background:var(--surf2);border:1px solid var(--accent);border-radius:8px;padding:12px;text-align:center;margin:12px 0}
+.target .nm{font-family:ui-monospace,monospace;font-size:17px;color:var(--accent);font-weight:600;word-break:break-all}
+.target .cap{font-size:11.5px;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.irkbox{background:var(--surf2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;
+font-family:ui-monospace,monospace;font-size:14px;word-break:break-all;-webkit-user-select:all;user-select:all}
+.ok{color:var(--green)}
+.hide{display:none}
+ol.pair{margin:0 0 4px;padding-left:20px;color:var(--ink2);font-size:13.5px}
+ol.pair li{margin-bottom:5px}
+.banner{background:#3a2f1b;color:var(--amber);border-radius:8px;padding:10px 12px;font-size:13px;font-weight:500;margin-bottom:14px}
+</style></head><body><div class="wrap">
+
+<div id="offline" class="banner hide">Device is rebooting or unreachable - reconnecting...</div>
+
+<!-- ============ WIZARD VIEW ============ -->
+<div id="wizView" class="hide">
+  <h1>IRK Wizard</h1>
+  <p class="sub" id="wizSub">Guided capture, one step at a time</p>
+  <div class="steps">
+    <div class="s" data-step="1"></div><div class="s" data-step="2"></div>
+    <div class="s" data-step="3"></div><div class="s" data-step="4"></div><div class="s" data-step="5"></div>
+  </div>
+
+  <div class="card" id="step1">
+    <div class="stepno">Step 1 of 5</div>
+    <h2>What are you capturing from?</h2>
+    <p class="help">This picks how the device disguises itself so your phone will show it.</p>
+    <select id="wizProfile">
+      <option value="Heart Sensor">iPhone or Apple Watch</option>
+      <option value="Keyboard">Samsung Galaxy / Android phone</option>
+    </select>
+    <div class="callout" id="profileWarn">Changing this <b>reboots the device</b> and takes about 15 seconds. The page reconnects on its own.</div>
+    <div class="btnrow"><button class="primary" onclick="wizGo(2)">Next</button>
+      <button onclick="showPanel()">Exit wizard</button></div>
+  </div>
+
+  <div class="card hide" id="step2">
+    <div class="stepno">Step 2 of 5</div>
+    <h2>Whose device is this?</h2>
+    <p class="help">Optional. The name is stored with the captured key so you can tell them apart later.</p>
+    <input type="text" id="wizLabel" placeholder="e.g. Daves iPhone" maxlength="24">
+    <div class="btnrow"><button class="primary" onclick="wizSaveLabel()">Next</button>
+      <button onclick="wizGo(1)">Back</button></div>
+  </div>
+
+  <div class="card hide" id="step3">
+    <div class="stepno">Step 3 of 5</div>
+    <h2>Clear any old pairing</h2>
+    <p class="help">If this phone has paired with this device before, it will silently reuse the old
+      pairing and no new key is captured. This is the most common reason a capture never happens.</p>
+    <div class="callout">On your phone: open <b>Bluetooth settings</b>, find
+      <b id="forgetName">IRK Capture</b>, and choose <b>Forget This Device</b> (iPhone: tap the
+      &#9432; first). If it is not listed, nothing to do.</div>
+    <div class="btnrow"><button class="danger" onclick="wizForget()">Also clear it on this device</button></div>
+    <p class="help ok hide" id="forgetDone">Cleared on this device.</p>
+    <div class="btnrow"><button class="primary" onclick="wizStart()">Next: start pairing</button>
+      <button onclick="wizGo(2)">Back</button></div>
+  </div>
+
+  <div class="card hide" id="step4">
+    <div class="stepno">Step 4 of 5</div>
+    <h2>Pair from your phone now</h2>
+    <div class="row"><span class="k">Device status</span><span id="wizPill" class="pill idle">idle</span></div>
+    <div class="target"><div class="cap">Look for this name</div><div class="nm" id="wizAdvName">-</div></div>
+    <ol class="pair" id="wizSteps"></ol>
+    <div class="callout" id="wizHint">Waiting for your phone to connect. Keep this page open.</div>
+    <p class="help" id="freshHelp">Not in the list, or it flashes up and vanishes? Phones hide names
+      they have seen before. Turn Bluetooth off and on again, then give the device a new identity:</p>
+    <div class="btnrow"><button id="freshBtn" onclick="wizFresh()">Refresh BLE Identity</button></div>
+    <div class="btnrow"><button onclick="wizStop()">Stop</button><button onclick="wizGo(3)">Back</button></div>
+  </div>
+
+  <div class="card hide" id="step5">
+    <div class="stepno">Step 5 of 5</div>
+    <h2 class="ok">Key captured</h2>
+    <p class="help">Copy this IRK into Home Assistant: <b>Settings &rarr; Devices &amp; Services &rarr;
+      Add Integration &rarr; Private BLE Device</b>.</p>
+    <div class="irkbox" id="wizIrk">-</div>
+    <div class="btnrow"><button class="primary" onclick="copyIrk()">Copy IRK</button>
+      <span id="copyMsg" class="help" style="margin:10px 0 0"></span></div>
+    <div class="callout">You can now <b>forget this device</b> in your phone's Bluetooth settings -
+      the pairing was only needed to hand over the key.</div>
+    <div class="btnrow"><button onclick="wizRestart()">Capture another device</button>
+      <button onclick="showPanel()">Done</button></div>
+  </div>
+</div>
+
+<!-- ============ PANEL VIEW ============ -->
+<div id="panelView">
+  <h1>IRK Capture</h1>
+  <p class="sub" id="deviceName">-</p>
+
+  <button class="big primary" onclick="showWizard()">Start IRK Wizard &rarr;</button>
+
+  <div class="card">
+    <div class="row"><span class="k">Status</span><span id="statusPill" class="pill idle">idle</span></div>
+    <div class="row"><span class="k">Advertising as</span><span class="v" id="advName">-</span></div>
+    <div class="row"><span class="k">Effective MAC</span><span class="v" id="effMac">-</span></div>
+    <div class="row"><span class="k">Captured IRK</span><span class="v" id="irkVal">-</span></div>
+  </div>
+
+  <div class="card">
+    <label>Target device</label>
+    <select id="profile">
+      <option value="Heart Sensor">iPhone / Apple Watch (Heart Sensor)</option>
+      <option value="Keyboard">Samsung Galaxy (Keyboard)</option>
+    </select>
+    <div style="height:10px"></div>
+    <label>Label this capture (optional)</label>
+    <input type="text" id="label" placeholder="e.g. Daves iPhone" maxlength="24">
+    <div class="btnrow">
+      <button class="primary" id="advBtn">Start Advertising</button>
+      <button id="freshIdBtn">Refresh BLE Identity</button>
+      <button class="danger" id="forgetBtn">Forget All Bonds</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row toggle"><span class="k">Stop advertising after capture</span>
+      <div class="switch" id="stopAfterSwitch"></div></div>
+  </div>
+
+  <div class="card">
+    <div class="k" style="margin-bottom:10px">Captured this session</div>
+    <div class="hist" id="history"><div class="empty">No devices captured yet</div></div>
+  </div>
+</div>
+
+</div>
+<script>
+function el(id){return document.getElementById(id)}
+var wizStep = 0;          // 0 = panel view
+var lastData = null;
+var labelDirty = false;
+var awaitingCapture = false;
+var irkAtStart = '';
+var failCount = 0;
+
+async function post(url,body){
+  try{
+    await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  }catch(e){}
+  refresh();
+}
+
+/* ---------- view switching ---------- */
+function showPanel(){ wizStep=0; el('wizView').classList.add('hide'); el('panelView').classList.remove('hide');
+  window.scrollTo(0,0); refresh(); }
+function showWizard(){ wizGo(1); el('panelView').classList.add('hide'); el('wizView').classList.remove('hide');
+  window.scrollTo(0,0); }
+function wizGo(n){
+  wizStep=n;
+  for(var i=1;i<=5;i++) el('step'+i).classList.toggle('hide', i!==n);
+  document.querySelectorAll('.steps .s').forEach(function(s){
+    var i=parseInt(s.dataset.step,10);
+    s.className='s'+(i<n?' done':(i===n?' now':''));
+  });
+  window.scrollTo(0,0);
+  if(lastData) render(lastData);
+}
+
+/* ---------- wizard actions ---------- */
+function wizSaveLabel(){ post('/api/label',{label:el('wizLabel').value}); wizGo(3); }
+function wizForget(){ post('/api/forget_bonds',{}); el('forgetDone').classList.remove('hide'); }
+function wizStart(){
+  // Remember the key showing now: entering this step while a previous
+  // capture is still inside its "captured" hold would otherwise jump
+  // straight to step 5 with that older key.
+  irkAtStart = lastData ? (lastData.irk || '') : '';
+  awaitingCapture = true;
+  post('/api/advertising',{on:true});
+  wizGo(4);
+}
+function wizFresh(){ post('/api/fresh_identity',{}); }
+function wizStop(){ awaitingCapture=false; post('/api/advertising',{on:false}); }
+function wizRestart(){ awaitingCapture=false; el('wizLabel').value=''; wizGo(1); }
+
+function copyIrk(){
+  var txt = el('wizIrk').textContent;
+  function done(ok){ el('copyMsg').textContent = ok ? 'Copied.' : 'Select the key above and copy it.'; }
+  // navigator.clipboard is unavailable over plain HTTP, so fall back.
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(txt).then(function(){done(true)},function(){done(false)});
+    return;
+  }
+  try{
+    var ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta);
+    ta.select(); var ok=document.execCommand('copy'); document.body.removeChild(ta); done(ok);
+  }catch(e){ done(false); }
+}
+
+/* ---------- pairing instructions ---------- */
+function pairSteps(profile,name){
+  if(profile==='Keyboard'){
+    return ['Open Settings, then Connections, then Bluetooth.',
+            'Tap Scan if the list does not refresh on its own.',
+            'Tap "'+name+'" in the list of available devices.',
+            'Confirm the pairing request if one appears.'];
+  }
+  return ['Open Settings, then Bluetooth (make sure Bluetooth is on).',
+          'Look under "Other Devices" for "'+name+'".',
+          'Tap it, then tap Pair if asked.',
+          'For an Apple Watch, pair from a heart-rate app instead.'];
+}
+
+/* ---------- panel wiring ---------- */
+el('label').addEventListener('input',function(){labelDirty=true});
+el('label').addEventListener('blur',function(){post('/api/label',{label:el('label').value});labelDirty=false});
+el('profile').addEventListener('change',function(){post('/api/profile',{profile:el('profile').value})});
+el('wizProfile').addEventListener('change',function(){post('/api/profile',{profile:el('wizProfile').value})});
+el('advBtn').addEventListener('click',function(){
+  post('/api/advertising',{on: el('advBtn').dataset.on !== '1'});
+});
+el('freshIdBtn').addEventListener('click',function(){post('/api/fresh_identity',{})});
+el('forgetBtn').addEventListener('click',function(){
+  if(confirm('Clear all cached bonds and this session history?')) post('/api/forget_bonds',{});
+});
+el('stopAfterSwitch').addEventListener('click',function(){
+  post('/api/stop_after_capture',{enabled:!el('stopAfterSwitch').classList.contains('on')});
+});
+
+/* ---------- rendering ---------- */
+var KNOWN=['idle','advertising','pairing','capturing','captured','no_irk'];
+function setPill(node,status){
+  node.textContent=status;
+  node.className='pill '+(KNOWN.indexOf(status)>=0?status:'idle');
+}
+
+function render(d){
+  var advName = d.advertised_name || '-';
+
+  /* panel */
+  el('deviceName').textContent = advName + ' · ' + d.profile;
+  setPill(el('statusPill'), d.status);
+  el('advName').textContent = advName;
+  el('effMac').textContent = d.effective_mac || '-';
+  el('irkVal').textContent = d.irk || '-';
+  el('profile').value = d.profile;
+  if(!labelDirty) el('label').value = d.next_capture_label || '';
+  el('advBtn').textContent = d.advertising ? 'Stop Advertising' : 'Start Advertising';
+  el('advBtn').dataset.on = d.advertising ? '1' : '0';
+  el('stopAfterSwitch').classList.toggle('on', !!d.stop_after_capture);
+
+  var history=[];
+  // The device sends history as a real JSON array, not a string.
+  if(Array.isArray(d.history)) history=d.history;
+  var histEl=el('history');
+  histEl.textContent='';
+  if(!history.length){
+    var em=document.createElement('div'); em.className='empty';
+    em.textContent='No devices captured yet'; histEl.appendChild(em);
+  } else {
+    // DOM nodes with textContent, never innerHTML: labels and MACs come from
+    // paired devices and are untrusted here.
+    history.forEach(function(h){
+      var it=document.createElement('div'); it.className='item';
+      var nm=document.createElement('span'); nm.textContent=h.label||'(unlabeled)';
+      var mc=document.createElement('span'); mc.className='mac'; mc.textContent=h.mac||'';
+      it.appendChild(nm); it.appendChild(mc); histEl.appendChild(it);
+    });
+  }
+
+  /* wizard */
+  if(wizStep===0) return;
+  el('wizProfile').value = d.profile;
+  el('forgetName').textContent = advName;
+  if(document.activeElement !== el('wizLabel') && !el('wizLabel').value && d.next_capture_label)
+    el('wizLabel').value = d.next_capture_label;
+
+  if(wizStep===4){
+    setPill(el('wizPill'), d.status);
+    el('wizAdvName').textContent = advName;
+    var ol=el('wizSteps'); ol.textContent='';
+    pairSteps(d.profile, advName).forEach(function(t){
+      var li=document.createElement('li'); li.textContent=t; ol.appendChild(li);
+    });
+    var hint=el('wizHint');
+    if(d.status==='no_irk'){
+      hint.textContent='Your phone paired but did not hand over an identity key. '+
+        'Forget this device in its Bluetooth settings, then go back a step and try again.';
+    } else if(d.status==='pairing'||d.status==='capturing'){
+      hint.textContent='Your phone is connected - finishing the key exchange. Do not touch anything.';
+    } else if(!d.advertising){
+      hint.textContent='Advertising is off. Go back a step and press "Next: start pairing".';
+    } else {
+      hint.textContent='Waiting for your phone to connect. Keep this page open.';
+    }
+    // The capture itself is what advances the wizard.
+    if(awaitingCapture && d.status==='captured' && d.irk && d.irk !== irkAtStart){
+      awaitingCapture=false; wizGo(5);
+    }
+  }
+
+  if(wizStep===5) el('wizIrk').textContent = d.irk || '-';
+}
+
+async function refresh(){
+  try{
+    var r=await fetch('/api/status');
+    if(!r.ok) throw new Error('http');
+    var d=await r.json();
+    failCount=0; el('offline').classList.add('hide');
+    lastData=d; render(d);
+  }catch(e){
+    // A profile change reboots the device; say so instead of going silent.
+    if(++failCount>2) el('offline').classList.remove('hide');
+  }
+}
+refresh();
+setInterval(refresh, 1200);
+</script></body></html>
