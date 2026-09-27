@@ -406,9 +406,9 @@ Below is a sample log showing a successful IRK capture:
 [05:43:12.401][I][irk_capture:1595][nimble_host]: MTU updated: 256
 [05:43:12.918][D][irk_capture:1646][nimble_host]: Subscription changed: handle=1 attr=8 notify=0 indicate=1 reason=1
 [05:43:14.146][I][irk_capture:3407]: Retrying security initiate after 2278 ms
-[05:43:14.149][D][irk_capture:3426]: Retry security initiate rc=2
-[05:43:14.721][D][irk_capture:1667][nimble_host]: Pairing complete: handle=1
-[05:43:14.725][D][irk_capture:1657][nimble_host]: Peer identity resolved using IRK
+[05:43:14.149][D][irk_capture:3426]: Retry security initiate: already in progress
+[05:43:14.721][D][irk_capture:1667][nimble_host]: Pairing procedure ended: handle=1 (no SMP error; result follows in ENC_CHANGE)
+[05:43:14.725][D][irk_capture:1657][nimble_host]: Peer identity address received: handle=1
 [05:43:14.725][I][irk_capture:1415][nimble_host]: ENC_CHANGE status=0 (0x00)
 [05:43:14.725][I][irk_capture:1440][nimble_host]: Encryption established; attempting immediate IRK capture
 [05:43:14.733][D][irk_capture:726][nimble_host]: New IRK added to cache (total: 1/10)

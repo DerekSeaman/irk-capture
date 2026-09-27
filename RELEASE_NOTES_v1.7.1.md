@@ -1,8 +1,8 @@
-# Release Notes v1.7.0
+# Release Notes v1.7.1
 
-IRK Capture v1.7.0 gives you two ways to capture Bluetooth Identity Resolving Keys: the familiar ESPHome device page in Home Assistant and a new, optional web wizard served directly by your ESP32. This release adds guided pairing, labeled capture results, and clearer information about what the ESP32 is doing.
+IRK Capture v1.7.1 gives you two ways to capture Bluetooth Identity Resolving Keys: the familiar ESPHome device page in Home Assistant and a new, optional web wizard served directly by your ESP32. This release adds guided pairing, labeled capture results, and clearer information about what the ESP32 is doing.
 
-These notes describe the changes from the released version on `main` to v1.7.0.
+These notes describe the changes from the released version on `main` to v1.7.1.
 
 ## Choose the interface that works for you
 
@@ -56,6 +56,10 @@ The new **Status** sensor shows whether the ESP32 is idle, advertising, pairing,
 **Refresh BLE Identity** now changes both the Bluetooth address and name without rebooting. Names such as `IRK HR 7F3A` or `IRK KB 7F3A` identify the active profile and end with the last four characters of the ESP32 BLE MAC. This helps when a device remembers an earlier pairing or discovery entry.
 
 You can also set **BLE Device Name** in either profile, including Keyboard, using a custom name of up to 12 characters. Refreshed and custom names last until the next reboot. The default names remain **IRK Capture** for Heart Sensor and **Logitech K380** for Keyboard.
+
+### More reliable connections and clearer logs
+
+If a connection attempt fails but leaves the Bluetooth link open, the ESP32 now closes it so it can advertise again. Log messages also describe pairing and disconnect events more accurately, which makes troubleshooting easier.
 
 ## Upgrading
 

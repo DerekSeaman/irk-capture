@@ -27,7 +27,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.7.0";
+static constexpr char VERSION[] = "1.7.1";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -1252,6 +1252,30 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   } else {
     ESP_LOGW(TAG, "Connection failed: status=%d (0x%02X)", ev->connect.status, ev->connect.status);
 
+    // NimBLE can report a failed CONNECT for a link that is still up (for
+    // example when the controller cannot read the peer's features). Nothing
+    // tracks that link, and with one connection allowed it would block
+    // advertising until the peer dropped it, so close it here. Its disconnect
+    // is ignored as a non-active handle; the advertising retry below picks up
+    // once the slot is free. EAGAIN comes from NimBLE's own broken-connection
+    // path, where the link is already down, so it needs nothing.
+    struct ble_gap_conn_desc desc {};
+    if (ev->connect.status != BLE_HS_EAGAIN &&
+        ble_gap_conn_find(ev->connect.conn_handle, &desc) == 0) {
+      int term_rc;
+      {
+        BleOpGuard ble_lock(self->ble_op_mutex_);
+        term_rc = ble_gap_terminate(ev->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+      }
+      if (term_rc == 0 || term_rc == BLE_HS_EALREADY) {
+        ESP_LOGW(TAG, "Failed connection handle=%u is still up; disconnecting it",
+                 ev->connect.conn_handle);
+      } else {
+        ESP_LOGW(TAG, "Failed connection handle=%u is still up and could not be closed rc=%d",
+                 ev->connect.conn_handle, term_rc);
+      }
+    }
+
     // Thread-safe advertising state reset
     {
       MutexGuard lock(self->state_mutex_);
@@ -1273,6 +1297,16 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
  * Attempts immediate IRK read from NVS, schedules delayed read (+800ms),
  * and restarts advertising unless suppressed (IRK re-publish case).
  */
+// ble_gap_terminate() returns EALREADY when a disconnect is already under way,
+// for example one started by a timeout or a MAC rotation. That is not a failure.
+static void log_terminate_result(int rc, const char* context) {
+  if (rc == BLE_HS_EALREADY) {
+    ESP_LOGD(TAG, "Disconnect %s already in progress", context);
+  } else if (rc != 0) {
+    ESP_LOGW(TAG, "ble_gap_terminate %s rc=%d", context, rc);
+  }
+}
+
 static void log_no_irk_for_peer(const ble_addr_t& peer_id) {
   ESP_LOGW(TAG, "Bond for %s has no usable IRK; key distribution may be incomplete or unsupported",
            addr_to_str(peer_id).c_str());
@@ -1474,15 +1508,13 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
           BleOpGuard ble_lock(self->ble_op_mutex_);
           term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         }
-        if (term_rc != 0) {
-          ESP_LOGW(TAG, "ble_gap_terminate after ENC capture rc=%d", term_rc);
-        }
+        log_terminate_result(term_rc, "after ENC capture");
       } else if (!bond.irk_present) {
         // NimBLE has completed key distribution before reporting ENC_CHANGE
         // success. Preserve this outcome before timeout cleanup can delete it.
         self->publish_no_irk_(d.peer_id_addr, connection_generation, true, origin);
       } else {
-        ESP_LOGD(TAG, "Bond present but no IRK yet; scheduling late check");
+        ESP_LOGW(TAG, "IRK failed validation (all-zero or all-FF); scheduling late check");
         self->schedule_late_enc_check(d.peer_id_addr, connection_generation, origin);
       }
     } else {
@@ -1510,18 +1542,15 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       BleOpGuard ble_lock(self->ble_op_mutex_);
       term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
     }
-    if (term_rc != 0) {
-      ESP_LOGW(TAG, "ble_gap_terminate after ENC failure rc=%d", term_rc);
-    }
+    log_terminate_result(term_rc, "after ENC failure");
 
-    // A DHKey check failure means the peer's key material is stale, so briefly
-    // stop advertising to prod it into resetting. Match the reason from either
-    // side: the encoded status differs (0x40B local, 0x50B peer).
+    // On a DHKey check failure, hold off the next advertising restart for a
+    // few seconds (local behaviour only; it does not reset the peer). Match the
+    // reason from either side: the encoded status differs (0x40B local, 0x50B
+    // peer).
     const SmFailure failure = decode_sm_failure(ev->enc_change.status);
     if (failure.is_sm && failure.reason == BLE_SM_ERR_DHKEY) {
-      ESP_LOGW(TAG,
-               "DHKey failure detected - suppressing advertising to force peer "
-               "reset");
+      ESP_LOGW(TAG, "DHKey check failed; delaying the next advertising restart");
       MutexGuard lock(self->state_mutex_);
       self->suppress_next_adv_ = true;
     }
@@ -1616,11 +1645,12 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
       }
       ESP_LOGI(TAG, "PASSKEY_ACTION: %s (action=%d)", action_desc, ev->passkey.params.action);
 
-      // Log passkey if we're supposed to display it (shouldn't happen with
-      // NO_INPUT_OUTPUT)
+      // NO_INPUT_OUTPUT pairing never asks to display a passkey, and there is
+      // no passkey to show (numcmp is only defined for numeric comparison).
       if (ev->passkey.params.action == BLE_SM_IOACT_DISP) {
-        ESP_LOGW(TAG, "UNEXPECTED: Peer requested passkey display (passkey=%06lu)",
-                 (unsigned long) ev->passkey.params.numcmp);
+        ESP_LOGW(TAG,
+                 "UNEXPECTED: passkey display requested; not supported with Just Works "
+                 "pairing");
       }
 
       // Just log and return - main branch behavior
@@ -1653,22 +1683,28 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 
 #ifdef BLE_GAP_EVENT_IDENTITY_RESOLVED
     case BLE_GAP_EVENT_IDENTITY_RESOLVED:
-      // Identity resolved successfully (IRK working!)
-      ESP_LOGD(TAG, "Peer identity resolved using IRK");
+      // NimBLE emits this when it stores the peer's identity address during key
+      // distribution. It does not mean an IRK resolved the over-the-air address.
+      ESP_LOGD(TAG, "Peer identity address received: handle=%u", ev->identity_resolved.conn_handle);
       return 0;
 #endif
 
 #ifdef BLE_GAP_EVENT_PARING_COMPLETE
     case BLE_GAP_EVENT_PARING_COMPLETE:
-      // NimBLE intentionally emits this before persisting keys and before the
-      // ENC_CHANGE callback. Keep it diagnostic-only so ENC_CHANGE remains the
-      // single owner of IRK capture, failure cleanup, and termination.
+      // NimBLE emits this before persisting keys and before ENC_CHANGE, which
+      // remains the single owner of IRK capture, failure cleanup, and
+      // termination. The status is a raw SMP reason, not an overall result: it
+      // can be zero even when encryption then fails with a controller error, so
+      // this only reports the SMP side and ENC_CHANGE has the verdict.
       if (ev->pairing_complete.status == 0) {
-        ESP_LOGD(TAG, "Pairing complete: handle=%u", ev->pairing_complete.conn_handle);
+        ESP_LOGD(TAG,
+                 "Pairing procedure ended: handle=%u (no SMP error; result follows in "
+                 "ENC_CHANGE)",
+                 ev->pairing_complete.conn_handle);
       } else {
-        ESP_LOGW(TAG, "Pairing failed: handle=%u status=%d (0x%X)",
+        ESP_LOGW(TAG, "Pairing failed: handle=%u SMP reason=%d (%s)",
                  ev->pairing_complete.conn_handle, ev->pairing_complete.status,
-                 ev->pairing_complete.status);
+                 sm_reason_str(static_cast<uint8_t>(ev->pairing_complete.status)));
       }
       return 0;
 #endif
@@ -1686,8 +1722,8 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 #ifdef BLE_GAP_EVENT_LINK_ESTAB
     case BLE_GAP_EVENT_LINK_ESTAB:
       // ESP-IDF emits this after CONNECT once link-layer synchronization is
-      // final. A successful event is routine; a failure is followed by the
-      // normal disconnect path, which owns connection-state cleanup.
+      // final. A successful event is routine. A failure is only logged here; a
+      // failed CONNECT whose link is still up is closed in handle_gap_connect().
       if (ev->link_estab.status == 0) {
         ESP_LOGV(TAG, "Link established: handle=%u", ev->link_estab.conn_handle);
       } else {
@@ -1718,6 +1754,16 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 #ifdef BLE_GAP_EVENT_VS_HCI
     case BLE_GAP_EVENT_VS_HCI:
       // Vendor-specific HCI event (can ignore)
+      return 0;
+#endif
+
+#ifdef BLE_GAP_EVENT_TERM_FAILURE
+    case BLE_GAP_EVENT_TERM_FAILURE:
+      // A disconnect the controller accepted did not complete, so the link is
+      // still up. Connection state is left alone; the connection timeout keeps
+      // retrying the disconnect and reboots if it never succeeds.
+      ESP_LOGW(TAG, "Disconnect failed: handle=%u status=%d (0x%X)", ev->term_failure.conn_handle,
+               ev->term_failure.status, ev->term_failure.status);
       return 0;
 #endif
 
@@ -3046,7 +3092,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
     {
       BleOpGuard ble_lock(ble_op_mutex_);
       int rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-      terminate_failed = rc != 0;
+      terminate_failed = rc != 0 && rc != BLE_HS_EALREADY;
       if (terminate_failed) {
         ESP_LOGE(TAG, "Failed to terminate unexpected second connection rc=%d; rebooting", rc);
       }
@@ -3101,12 +3147,14 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   // THREAD-SAFE: use the conn_handle parameter (already stored to conn_handle_
   // under mutex at the top of on_connect)
   int rc = ble_gap_security_initiate(conn_handle);
-  if (rc == BLE_HS_EBUSY) {
-    // Peer is already initiating security - skip our retry to avoid conflicts
-    ESP_LOGD(TAG, "Peer already initiating security (EBUSY); skipping retry");
+  if (rc == BLE_HS_EALREADY) {
+    // A security procedure is already running on this link. NimBLE returns
+    // this whichever side started it, so it says nothing about the peer; the
+    // 2-second retry would only get EALREADY again.
+    ESP_LOGD(TAG, "Security procedure already in progress; skipping retry");
     MutexGuard lock(state_mutex_);
-    sec_retry_done_ = true;  // Skip the 2-second retry since peer is handling it
-  } else if (rc != 0 && rc != BLE_HS_EALREADY) {
+    sec_retry_done_ = true;
+  } else if (rc != 0) {
     ESP_LOGW(TAG, "ble_gap_security_initiate rc=%d", rc);
   }
 }
@@ -3144,7 +3192,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 
   rc = ble_store_read_peer_sec(&key_sec, &bond);
   if (rc == BLE_HS_ENOENT) {
-    ESP_LOGD(TAG, "No bond for peer (ENOENT) - IRK not yet written to NVS");
+    ESP_LOGD(TAG, "No bond record for peer (ENOENT)");
     return false;
   }
   if (rc != 0) {
@@ -3351,9 +3399,7 @@ void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
         BleOpGuard ble_lock(ble_op_mutex_);
         term_rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
       }
-      if (term_rc != 0) {
-        ESP_LOGW(TAG, "ble_gap_terminate after late ENC IRK capture rc=%d", term_rc);
-      }
+      log_terminate_result(term_rc, "after late ENC IRK capture");
     }
   } else if (!bond.irk_present) {
     // Late encryption checks are scheduled only after ENC_CHANGE success.
@@ -3420,10 +3466,12 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
       }
       if (!retry_current_connection) return;
       int rc = ble_gap_security_initiate(conn_handle_copy);
-      // rc==0 (started), EALREADY/EBUSY (peer already pairing) are all benign;
-      // only a genuine error deserves a warning.
-      if (rc == 0 || rc == BLE_HS_EALREADY || rc == BLE_HS_EBUSY) {
-        ESP_LOGD(TAG, "Retry security initiate rc=%d", rc);
+      // rc==0 (started) and EALREADY (a security procedure is already running,
+      // started by either side) are benign; only a genuine error is a warning.
+      if (rc == 0) {
+        ESP_LOGD(TAG, "Retry security initiate: started");
+      } else if (rc == BLE_HS_EALREADY) {
+        ESP_LOGD(TAG, "Retry security initiate: already in progress");
       } else {
         ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
       }
@@ -3662,9 +3710,7 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
       BleOpGuard ble_lock(ble_op_mutex_);
       term_rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
     }
-    if (term_rc != 0) {
-      ESP_LOGW(TAG, "ble_gap_terminate after poll IRK capture rc=%d", term_rc);
-    }
+    log_terminate_result(term_rc, "after poll IRK capture");
   } else {
     if ((now - enc_time_copy) > TimingConfig::ENC_GIVE_UP_AFTER_MS) {
       ESP_LOGW(TAG, "IRK not found after %" PRIu32 " ms post-encryption",
