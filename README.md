@@ -284,6 +284,8 @@ The package also adds the **Stop Advertising After Capture** entity. This will s
 
 When pairing, look for the Bluetooth name shown in the wizard. It shows the name the ESP32 is currently advertising. The Keyboard profile starts as **Logitech K380**. Renaming the device uses your chosen name, while **Refresh BLE Identity** generates a name such as `IRK HR 7F3A` (Heart Sensor) or `IRK KB 7F3A` (Keyboard). These changes last until the next reboot.
 
+![IRK Wizard steps 1 through 5](docs/wizard-2.jpg)
+
 ## Tested Devices
 
 This ESPHome IRK capture component has been successfully tested with:
