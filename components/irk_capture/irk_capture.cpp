@@ -3868,8 +3868,18 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   bool stop_after_pub, stop_after_val, label_pub, name_pub;
   std::string irk_hex, irk_addr, effmac, label_val, name_val;
   const char* status = nullptr;
+  bool capture_fire = false;
+  std::string capture_irk, capture_mac;
   {
     MutexGuard lock(state_mutex_);
+    if (capture_result_.sequence != fired_capture_sequence_) {
+      fired_capture_sequence_ = capture_result_.sequence;
+      capture_fire = !capture_triggers_.empty();
+      if (capture_fire) {
+        capture_irk = capture_result_.irk;
+        capture_mac = capture_result_.device_mac;
+      }
+    }
     adv_pub = pending_adv_pub_;
     adv_val = pending_adv_val_;
     pending_adv_pub_ = false;
@@ -3909,6 +3919,10 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   if (status != nullptr && last_status_value_ != status) {
     last_status_value_ = status;
     status_sensor_->publish_state(status);
+  }
+  // After the sensors, so automations that read them see this capture.
+  if (capture_fire) {
+    for (auto* trigger : capture_triggers_) trigger->trigger(capture_irk, capture_mac);
   }
 }
 

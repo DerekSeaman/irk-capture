@@ -10,6 +10,7 @@
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/text/text.h"
 #include "esphome/components/text_sensor/text_sensor.h"
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "identity_name.h"
 
@@ -185,6 +186,9 @@ class IRKCaptureComponent : public Component {
   void dump_config() override;
   float get_setup_priority() const override {
     return -200.0f;
+  }
+  void add_on_capture_trigger(Trigger<std::string, std::string>* trigger) {
+    capture_triggers_.push_back(trigger);
   }
 
   // Friend classes for UI components (access protected members)
@@ -414,6 +418,9 @@ class IRKCaptureComponent : public Component {
   uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
   CaptureResult capture_result_;
   uint32_t capture_result_generation_ { 0 };  // Coalesces accepted successful results
+  // on_capture fires once per capture_result_.sequence; main task only.
+  std::vector<Trigger<std::string, std::string>*> capture_triggers_;
+  uint32_t fired_capture_sequence_ { 0 };
 
   // A worker queues wake-ups onto NimBLE's task without blocking the main task
   // on queue capacity. Bond deletion stays serialized with pairing callbacks.
