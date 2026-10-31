@@ -245,6 +245,27 @@ If advertising fails to start, the ESP32 keeps retrying on its own, quickly at f
 
 `captured` and `no_irk` stay on screen for a few seconds so you don't miss them. A device you already captured that reconnects in the background won't replace the result you're looking at.
 
+### Capture events for automations
+
+Each capture fires an `esphome.irk_captured` event in Home Assistant with the `irk`, the device's `mac`, and the capturing ESP32's `device_id`. It fires once per new capture or deliberate re-pair, never for background reconnects.
+
+To receive it, open **Settings → Devices & services → ESPHome**, select **Configure** on your IRK Capture device, and enable **Allow the device to perform Home Assistant actions**. To check it's working, listen for `esphome.irk_captured` under **Developer tools → Events** and pair a device.
+
+This example forwards each capture to MQTT. Add `event_data: {device_id: ...}` to the trigger to react to only one capture device:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: esphome.irk_captured
+actions:
+  - action: mqtt.publish
+    data:
+      topic: irk_capture/captured
+      payload: >-
+        {{ {"irk": trigger.event.data.irk, "mac": trigger.event.data.mac,
+            "device_id": trigger.event.data.device_id} | to_json }}
+```
+
 ## Optional: The Capture Wizard Package
 
 As an alternative interface, you can add an optional wizard package that uses a web page served by your ESP32 to guide you through capturing an IRK. The `irk-capture-wizard.yaml` package runs alongside the standard ESPHome web interface on a separate port (8080 by default). You can use it directly from your browser without Home Assistant, a dashboard, or an internet connection—even when connected to the ESP32's fallback Wi-Fi access point.

@@ -57,6 +57,10 @@ The new **Status** sensor shows whether the ESP32 is idle, advertising, pairing,
 
 You can also set **BLE Device Name** in either profile, including Keyboard, using a custom name of up to 12 characters. Refreshed and custom names last until the next reboot. The default names remain **IRK Capture** for Heart Sensor and **Logitech K380** for Keyboard.
 
+### Automate on new captures
+
+Each capture now fires an `esphome.irk_captured` event in Home Assistant with the IRK and device BLE MAC, so automations can notify you or forward new keys to MQTT. Enable **Allow the device to perform Home Assistant actions** for the device to receive it; see [Capture events for automations](README.md#capture-events-for-automations).
+
 ### More reliable connections and clearer logs
 
 If a connection attempt fails but leaves the Bluetooth link open, the ESP32 now closes it so it can advertise again. Log messages also describe pairing and disconnect events more accurately, which makes troubleshooting easier.
