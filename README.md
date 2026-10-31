@@ -6,6 +6,8 @@ This ESPHome package will capture Apple and Android Bluetooth Identity Resolving
 
 You can capture IRKs through two interfaces: the ESP32's ESPHome device page in Home Assistant, or an optional standalone web wizard served by the ESP32. The wizard guides you through the capture process in your browser without needing Home Assistant. See [Optional: The Capture Wizard Package](#optional-the-capture-wizard-package) later in this README for setup instructions.
 
+Each capture also fires an `esphome.irk_captured` event in Home Assistant with the IRK and the device's BLE MAC. You can use it to trigger automations, such as a notification, or to publish new IRKs to MQTT for other systems. See [Optional: Home Assistant Events and MQTT Publishing](#optional-home-assistant-events-and-mqtt-publishing).
+
 This ESPHome IRK capture package is only designed to capture IRKs and can NOT pull double duty as a Bluetooth proxy. You can either flash this to a spare ESP32 device and keep it in a sock drawer when not being used, or temporarily flash this package to an ESP32 then flash back to your generic Bluetooth proxy ESPHome configuration. IRKs are generally permanent and do not change over time.
 
 ## What is a BLE IRK and Why Is It Needed?
@@ -245,6 +247,67 @@ If advertising fails to start, the ESP32 keeps retrying on its own, quickly at f
 
 `captured` and `no_irk` stay on screen for a few seconds so you don't miss them. A device you already captured that reconnects in the background won't replace the result you're looking at.
 
+## Optional: Home Assistant Events and MQTT Publishing
+
+Each capture fires an `esphome.irk_captured` event in Home Assistant. You can use it to trigger automations, such as a notification or publishing new IRKs to MQTT for other systems. The event fires once per new capture or deliberate re-pair, never for background reconnects, and includes:
+
+| Field | Description |
+| :--- | :--- |
+| `irk` | The captured IRK |
+| `mac` | The captured device's BLE MAC |
+| `device_id` | The Home Assistant device ID of the ESP32 that captured it |
+
+The event is built into the base package, so no ESPHome YAML changes are needed. It's only needed if you want to automate on captures.
+
+### Enable the event
+
+Home Assistant ignores events from an ESPHome device until you allow them:
+
+1. Open **Settings → Devices & services → ESPHome**.
+2. Select the cog wheel icon (**Configure**) next to your IRK Capture device.
+3. Enable **Allow the device to perform Home Assistant actions**, then select **Submit**.
+
+![ESPHome device options with Allow the device to perform Home Assistant actions enabled](docs/actions.jpg)
+
+### Verify the event live
+
+1. Open **Settings → Tools → Events**.
+2. Under **Listen to events**, enter `esphome.irk_captured` in **Event to subscribe to** and select **Start listening**.
+3. Pair a device with the ESP32. When the IRK is captured, the event appears below the listener.
+
+The `device_id` identifies which ESP32 captured the IRK, which is useful if you have more than one.
+
+![Listening to esphome.irk_captured events in Home Assistant](docs/events.jpg)
+
+### Publish captures to MQTT
+
+This requires Home Assistant's [MQTT integration](https://www.home-assistant.io/integrations/mqtt/) connected to your broker. Create an automation (**Settings → Automations & scenes → Create automation → ⋮ → Edit in YAML**) and paste:
+
+```yaml
+alias: Publish captured IRKs to MQTT
+triggers:
+  - trigger: event
+    event_type: esphome.irk_captured
+actions:
+  - action: mqtt.publish
+    data:
+      topic: irk_capture/captured
+      payload: >-
+        {{ {"irk": trigger.event.data.irk, "mac": trigger.event.data.mac,
+            "device_id": trigger.event.data.device_id} | to_json }}
+```
+
+### Verify the MQTT message live
+
+1. Open **Settings → Devices & services → MQTT** and select the cog wheel icon (**Configure**).
+2. Under **Listen to a topic**, turn on **Format JSON content**.
+3. Enter `irk_capture/#` in **Topic to subscribe to** and select **Start listening**.
+4. Pair a device with the ESP32. The message appears with its topic and payload.
+
+![MQTT Listen to a topic showing a captured IRK message](docs/MQTT.jpg)
+
+If the event appears but no MQTT message does, open the automation's **Traces** to confirm it ran and see the payload it sent.
+
 ## Optional: The Capture Wizard Package
 
 As an alternative interface, you can add an optional wizard package that uses a web page served by your ESP32 to guide you through capturing an IRK. The `irk-capture-wizard.yaml` package runs alongside the standard ESPHome web interface on a separate port (8080 by default). You can use it directly from your browser without Home Assistant, a dashboard, or an internet connection—even when connected to the ESP32's fallback Wi-Fi access point.
@@ -406,9 +469,9 @@ Below is a sample log showing a successful IRK capture:
 [05:43:12.401][I][irk_capture:1595][nimble_host]: MTU updated: 256
 [05:43:12.918][D][irk_capture:1646][nimble_host]: Subscription changed: handle=1 attr=8 notify=0 indicate=1 reason=1
 [05:43:14.146][I][irk_capture:3407]: Retrying security initiate after 2278 ms
-[05:43:14.149][D][irk_capture:3426]: Retry security initiate rc=2
-[05:43:14.721][D][irk_capture:1667][nimble_host]: Pairing complete: handle=1
-[05:43:14.725][D][irk_capture:1657][nimble_host]: Peer identity resolved using IRK
+[05:43:14.149][D][irk_capture:3426]: Retry security initiate: already in progress
+[05:43:14.721][D][irk_capture:1667][nimble_host]: Pairing procedure ended: handle=1 (no SMP error; result follows in ENC_CHANGE)
+[05:43:14.725][D][irk_capture:1657][nimble_host]: Peer identity address received: handle=1
 [05:43:14.725][I][irk_capture:1415][nimble_host]: ENC_CHANGE status=0 (0x00)
 [05:43:14.725][I][irk_capture:1440][nimble_host]: Encryption established; attempting immediate IRK capture
 [05:43:14.733][D][irk_capture:726][nimble_host]: New IRK added to cache (total: 1/10)

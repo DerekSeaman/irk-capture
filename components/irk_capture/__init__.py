@@ -1,6 +1,7 @@
+from esphome import automation
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.const import CONF_ID
+from esphome.const import CONF_ID, CONF_TRIGGER_ID
 from esphome.components import esp32
 
 DEPENDENCIES = ["esp32"]
@@ -13,9 +14,11 @@ CONF_BLE_NAME = "ble_name"
 CONF_START_ON_BOOT = "start_on_boot"
 CONF_CONTINUOUS_MODE = "continuous_mode"
 CONF_MAX_CAPTURES = "max_captures"
+CONF_ON_CAPTURE = "on_capture"
 
 irk_capture_ns = cg.esphome_ns.namespace("irk_capture")
 IRKCaptureComponent = irk_capture_ns.class_("IRKCaptureComponent", cg.Component)
+CaptureTrigger = automation.Trigger.template(cg.std_string, cg.std_string)
 
 
 def validate_ble_name(value):
@@ -64,6 +67,11 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_START_ON_BOOT, default=True): cv.boolean,
             cv.Optional(CONF_CONTINUOUS_MODE, default=True): cv.boolean,
             cv.Optional(CONF_MAX_CAPTURES, default=10): cv.int_range(min=0, max=255),
+            # Fires once per genuine capture or re-pair with the IRK and the
+            # device's identity MAC; never for background reconnects.
+            cv.Optional(CONF_ON_CAPTURE): automation.validate_automation(
+                {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(CaptureTrigger)}
+            ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     validate_continuous_mode_config,  # Cross-field validation
@@ -78,6 +86,12 @@ async def to_code(config):
     cg.add(var.set_start_on_boot(config[CONF_START_ON_BOOT]))
     cg.add(var.set_continuous_mode(config[CONF_CONTINUOUS_MODE]))
     cg.add(var.set_max_captures(config[CONF_MAX_CAPTURES]))
+    for conf in config.get(CONF_ON_CAPTURE, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID])
+        cg.add(var.add_on_capture_trigger(trigger))
+        await automation.build_automation(
+            trigger, [(cg.std_string, "irk"), (cg.std_string, "mac")], conf
+        )
 
     # ESPHome 2026.9.0 excludes most built-in ESP-IDF components from the build
     # by default and expects a component to ask for what it needs. Without this,

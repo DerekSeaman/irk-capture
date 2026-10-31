@@ -96,6 +96,14 @@ irk_capture:
   start_on_boot: true
   continuous_mode: true
   max_captures: 10
+  # Fires a Home Assistant event (esphome.irk_captured) once per capture. In HA,
+  # enable "Allow the device to perform Home Assistant actions" for this device.
+  on_capture:
+    - homeassistant.event:
+        event: esphome.irk_captured
+        data:
+          irk: !lambda "return irk;"
+          mac: !lambda "return mac;"
 
 # Text sensors for Wi-Fi info and IRK capture
 text_sensor:
