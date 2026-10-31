@@ -267,6 +267,8 @@ Home Assistant ignores events from an ESPHome device until you allow them:
 2. Select the cog wheel icon (**Configure**) next to your IRK Capture device.
 3. Enable **Allow the device to perform Home Assistant actions**, then select **Submit**.
 
+![ESPHome device options with Allow the device to perform Home Assistant actions enabled](docs/actions.jpg)
+
 ### Verify the event live
 
 1. Open **Settings → Tools → Events**.
