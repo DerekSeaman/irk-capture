@@ -245,15 +245,50 @@ If advertising fails to start, the ESP32 keeps retrying on its own, quickly at f
 
 `captured` and `no_irk` stay on screen for a few seconds so you don't miss them. A device you already captured that reconnects in the background won't replace the result you're looking at.
 
-### Capture events for automations
+## Optional: Capture Events and MQTT Publishing
 
-Each capture fires an `esphome.irk_captured` event in Home Assistant with the `irk`, the device's `mac`, and the capturing ESP32's `device_id`. It fires once per new capture or deliberate re-pair, never for background reconnects.
+Each capture fires an `esphome.irk_captured` event in Home Assistant. You can use it to trigger automations, such as a notification or publishing new IRKs to MQTT for other systems. The event fires once per new capture or deliberate re-pair, never for background reconnects, and includes:
 
-To receive it, open **Settings → Devices & services → ESPHome**, select **Configure** on your IRK Capture device, and enable **Allow the device to perform Home Assistant actions**. To check it's working, listen for `esphome.irk_captured` under **Developer tools → Events** and pair a device.
+| Field | Description |
+| :--- | :--- |
+| `irk` | The captured IRK |
+| `mac` | The captured device's BLE MAC |
+| `device_id` | The Home Assistant device ID of the ESP32 that captured it |
 
-This example forwards each capture to MQTT. Add `event_data: {device_id: ...}` to the trigger to react to only one capture device:
+The event is built into the base package, so no ESPHome YAML changes are needed. It's only needed if you want to automate on captures.
+
+### Enable the event
+
+Home Assistant ignores events from an ESPHome device until you allow them:
+
+1. Open **Settings → Devices & services → ESPHome**.
+2. Select the cog wheel icon (**Configure**) next to your IRK Capture device.
+3. Enable **Allow the device to perform Home Assistant actions**, then select **Submit**.
+
+### Verify the event live
+
+1. Open **Settings → Tools → Events**.
+2. Under **Listen to events**, enter `esphome.irk_captured` in **Event to subscribe to** and select **Start listening**.
+3. Pair a device with the ESP32. When the IRK is captured, the event appears below:
 
 ```yaml
+event_type: esphome.irk_captured
+data:
+  device_id: a1b2c3d4e5f60718293a4b5c6d7e8f90
+  irk: 0123456789abcdef0123456789abcdef
+  mac: AA:BB:CC:DD:EE:FF
+```
+
+The `device_id` identifies which ESP32 captured the IRK, which is useful if you have more than one.
+
+![Listening to esphome.irk_captured events in Home Assistant](docs/events.jpg)
+
+### Publish captures to MQTT
+
+This requires Home Assistant's [MQTT integration](https://www.home-assistant.io/integrations/mqtt/) connected to your broker. Create an automation (**Settings → Automations & scenes → Create automation → ⋮ → Edit in YAML**) and paste:
+
+```yaml
+alias: Publish captured IRKs to MQTT
 triggers:
   - trigger: event
     event_type: esphome.irk_captured
@@ -265,6 +300,45 @@ actions:
         {{ {"irk": trigger.event.data.irk, "mac": trigger.event.data.mac,
             "device_id": trigger.event.data.device_id} | to_json }}
 ```
+
+To react to only one ESP32, add its `device_id` to the trigger:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: esphome.irk_captured
+    event_data:
+      device_id: a1b2c3d4e5f60718293a4b5c6d7e8f90
+```
+
+### Verify the MQTT message live
+
+1. Open **Settings → Devices & services → MQTT** and select the cog wheel icon (**Configure**).
+2. Under **Listen to a topic**, turn on **Format JSON content**.
+3. Enter `irk_capture/#` in **Topic to subscribe to** and select **Start listening**.
+4. Pair a device with the ESP32. The message appears with its topic and payload:
+
+```json
+{"irk": "0123456789abcdef0123456789abcdef", "mac": "AA:BB:CC:DD:EE:FF", "device_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90"}
+```
+
+![MQTT Listen to a topic showing a captured IRK message](docs/MQTT.jpg)
+
+To test without pairing, open **Settings → Tools → Events**, enter `esphome.irk_captured` as the **Event type**, paste the event data below, and select **Fire event**. Your automation runs as if a real capture happened.
+
+```yaml
+irk: 0123456789abcdef0123456789abcdef
+mac: AA:BB:CC:DD:EE:FF
+device_id: test
+```
+
+To watch from another computer, use any MQTT client, such as [MQTT Explorer](https://mqtt-explorer.com/) or `mosquitto_sub`:
+
+```bash
+mosquitto_sub -h <broker-ip> -u <username> -P '<password>' -t 'irk_capture/#' -v
+```
+
+If the event appears but no MQTT message does, open the automation's **Traces** to confirm it ran and see the payload it sent.
 
 ## Optional: The Capture Wizard Package
 

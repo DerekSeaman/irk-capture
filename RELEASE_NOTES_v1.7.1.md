@@ -59,7 +59,7 @@ You can also set **BLE Device Name** in either profile, including Keyboard, usin
 
 ### Automate on new captures
 
-Each capture now fires an `esphome.irk_captured` event in Home Assistant with the IRK and device BLE MAC, so automations can notify you or forward new keys to MQTT. Enable **Allow the device to perform Home Assistant actions** for the device to receive it; see [Capture events for automations](README.md#capture-events-for-automations).
+Each capture now fires an `esphome.irk_captured` event in Home Assistant with the IRK and device BLE MAC, so automations can notify you or forward new keys to MQTT. Enable **Allow the device to perform Home Assistant actions** for the device to receive it; see [Optional: Capture Events and MQTT Publishing](README.md#optional-capture-events-and-mqtt-publishing).
 
 ### More reliable connections and clearer logs
 
