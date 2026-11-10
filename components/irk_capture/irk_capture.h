@@ -141,7 +141,7 @@ class IRKCaptureStopAfterCaptureSwitch : public switch_::Switch, public Componen
 };
 
 // Text input: label attached to the next new device this session captures.
-// Consumed (and left as-is in the UI) the moment a new identity is cached.
+// Consumed, and cleared in the UI, the moment a new identity is cached.
 class IRKCaptureLabelText : public text::Text, public Component {
  public:
   void set_parent(IRKCaptureComponent* parent) {
@@ -335,7 +335,7 @@ class IRKCaptureComponent : public Component {
 
  protected:
   // Configuration/state
-  std::string ble_name_ { "IRK Capture" };
+  std::string ble_name_ { DEFAULT_BLE_NAME };
   // Set by refresh_identity() and consumed when the rotation commits: the
   // name carries the address that actually took effect, which is only known
   // once ble_hs_id_set_rnd() has succeeded.
@@ -411,9 +411,20 @@ class IRKCaptureComponent : public Component {
     bool in_history { true };  // History can be cleared without losing deduplication
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
-  uint32_t capture_events_ { 0 };         // IRK publications this session
-  uint32_t unique_devices_ { 0 };         // New identity addresses this session
-  uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
+  // Most entries irk_cache_ holds before the oldest is evicted. The floor
+  // keeps reconnect deduplication working with a small max_captures. Unlimited
+  // mode (max_captures 0) has no capture limit to size from, so it keeps the
+  // most recent UNLIMITED_CACHE_ENTRIES devices; an evicted device that
+  // returns is treated as new.
+  static constexpr size_t MIN_CACHE_ENTRIES = 10;
+  static constexpr size_t UNLIMITED_CACHE_ENTRIES = 32;
+  size_t cache_limit_() const {
+    if (max_captures_ == 0) return UNLIMITED_CACHE_ENTRIES;
+    return max_captures_ > MIN_CACHE_ENTRIES ? max_captures_ : MIN_CACHE_ENTRIES;
+  }
+  uint32_t capture_events_ { 0 };      // IRK publications this session
+  uint32_t unique_devices_ { 0 };      // New identity addresses this session
+  uint32_t pairing_start_time_ { 0 };  // Global pairing timeout
   CaptureResult capture_result_;
   uint32_t capture_result_generation_ { 0 };  // Coalesces accepted successful results
   // on_capture fires once per capture_result_.sequence; main task only.
@@ -441,6 +452,13 @@ class IRKCaptureComponent : public Component {
   bool stop_after_capture_ { false };
   // Consumed by the next new cache entry.
   std::string next_capture_label_;
+  // Caller holds state_mutex_. Clears the label and stages the same for its
+  // entity, which would otherwise keep showing a label that is no longer armed.
+  void consume_capture_label_() {
+    next_capture_label_.clear();
+    pending_label_val_.clear();
+    pending_label_pub_ = true;
+  }
   // Avoids redundant status publishes.
   std::string last_status_value_;
   // Terminal status belongs to last_result_generation_, just like the IRK

@@ -541,12 +541,18 @@ static void log_mac(const char* prefix) {
   }
 }
 
+// A read callback that cannot fill its response must say so. Returning 0 would
+// send the peer a truncated or empty value as if it were complete.
+static int append_att_value(struct os_mbuf* om, const void* data, size_t len) {
+  return os_mbuf_append(om, data, len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
+
 // Helper to safely append const string or default value
 static int append_const_string_or_default(struct os_mbuf* om, const char* str,
                                           const char* default_str) {
   // Safely append string to mbuf, using default if str is nullptr or empty
   const char* val = (str && str[0] != '\0') ? str : default_str;
-  return os_mbuf_append(om, val, strlen(val));
+  return append_att_value(om, val, strlen(val));
 }
 
 static void log_spacer() {
@@ -586,8 +592,8 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
  * MEMORY SAFETY: This function prevents duplicate entries in irk_cache_ by
  * checking if the identity address already exists before adding. Even if the
  * same device reconnects 100 times, it will only have ONE entry in the cache
- * (updated in-place). Cache cap derived from max(max_captures_, 10) prevents
- * unbounded memory growth on ESP32-C3.
+ * (updated in-place). cache_limit_() caps the cache, so memory stays bounded
+ * on ESP32-C3 even when max_captures is 0 (unlimited).
  *
  * @param irk_hex IRK in hex string format
  * @param addr MAC address string
@@ -690,10 +696,9 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
     }
   }
 
-  // New IRK - add to cache with FIFO eviction
-  // Cache cap derived from max(max_captures_, 10) to prevent unbounded memory
-  // growth
-  size_t cache_limit = (max_captures_ > 10) ? max_captures_ : 10;
+  // New IRK - add to cache with FIFO eviction. cache_limit_() bounds memory,
+  // including in unlimited mode.
+  const size_t cache_limit = cache_limit_();
   if (irk_cache_.size() >= cache_limit) {
     // Evict oldest (FIFO). Note: documented behavior; intentional to cap memory
     // and keep UX predictable.
@@ -704,7 +709,7 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
       { irk_hex, addr, addr_type, now, connection_generation, 0, false, next_capture_label_ });
   if (!next_capture_label_.empty()) {
     ESP_LOGI(TAG, "Tagged new capture with label '%s'", next_capture_label_.c_str());
-    next_capture_label_.clear();  // Consume-once: next device starts unlabeled
+    consume_capture_label_();  // Consume-once: next device starts unlabeled
   }
   out_is_new_device = true;
   ESP_LOGD(TAG, "New IRK added to cache (total: %zu/%zu)", irk_cache_.size(), cache_limit);
@@ -717,7 +722,7 @@ void IRKCaptureComponent::restore_capture_history_(IRKCacheEntry& entry) {
   if (entry.in_history) return;
   entry.in_history = true;
   entry.label = next_capture_label_;
-  next_capture_label_.clear();
+  if (!next_capture_label_.empty()) consume_capture_label_();
 }
 
 //======================== Output helpers (centralized) ========================
@@ -1008,91 +1013,71 @@ int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt
 
   ESP_LOGD(TAG, "DevInfo read (%s): value='%s'", is_manufacturer ? "Manufacturer" : "Model",
            value_copy.c_str());
-  append_const_string_or_default(ctxt->om, value_copy.c_str(),
-                                 is_manufacturer ? "ESPresense" : "IRK Capture");
-  return 0;
+  return append_const_string_or_default(ctxt->om, value_copy.c_str(),
+                                        is_manufacturer ? "ESPresense" : DEFAULT_BLE_NAME);
 }
 int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
   uint8_t lvl = 100;  // Placeholder static battery level
-  os_mbuf_append(ctxt->om, &lvl, 1);
-  return 0;
+  return append_att_value(ctxt->om, &lvl, 1);
 }
 int chr_read_hr(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
   uint8_t buf[2];
   size_t len;
   hr_measurement_sample(buf, &len);
-  os_mbuf_append(ctxt->om, buf, len);
-  return 0;
+  return append_att_value(ctxt->om, buf, len);
 }
 int chr_read_hid_protocol(uint16_t, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
   uint8_t protocol_mode = 0x01;  // Report protocol mode
-  os_mbuf_append(ctxt->om, &protocol_mode, 1);
-  return 0;
+  return append_att_value(ctxt->om, &protocol_mode, 1);
 }
 int chr_read_protected(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt,
                        void* arg) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
-  append_const_string_or_default(ctxt->om, (const char*) arg, "Protected Info");
-  return 0;
+  return append_const_string_or_default(ctxt->om, (const char*) arg, "Protected Info");
 }
 
 //======================== BLE name sanitization ========================
 
 std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
-  // Validate and sanitize BLE name for runtime changes from Home Assistant
+  // Keeps the characters that are safe to advertise (alphanumeric, space,
+  // hyphen, underscore), trims surrounding spaces, then limits the length.
+  // Returns an empty string when nothing usable remains; the caller decides
+  // whether that means a default name or a rejected change.
   std::string sanitized;
-  // 12 chars for Samsung S24/S25 compatibility with single-UUID advertising.
-  sanitized.reserve(BLE_NAME_MAX_LEN);
-
-  // Check for empty string
-  if (name.empty()) {
-    ESP_LOGW(TAG, "BLE name cannot be empty, using default 'IRK Capture'");
-    return "IRK Capture";
-  }
-
-  // Sanitize: allow only safe characters (alphanumeric, space, hyphen,
-  // underscore)
+  sanitized.reserve(name.size());
+  size_t rejected = 0;
   for (char c : name) {
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' ||
         c == '-' || c == '_') {
       sanitized += c;
     } else {
-      // Log rejected character
-      ESP_LOGW(TAG, "Rejected invalid character in BLE name: 0x%02X ('%c')", (uint8_t) c,
-               (c >= 32 && c <= 126) ? c : '?');
-    }
-
-    // Enforce 12-byte limit for Samsung S24/S25 compatibility (clean profile
-    // with single UUID)
-    if (sanitized.length() >= BLE_NAME_MAX_LEN) {
-      ESP_LOGW(TAG, "BLE name truncated to 12 bytes (Samsung compatibility)");
-      break;
+      rejected++;
     }
   }
-
-  // Trim leading and trailing whitespace
-  size_t start = sanitized.find_first_not_of(' ');
-  size_t end = sanitized.find_last_not_of(' ');
-  if (start != std::string::npos) {
-    sanitized = sanitized.substr(start, end - start + 1);
-  } else {
-    sanitized.clear();
+  if (rejected != 0) {
+    ESP_LOGW(TAG, "Removed %zu unsupported character(s) from the BLE name", rejected);
   }
 
-  // Final validation: ensure we have at least one character
-  if (sanitized.empty()) {
-    ESP_LOGW(TAG,
-             "BLE name contained only invalid characters, using default 'IRK "
-             "Capture'");
-    return "IRK Capture";
+  // Trim before truncating so leading spaces do not use up the length limit.
+  const size_t start = sanitized.find_first_not_of(' ');
+  if (start == std::string::npos) {
+    ESP_LOGW(TAG, "BLE name has no usable characters");
+    return "";
+  }
+  sanitized = sanitized.substr(start, sanitized.find_last_not_of(' ') - start + 1);
+
+  // 12 bytes for Samsung S24/S25 compatibility with single-UUID advertising.
+  if (sanitized.length() > BLE_NAME_MAX_LEN) {
+    ESP_LOGW(TAG, "BLE name truncated to %zu bytes (Samsung compatibility)", BLE_NAME_MAX_LEN);
+    sanitized.resize(BLE_NAME_MAX_LEN);
+    // The cut can land just after a space.
+    sanitized.erase(sanitized.find_last_not_of(' ') + 1);
   }
 
-  // Log if sanitization changed the input
   if (sanitized != name) {
     ESP_LOGI(TAG, "BLE name sanitized: '%s' -> '%s'", name.c_str(), sanitized.c_str());
   }
-
   return sanitized;
 }
 
@@ -1432,13 +1417,17 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     ESP_LOGI(TAG, "Encryption established; attempting immediate IRK capture");
     {
       MutexGuard lock(self->state_mutex_);
-      self->enc_ready_ = true;
-      self->enc_time_ = now_ms();
-      // BUG1 FIX: Initialize irk_last_try_ms_ to now so the ENC_TRY_INTERVAL_MS
-      // guard in poll_irk_if_due() is correctly enforced on the first poll
-      // attempt. Without this, (now - 0) is huge and the interval check is
-      // bypassed immediately.
-      self->irk_last_try_ms_ = now_ms();
+      // Encryption on a link this component is not tracking (a failed CONNECT
+      // whose link stayed up) must not mark the active connection as secured.
+      if (self->connected_ && self->conn_handle_ == ev->enc_change.conn_handle) {
+        self->enc_ready_ = true;
+        self->enc_time_ = now_ms();
+        // BUG1 FIX: Initialize irk_last_try_ms_ to now so the ENC_TRY_INTERVAL_MS
+        // guard in poll_irk_if_due() is correctly enforced on the first poll
+        // attempt. Without this, (now - 0) is huge and the interval check is
+        // bypassed immediately.
+        self->irk_last_try_ms_ = now_ms();
+      }
     }
 
     // Immediate store read using identity address
@@ -1740,8 +1729,10 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 void IRKCaptureComponent::setup() {
   ESP_LOGI(TAG, "IRK Capture v%s ready", VERSION);
 
-  // Sanitize initial name from YAML
+  // Sanitize initial name from YAML. The config validator already rejects
+  // anything this would change, so the fallback only guards other callers.
   ble_name_ = sanitize_ble_name(ble_name_);
+  if (ble_name_.empty()) ble_name_ = DEFAULT_BLE_NAME;
 
   // Initialize mutex for thread-safe access to shared state
   state_mutex_ = xSemaphoreCreateMutex();
@@ -1784,10 +1775,7 @@ void IRKCaptureComponent::setup() {
   // Clear in-memory IRK cache for fresh session (complements ble_store_clear()
   // which is called later during BLE stack initialization)
   irk_cache_.clear();
-  // Derive cache capacity from max_captures_ (floor of 10 to handle
-  // deduplication of reconnections)
-  size_t cache_cap = (max_captures_ > 10) ? max_captures_ : 10;
-  irk_cache_.reserve(cache_cap);
+  irk_cache_.reserve(cache_limit_());
   capture_events_ = 0;
   unique_devices_ = 0;
   connection_generation_ = 0;
@@ -2093,9 +2081,9 @@ void IRKCaptureComponent::setup_ble() {
   // so the bond itself is disposable once the capture completes.
   ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
-  // Clear all bonds on boot for a "clean slate" - prevents bond table from
-  // filling up and ensures privacy (no old IRKs persist across reboots or
-  // device ownership changes)
+  // Bonds are kept in RAM only: __init__.py disables CONFIG_BT_NIMBLE_NVS_PERSIST,
+  // so no peer key outlives a reboot or a change of device ownership. Clearing
+  // here as well keeps that true if a build ever enables persistence.
   rc = ble_store_clear();
   if (rc != 0) {
     ESP_LOGE(TAG, "ble_store_clear on boot failed rc=%d", rc);
@@ -2324,13 +2312,18 @@ void IRKCaptureComponent::start_advertising() {
     const bool use_scan_response = current_profile == BLEProfile::KEYBOARD;
     // The Keyboard default has 13 bytes; custom names normally have at most 12.
     // Guard the conversion even if configuration or a future caller bypasses
-    // normalization. A name field alone can occupy 29 bytes of a 31-byte packet.
+    // normalization. A legacy packet carries 31 bytes and a name field has a
+    // 2-byte header, so a scan response fits 29 bytes of name. The Heart Sensor
+    // advertisement also carries flags (3), appearance (4) and one 16-bit UUID
+    // (4), which leaves 18.
+    const size_t max_name_len = use_scan_response ? 29 : 18;
     size_t raw_len = name_copy.size();
-    if (raw_len > 29) {
-      ESP_LOGW(TAG, "BLE name too long (%zu bytes), truncating to 29", raw_len);
-      raw_len = 29;
+    if (raw_len > max_name_len) {
+      ESP_LOGW(TAG, "BLE name too long (%zu bytes), truncating to %zu", raw_len, max_name_len);
+      raw_len = max_name_len;
     }
     const uint8_t name_len = (uint8_t) raw_len;
+    const bool name_complete = raw_len == name_copy.size();
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.appearance_is_present = 1;
     fields.num_uuids16 = 1;
@@ -2342,14 +2335,14 @@ void IRKCaptureComponent::start_advertising() {
       // Put the name in the scan response's separate 31-byte budget.
       rsp_fields.name = (uint8_t*) name_copy.c_str();
       rsp_fields.name_len = name_len;
-      rsp_fields.name_is_complete = 1;
+      rsp_fields.name_is_complete = name_complete;
     } else {
       profile_name = "Heart Sensor";
       fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
       fields.uuids16 = const_cast<ble_uuid16_t*>(&UUID_SVC_HR);
       fields.name = (uint8_t*) name_copy.c_str();
       fields.name_len = name_len;
-      fields.name_is_complete = 1;
+      fields.name_is_complete = name_complete;
     }
 
     if (rc == 0) {
@@ -2907,6 +2900,14 @@ bool IRKCaptureComponent::update_ble_name(const std::string& name) {
     keyboard_default = ble_profile_ == BLEProfile::KEYBOARD && name == KEYBOARD_DEFAULT_NAME;
   }
   const std::string accepted_name = keyboard_default ? name : sanitize_ble_name(name);
+  if (accepted_name.empty()) {
+    // Nothing usable was entered. Substituting a default here would rename the
+    // device, rotate its address and clear its bonds for what was a typo, so
+    // keep the current name and put it back on display.
+    MutexGuard lock(state_mutex_);
+    pending_ble_name_pub_ = true;
+    return false;
+  }
   uint32_t host_generation;
   uint32_t rotation_generation;
   uint32_t name_generation;

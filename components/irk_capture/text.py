@@ -32,7 +32,9 @@ async def to_code(config):
     parent = await cg.get_variable(config[CONF_IRK_CAPTURE_ID])
 
     if CONF_BLE_NAME in config:
-        txt = await text.new_text(config[CONF_BLE_NAME])
+        # 13 fits the Keyboard default ("Logitech K380"); the device trims any
+        # other name to 12. Without a limit Home Assistant accepts 255.
+        txt = await text.new_text(config[CONF_BLE_NAME], max_length=13)
         cg.add(parent.set_ble_name_text(txt))
 
     if CONF_NEXT_CAPTURE_LABEL in config:

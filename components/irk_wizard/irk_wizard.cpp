@@ -310,7 +310,8 @@ bool IRKWizardComponent::start_server_() {
   // ctrl_port, which defaults to 32768 for ALL instances. ESPHome's own
   // web_server: (port 80) already holds that default, so leaving it here
   // makes our httpd_start() fail with "error in creating ctrl socket (112)".
-  // Offset it by our server port to stay clear of that and of each other.
+  // Offset it by our server port to stay clear of that and of each other. The
+  // config schema limits port to 32767 so the sum fits the 16-bit field.
   config.ctrl_port = 32768 + port_;
   config.max_uri_handlers = 12;
   config.lru_purge_enable = true;
@@ -351,7 +352,12 @@ bool IRKWizardComponent::start_server_() {
     uri_handler.user_ctx = this;
     esp_err_t rc = httpd_register_uri_handler(server_, &uri_handler);
     if (rc != ESP_OK) {
+      // A server missing a route looks healthy but has controls that return
+      // 404. Report the start as failed so loop() retries it as a whole.
       ESP_LOGE(TAG, "Failed to register %s: %s", route.uri, esp_err_to_name(rc));
+      httpd_stop(server_);
+      server_ = nullptr;
+      return false;
     }
   }
   return true;
@@ -562,11 +568,17 @@ static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
   if (!json_request(req)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  if (!self->irk_capture()) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return send_json(req, "{\"error\":\"Capture component unavailable\"}");
+  }
   std::string body = read_request_body(req);
   bool enabled = false;
-  if (json_extract_bool(body, "enabled", enabled) && self->irk_capture()) {
-    self->irk_capture()->set_stop_after_capture(enabled);
+  if (!json_extract_bool(body, "enabled", enabled)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return send_json(req, "{\"error\":\"enabled must be a boolean\"}");
   }
+  self->irk_capture()->set_stop_after_capture(enabled);
   return send_ok(req);
 }
 
