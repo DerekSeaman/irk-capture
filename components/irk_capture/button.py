@@ -22,9 +22,9 @@ CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
             cv.GenerateID(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
-            # Rotates the advertised address and, in a profile whose name is
-            # not fixed, adopts a name carrying the new address's low two
-            # octets.
+            # Rotates the advertised address and adopts a name carrying the
+            # profile and the new address's low two octets ("IRK HR 7F3A",
+            # "IRK KB 7F3A"), in both profiles, until the next reboot.
             cv.Optional(CONF_REFRESH_IDENTITY): button.button_schema(IRKCaptureButton),
             cv.Optional(CONF_NEW_MAC): button.button_schema(IRKCaptureButton),
             # Clears capture history and requests a bond-store wipe without

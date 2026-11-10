@@ -24,7 +24,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_ADVERTISING): switch.switch_schema(
             IRKCaptureSwitch, default_restore_mode="DISABLED"
         ),
-        # Both default OFF so existing continuous multi-capture behavior is
+        # Defaults OFF so existing continuous multi-capture behavior is
         # unchanged unless a user opts in.
         cv.Optional(CONF_STOP_AFTER_CAPTURE): switch.switch_schema(
             IRKCaptureStopAfterCaptureSwitch,

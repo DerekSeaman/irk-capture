@@ -250,12 +250,6 @@ class IRKCaptureComponent : public Component {
     capture_triggers_.push_back(trigger);
   }
 
-  // Friend classes for UI components (access protected members)
-  friend class IRKCaptureText;
-  friend class IRKCaptureSwitch;
-  friend class IRKCaptureButton;
-  friend class IRKCaptureSelect;
-
   // Friend functions for GAP event handlers and helpers (access private
   // members)
   friend int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -494,8 +488,8 @@ class IRKCaptureComponent : public Component {
   uint32_t bond_clear_host_generation_ { 0 };
   BondClearResult bond_clear_result_;
 
-  // Wizard-facing session state (see README). Protected by state_mutex_ like
-  // the rest of this block.
+  // Wizard-facing session state (see README). The entity pointers are set
+  // once before setup(); the rest is protected by state_mutex_ unless noted.
   text_sensor::TextSensor* status_sensor_ { nullptr };
   IRKCaptureForgetBondsButton* forget_bonds_button_ { nullptr };
   IRKCaptureStopAfterCaptureSwitch* stop_after_capture_switch_ { nullptr };
@@ -512,7 +506,7 @@ class IRKCaptureComponent : public Component {
     pending_label_val_.clear();
     pending_label_pub_ = true;
   }
-  // Avoids redundant status publishes.
+  // Avoids redundant status publishes. Main task only; not locked.
   std::string last_status_value_;
   // Terminal status belongs to last_result_generation_, just like the IRK
   // sensor. NONE also covers ordinary bonded reconnects (no capture event).
@@ -576,7 +570,7 @@ class IRKCaptureComponent : public Component {
   //           random_address_ready_, host_generation_,
   //           pairing_start_time_,
   //           ble_name_, ble_name_generation_, identity_refresh_pending_, generated_name_active_,
-  //           keyboard_name_custom_,
+  //           keyboard_name_custom_, ble_profile_,
   //           manufacturer_name_,
   //           mac_rotation_state_, pending_mac_,
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
@@ -589,7 +583,9 @@ class IRKCaptureComponent : public Component {
   //           connection_timeout_,
   //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
   //           every pending_* staging field, stop_after_capture_, next_capture_label_,
-  //           last_result_generation_
+  //           last_result_generation_, capture_status_, status_result_hold_until_
+  // Not protected, because only the main task touches them: last_loop_,
+  // last_notify_, last_status_value_, fired_capture_sequence_, capture_triggers_.
   SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Serializes BLE control operations that can be called from both NimBLE and

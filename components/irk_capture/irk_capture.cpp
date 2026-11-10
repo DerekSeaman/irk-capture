@@ -54,10 +54,13 @@ enc_change, etc.)
 button, text)
 3. Bond-clear worker: Enqueues NimBLE wake-ups; may wait for queue capacity,
 but never holds a component mutex while doing so or deletes bonds itself
+4. esp_http_server task (only with irk_wizard): calls the thread-safe getters,
+set_next_capture_label(), set_stop_after_capture() and request_bond_clear().
+Everything else the wizard does is deferred to the main task.
 
 THREAD SAFETY RULES:
 -    ALL reads/writes to shared state MUST use state_mutex_
--    The complete list of state it protects is next to state_mutex_ in irk_capture.h
+-    The state it protects is listed next to state_mutex_ in irk_capture.h
 -    RAII MutexGuard class ensures exception-safe lock/unlock
 -    Mutex MUST be released before calling BLE stack APIs (prevents deadlock)
 -    Entity publish_state() is NOT safe to call from the NimBLE task. BLE-context
@@ -112,9 +115,10 @@ Component operates as a state machine with these primary states:
    - Transitions to ENCRYPTED when BLE_GAP_EVENT_ENC_CHANGE succeeds
 
 4. ENCRYPTED (connected_ = true, enc_ready_ = true)
-   - Secure connection established, polling for IRK in NVS bond store
+   - Secure connection established, polling NimBLE's bond store for the IRK
    - Stops IRK polling after 45s; transitions to DISCONNECTING when an IRK is
-     captured or when the global 90s pairing timeout terminates the link
+     captured, when the bond turns out to hold no IRK, or when the global 90s
+     pairing timeout terminates the link
 
 5. DISCONNECTING (connected_ = false, adv_restart_time_ may be set)
    - IRK retrieval attempts continue via timers after disconnect
@@ -126,8 +130,10 @@ Key flags:
 -    enc_ready_: Encryption/pairing completed successfully
 -    irk_gave_up_: Exceeded 45s timeout without capturing IRK
 -    adv_restart_time_: Nonzero while a restart of advertising is being held
-off (reconnect-loop defense, DHKey failure, timeout cooldown, start retry)
--    sec_retry_done_: Already attempted one security retry after ENC failure
+off (reconnect-loop defense, DHKey failure, no-IRK result, timeout cooldown,
+start retry)
+-    sec_retry_done_: The one security retry for this connection has been used
+(it fires when encryption has not completed ~2s after connect)
 */
 
 // Timing configuration (all values in ms)
@@ -136,23 +142,25 @@ struct TimingConfig {
   static constexpr uint32_t HR_NOTIFY_INTERVAL_MS =
       1000;  // Heart rate notification interval (keeps connection alive)
   static constexpr uint32_t ENC_TO_FIRST_TRY_DELAY_MS =
-      1000;  // Delay from encryption to first IRK poll (allows NVS write to
-             // complete)
+      1000;  // Delay from encryption to first IRK poll (NimBLE stores the
+             // keys after it reports ENC_CHANGE)
   static constexpr uint32_t ENC_TRY_INTERVAL_MS =
       1000;  // Interval between IRK polling attempts while connected
   static constexpr uint32_t ENC_GIVE_UP_AFTER_MS =
       45000;  // Maximum time to poll for IRK before giving up
   static constexpr uint32_t POST_DISC_DELAY_MS =
-      800;  // Delay after disconnect for deferred IRK check (allows NVS flush)
+      800;  // Delay after disconnect for the fallback IRK check (lets a bond
+            // write that was still in flight finish)
   static constexpr uint32_t ENC_LATE_READ_DELAY_MS =
-      5000;  // Extended delay for IRK check after failed encryption
-  static constexpr uint32_t SEC_RETRY_DELAY_MS =
-      2000;  // Delay before retrying security after encryption failure
+      5000;  // Fallback IRK check after encryption succeeded but the bond
+             // could not be read yet
+  static constexpr uint32_t SEC_RETRY_DELAY_MS = 2000;  // Retry security once if encryption has not
+                                                        // completed this long after connect
   static constexpr uint32_t SEC_TIMEOUT_MS = 20000;  // Timeout for encryption to complete (assumes
                                                      // peer forgot pairing)
   static constexpr uint32_t ADV_SUPPRESS_RESTART_DELAY_MS =
-      5000;  // Delay before auto-restarting advertising after a suppression
-             // (reconnect-loop break / IRK re-publish)
+      5000;  // Delay before auto-restarting advertising after a hold-off
+             // (reconnect-loop defense, DHKey failure, no-IRK result)
   static constexpr uint32_t ADV_RETRY_MS = 1000;  // Backoff after advertising start contention
   static constexpr uint8_t ADV_FAST_ATTEMPTS = 5;
   static constexpr uint32_t ADV_SLOW_RETRY_MS = 60000;
@@ -261,8 +269,9 @@ additionally suppress the next advertising cycle to prod the peer into resetting
 (Separately, retry_security_if_needed() initiates security once more if
 encryption has not completed ~2s after connect — this is timeout-driven, not a
 response to an ENC_CHANGE failure.)
-DISCONNECT → immediate store read; schedule delayed read at +800ms; restart
-advertising.
+DISCONNECT → if this connection has not produced a result yet: immediate store
+read, and a delayed read at +800ms if that is inconclusive. Then restart
+advertising unless a hold-off is pending or the capture limit was reached.
 While connected (post ENC) → poll every 1s starting at +1s, stop polling after
 45s, and disconnect immediately whenever an IRK is captured.
 All address reporting uses the peer identity address; IRK hex is reversed for
@@ -712,18 +721,19 @@ static void log_publish_decision(const PublishDecision& decision, const std::str
 /**
  * @brief Centralized IRK output helper - logs and publishes IRK to Home
  * Assistant sensors
- * @param self Pointer to IRKCaptureComponent instance (may be null during
- * cleanup)
+ * @param self Pointer to IRKCaptureComponent instance (null is ignored)
  * @param peer_id_addr Peer's identity address (stable across reconnections)
  * @param irk_hex IRK in hex string format (already reversed for output
  * compatibility)
- * @param context_tag Context label for logging (e.g., "ENC_IMMEDIATE",
- * "DISC_IMMEDIATE", "POLL_CONNECTED")
+ * @param context_tag Read path, for the log: "ENC_CHANGE", "DISC_IMMEDIATE",
+ * "POLL_CONNECTED", "DISC_DELAYED" or "ENC_LATE"
  * @param connection_generation Monotonic connection identifier
+ * @param origin How the connection began; a fresh pairing or re-pair is always
+ * published, a bonded reconnect is rate-limited
  *
  * This is the single point of IRK output, ensuring consistent formatting across
- * all capture paths. Called from multiple locations: ENC_CHANGE, DISCONNECT,
- * post-disconnect timer, polling loop.
+ * all capture paths. Called from ENC_CHANGE, DISCONNECT, the polling loop and
+ * both delayed-read timers (post-disconnect and late-encryption).
  */
 void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                          const std::string& irk_hex, const char* context_tag,
@@ -1227,15 +1237,6 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   return 0;
 }
 
-/**
- * @brief Handles BLE_GAP_EVENT_DISCONNECT - called when peer disconnects
- * @param self Pointer to IRKCaptureComponent instance
- * @param ev GAP event structure containing disconnect reason
- * @return 0 (always)
- *
- * Attempts immediate IRK read from NVS, schedules delayed read (+800ms),
- * and restarts advertising unless a restart is already scheduled.
- */
 // ble_gap_terminate() returns EALREADY when a disconnect is already under way,
 // for example one started by a timeout or a MAC rotation. That is not a failure.
 static void log_terminate_result(int rc, const char* context) {
@@ -1251,6 +1252,17 @@ static void log_no_irk_for_peer(const ble_addr_t& peer_id) {
            addr_to_str(peer_id).c_str());
 }
 
+/**
+ * @brief Handles BLE_GAP_EVENT_DISCONNECT - called when peer disconnects
+ * @param self Pointer to IRKCaptureComponent instance
+ * @param ev GAP event structure containing disconnect reason
+ * @return 0 (always)
+ *
+ * If the connection has not produced a result yet, reads the peer's bond once
+ * more and schedules a delayed read (+800ms) when that is inconclusive. Then
+ * restarts advertising, unless the capture limit was reached, the user turned
+ * advertising off, or a restart is already scheduled after a hold-off.
+ */
 int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)", ev->disconnect.reason, ev->disconnect.reason);
 
@@ -1367,9 +1379,12 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
  * @param ev GAP event structure containing encryption status
  * @return 0 (always)
  *
- * On success (status=0): Attempts immediate IRK read and schedules delayed read
- * (+5s). On failure: Logs detailed error, deletes stale bond, and retries
- * security once.
+ * On success (status=0): reads the peer's bond at once. A valid IRK is
+ * published and the link closed; a bond without an IRK is reported as "no IRK"
+ * and the link closed; otherwise a delayed read is scheduled (+5s).
+ * On failure: logs the decoded reason, deletes only this peer's bond and closes
+ * the link so the peer pairs afresh. It does not retry security; the single
+ * retry in retry_security_if_needed() is time-based.
  */
 int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   ESP_LOGI(TAG, "ENC_CHANGE status=%d (0x%02X)", ev->enc_change.status, ev->enc_change.status);
@@ -1494,8 +1509,8 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
 /**
  * @brief Handles BLE_GAP_EVENT_REPEAT_PAIRING - peer attempting to pair when
  * already bonded
- * @param self Pointer to IRKCaptureComponent instance (unused, but kept for
- * consistency)
+ * @param self Pointer to IRKCaptureComponent instance; the connection is
+ * marked as an explicit re-pair so its IRK is always published
  * @param ev GAP event structure containing repeat pairing details
  * @return BLE_GAP_REPEAT_PAIRING_RETRY after a successful stale-bond deletion;
  * BLE_GAP_REPEAT_PAIRING_IGNORE if recovery cannot be prepared safely
@@ -1924,7 +1939,7 @@ void IRKCaptureComponent::loop() {
   }
   if (!is_connected || conn_handle_copy == BLE_HS_CONN_HANDLE_NONE) return;
 
-  // HR notify and IRK polling (post-ENC)
+  // HR notify (from connect, to keep the link active) and IRK polling (post-ENC)
   notify_hr_if_due(now);
   poll_irk_if_due(now);
 }
@@ -1932,7 +1947,7 @@ void IRKCaptureComponent::loop() {
 //======================== BLE setup/registry ========================
 
 void IRKCaptureComponent::setup_ble() {
-  // NVS for key store
+  // NVS holds the persisted BLE profile. Bonds are kept in RAM (see below).
   esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_LOGW(TAG, "NVS full or version mismatch - erasing");
@@ -2113,12 +2128,11 @@ bool IRKCaptureComponent::register_gatt_services() {
   devinfo_chrs[0].arg = (void*) this;  // Manufacturer Name
   devinfo_chrs[1].arg = (void*) this;  // Model Number
 
-  // Explicitly zero the handle globals before any registration
-  // attempt. The Keyboard profile GATT table has no HR service (it does include
-  // the Protected service), so g_hr_handle would retain a stale value from a
-  // prior boot if a Keyboard→Heart Sensor fallback occurs. Zeroing both here
-  // makes the state explicit and predictable regardless of which registration
-  // path is taken.
+  // NimBLE fills these in only for the characteristics it registers, in
+  // ble_gatts_start(). The Keyboard table has no HR service, so g_hr_handle
+  // stays 0 there, which is how notify_hr_if_due() knows there is nothing to
+  // notify. Zeroing both first makes that explicit for either registration
+  // path, including the Keyboard→Heart Sensor fallback.
   g_hr_handle = 0;
   g_prot_handle = 0;
 
@@ -2330,9 +2344,10 @@ void IRKCaptureComponent::start_advertising() {
       advp.itvl_min = 0x00A0;
       advp.itvl_max = 0x00F0;
 
-      // Use explicit RANDOM address type (our static random address set in
-      // setup_ble/refresh_mac) Avoids Samsung One UI 7 "Maximum Restrictions"
-      // filtering RPA addresses as tracking risks
+      // Use explicit RANDOM address type: our static random address, set
+      // above on the first start and by handle_mac_rotation_() afterwards.
+      // Avoids Samsung One UI 7 "Maximum Restrictions" filtering RPA
+      // addresses as tracking risks
       constexpr uint8_t own_addr_type = BLE_OWN_ADDR_RANDOM;
       operation = "start";
       rc = ble_gap_adv_start(own_addr_type, nullptr, BLE_HS_FOREVER, &advp,
@@ -2581,8 +2596,8 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
         return;
       adv_restart_time_ = 0;
     }
-    // NVS and logging must not hold either component mutex: a slow flash
-    // operation must not make a NimBLE callback wait on ble_op_mutex_.
+    // The store clear and logging must not hold either component mutex: a
+    // slow operation must not make a NimBLE callback wait on ble_op_mutex_.
     log_mac("Previous");
     ESP_LOGI(TAG, "Clearing bonds and waiting %" PRIu32 " ms before MAC rotation",
              TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS);
@@ -2936,10 +2951,10 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     ESP_LOGW(TAG,
              "Profile change requires restart to update GATT database - "
              "scheduling safe reboot...");
-    // set_ble_profile() can be reached from a caller that is not the main task
-    // (the wizard serves it from esp_http_server's task). Deferring the reboot
-    // also lets the caller finish first - an HTTP handler gets to send its
-    // response instead of the connection dropping mid-reply.
+    // This function publishes entities directly, so it must run on the main
+    // task; the wizard defers its call here for that reason. The reboot is
+    // still deferred so the caller finishes first: the select publishes its
+    // new state, and a wizard request has already been answered.
     request_reboot_();
   }
 }
@@ -3410,7 +3425,7 @@ bool IRKCaptureComponent::handle_connection_timeout_(uint32_t now) {
   if (clear_bond) {
     ESP_LOGW(TAG, "%s timeout; clearing bond for %s", label,
              addr_to_str(desc.peer_id_addr).c_str());
-    // Flash work must run outside both component locks.
+    // Store work takes NimBLE's host lock; run it outside both component locks.
     const int delete_rc = ble_store_util_delete_peer(&desc.peer_id_addr);
     {
       MutexGuard lock(state_mutex_);
@@ -3930,7 +3945,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   }
 
   if (can_clear) {
-    // Flash work must not hold either component mutex.
+    // Store work takes NimBLE's host lock; hold neither component mutex.
     const int rc = ble_store_clear();
     if (rc != 0) {
       state = BondClearState::FAILED;
