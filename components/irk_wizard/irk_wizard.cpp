@@ -4,6 +4,7 @@
 
 #include <cstring>
 
+#include "esphome/components/irk_capture/mutex_guard.h"
 #include "esphome/components/network/util.h"
 #if defined(USE_WIFI) && defined(USE_WIFI_AP)
 #include "esphome/components/wifi/wifi_component.h"
@@ -17,23 +18,8 @@ namespace irk_wizard {
 
 static const char* const TAG = "irk_wizard";
 
-//======================== Thread safety ========================
-// Mirrors irk_capture's MutexGuard: RAII wrapper so every lock/unlock pair
-// is exception- and early-return-safe.
-class MutexGuard {
- public:
-  explicit MutexGuard(SemaphoreHandle_t mutex) : mutex_(mutex) {
-    if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
-  }
-  ~MutexGuard() {
-    if (mutex_) xSemaphoreGive(mutex_);
-  }
-  MutexGuard(const MutexGuard&) = delete;
-  MutexGuard& operator=(const MutexGuard&) = delete;
-
- private:
-  SemaphoreHandle_t mutex_;
-};
+// irk_capture's RAII guard, so every lock/unlock pair here is early-return-safe.
+using irk_capture::MutexGuard;
 
 static esp_err_t send_unauthorized(httpd_req_t* req) {
   httpd_resp_set_status(req, "401 Unauthorized");
@@ -159,8 +145,9 @@ void IRKWizardComponent::reboot() {
 void IRKWizardComponent::set_advertising(bool on) {
   if (!on) {
     MutexGuard lock(snapshot_mutex_);
-    if (capture_start_.state == "pending" || capture_start_.state == "ready")
-      capture_start_.state = "cancelled";
+    if (capture_start_.state == CaptureStartState::PENDING ||
+        capture_start_.state == CaptureStartState::READY)
+      capture_start_.state = CaptureStartState::CANCELLED;
   }
   this->defer([this, on]() {
     if (irk_capture_) irk_capture_->set_advertising_requested(on);
@@ -174,14 +161,15 @@ CaptureStart IRKWizardComponent::start_capture() {
     MutexGuard lock(snapshot_mutex_);
     request.operation_id = capture_start_.operation_id + 1;
     if (request.operation_id == 0) request.operation_id = 1;
-    request.state = "pending";
+    request.state = CaptureStartState::PENDING;
     request.boot_id = boot_id;
     capture_start_ = request;
   }
   this->defer([this, id = request.operation_id]() {
     {
       MutexGuard lock(snapshot_mutex_);
-      if (capture_start_.operation_id != id || capture_start_.state != "pending") return;
+      if (capture_start_.operation_id != id || capture_start_.state != CaptureStartState::PENDING)
+        return;
     }
     const bool available = irk_capture_ && !irk_capture_->is_failed();
     // The core takes the baseline and installs ON intent in one state lock.
@@ -190,10 +178,11 @@ CaptureStart IRKWizardComponent::start_capture() {
     MutexGuard lock(snapshot_mutex_);
     // OFF or another start can arrive while the radio operation runs. Its
     // queued main-task command still owns the final intent and acknowledgement.
-    if (capture_start_.operation_id != id || capture_start_.state != "pending") return;
+    if (capture_start_.operation_id != id || capture_start_.state != CaptureStartState::PENDING)
+      return;
     capture_start_.boot_id = baseline.boot_id;
     capture_start_.sequence = baseline.sequence;
-    capture_start_.state = available ? "ready" : "failed";
+    capture_start_.state = available ? CaptureStartState::READY : CaptureStartState::FAILED;
   });
   return request;
 }
@@ -310,7 +299,8 @@ static bool matching_boot_baseline(httpd_req_t* req, const std::string& body, ui
 
 static std::string bond_clear_json(const irk_capture::BondClearResult& result) {
   return "{\"operation_id\":" + std::to_string(result.operation_id) + ",\"state\":\"" +
-         json_escape(result.state) + "\",\"reason\":\"" + json_escape(result.reason) +
+         irk_capture::bond_clear_state_name(result.state) + "\",\"reason\":\"" +
+         json_escape(result.reason) +
          "\",\"history_cleared\":" + (result.history_cleared ? "true" : "false") + "}";
 }
 
@@ -477,7 +467,7 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
           json_escape(s.capture_result.irk) + "\",\"device_mac\":\"" +
           json_escape(s.capture_result.device_mac) + "\"},";
   json += "\"capture_start\":{\"operation_id\":" + std::to_string(s.capture_start.operation_id) +
-          ",\"state\":\"" + s.capture_start.state +
+          ",\"state\":\"" + capture_start_state_name(s.capture_start.state) +
           "\",\"boot_id\":" + std::to_string(s.capture_start.boot_id) +
           ",\"sequence\":" + std::to_string(s.capture_start.sequence) + "},";
   json += "\"bond_clear\":" + bond_clear_json(s.bond_clear);
@@ -572,7 +562,9 @@ static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
   std::string json = bond_clear_json(result);
   json.pop_back();
   json += ",\"boot_id\":" + std::to_string(self->irk_capture()->get_capture_result().boot_id) + "}";
-  if (result.state == "pending") httpd_resp_set_status(req, "202 Accepted");
+  if (result.state == irk_capture::BondClearState::PENDING) {
+    httpd_resp_set_status(req, "202 Accepted");
+  }
   return send_json(req, json);
 }
 

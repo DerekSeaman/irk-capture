@@ -39,9 +39,31 @@ class IRKCaptureComponent;
 
 // Latest history/bond-clear request. A terminal result remains available until
 // another request starts so HTTP clients can observe asynchronous completion.
+enum class BondClearState : uint8_t { IDLE, PENDING, BUSY, FAILED, CANCELLED, SUCCEEDED };
+
+// The name a state has in the wizard's JSON. The wizard page compares these
+// strings, so they are part of its HTTP contract.
+inline const char* bond_clear_state_name(BondClearState state) {
+  switch (state) {
+    case BondClearState::PENDING:
+      return "pending";
+    case BondClearState::BUSY:
+      return "busy";
+    case BondClearState::FAILED:
+      return "failed";
+    case BondClearState::CANCELLED:
+      return "cancelled";
+    case BondClearState::SUCCEEDED:
+      return "succeeded";
+    case BondClearState::IDLE:
+      break;
+  }
+  return "idle";
+}
+
 struct BondClearResult {
   uint32_t operation_id { 0 };
-  std::string state { "idle" };
+  BondClearState state { BondClearState::IDLE };
   std::string reason;
   bool history_cleared { false };
 };
@@ -244,15 +266,9 @@ class IRKCaptureComponent : public Component {
                                   const std::string& irk_hex, const char* context_tag,
                                   uint32_t connection_generation, CaptureOrigin origin);
 
-  // Friend declarations for GATT callback functions (access protected members)
+  // The Device Information read callback copies names under state_mutex_.
   friend int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle,
                               struct ble_gatt_access_ctxt* ctxt, void* arg);
-  friend int chr_read_batt(uint16_t conn_handle, uint16_t attr_handle,
-                           struct ble_gatt_access_ctxt* ctxt, void* arg);
-  friend int chr_read_hr(uint16_t conn_handle, uint16_t attr_handle,
-                         struct ble_gatt_access_ctxt* ctxt, void* arg);
-  friend int chr_read_protected(uint16_t conn_handle, uint16_t attr_handle,
-                                struct ble_gatt_access_ctxt* ctxt, void* arg);
 
   // Configuration setters
   void set_ble_name(const std::string& name) {
@@ -323,8 +339,6 @@ class IRKCaptureComponent : public Component {
   // Main-task wizard action: claim a baseline and request advertising in the
   // same state transaction, then let the normal BLE start gates run.
   CaptureResult begin_capture();
-  void refresh_mac();
-
   // Rotates the address and adopts a name carrying the profile and the new
   // address's low two octets ("IRK HR 7F3A", "IRK KB 7F3A") until the next
   // reboot. Both halves change together because rotating the address alone
@@ -428,7 +442,7 @@ class IRKCaptureComponent : public Component {
   // MAC rotation state machine (non-blocking event-driven implementation)
   enum class MacRotationState {
     IDLE,            // No MAC rotation pending
-    REQUESTED,       // refresh_mac() called, waiting for disconnect
+    REQUESTED,       // Rotation requested, waiting for disconnect
     READY_TO_ROTATE  // Disconnected, ready to perform rotation in loop()
   };
   MacRotationState mac_rotation_state_ { MacRotationState::IDLE };
@@ -441,11 +455,11 @@ class IRKCaptureComponent : public Component {
   struct IRKCacheEntry {
     std::string irk_hex;
     std::string mac_addr;
-    uint8_t addr_type;
-    uint32_t last_published_ms;
-    uint32_t last_observed_generation;
-    uint16_t reconnect_count;
-    bool reconnect_limit_reported;
+    uint8_t addr_type { 0 };
+    uint32_t last_published_ms { 0 };
+    uint32_t last_observed_generation { 0 };
+    uint16_t reconnect_count { 0 };
+    bool reconnect_limit_reported { false };
     std::string label;         // Optional user label for the visible history entry
     bool in_history { true };  // History can be cleared without losing deduplication
   };
@@ -625,8 +639,6 @@ class IRKCaptureComponent : public Component {
                                       CaptureOrigin origin = CaptureOrigin::UNKNOWN);
   void schedule_late_enc_check(const ble_addr_t& peer_id, uint32_t connection_generation,
                                CaptureOrigin origin = CaptureOrigin::UNKNOWN);
-  void handle_post_disconnect_timer(uint32_t now);
-  void handle_late_enc_timer(uint32_t now);
   void run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers, uint32_t now,
                        const char* context_tag);
   void cancel_peer_timers_(const ble_addr_t& peer_id,

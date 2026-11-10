@@ -20,9 +20,28 @@
 namespace esphome {
 namespace irk_wizard {
 
+enum class CaptureStartState : uint8_t { IDLE, PENDING, READY, CANCELLED, FAILED };
+
+// The name a state has in /api/status. The wizard page compares these strings.
+inline const char* capture_start_state_name(CaptureStartState state) {
+  switch (state) {
+    case CaptureStartState::PENDING:
+      return "pending";
+    case CaptureStartState::READY:
+      return "ready";
+    case CaptureStartState::CANCELLED:
+      return "cancelled";
+    case CaptureStartState::FAILED:
+      return "failed";
+    case CaptureStartState::IDLE:
+      break;
+  }
+  return "idle";
+}
+
 struct CaptureStart {
   uint32_t operation_id { 0 };
-  std::string state { "idle" };
+  CaptureStartState state { CaptureStartState::IDLE };
   uint32_t boot_id { 0 };
   uint32_t sequence { 0 };
 };

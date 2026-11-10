@@ -18,6 +18,7 @@
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
+#include "mutex_guard.h"
 
 // Some ESP-IDF 5.x package variants omit this prototype from headers. NimBLE's
 // implementation returns void; declaring it as int reads an undefined return
@@ -377,68 +378,6 @@ static bool is_encrypted(uint16_t conn_handle) {
   return false;
 }
 
-//======================== Thread Safety: RAII Mutex Guard
-//========================
-/*
-RAII wrapper for FreeRTOS mutex to ensure exception-safe locking.
-Used to protect shared state accessed by both NimBLE task and ESPHome main task.
-
-CRITICAL PERFORMANCE OPTIMIZATION:
-Always minimize mutex hold time by copying data out before releasing the lock,
-then performing slow operations (logging, NVS access) AFTER the lock is
-released.
-
-BAD (blocks NimBLE task during slow UART logging):
-  {
-    MutexGuard lock(state_mutex_);
-    peer_id = post_disc_timers_[0].peer_id;
-    ESP_LOGD(TAG, "Peer: %s", addr_to_str(peer_id).c_str()); // SLOW - UART
-bottleneck!
-  }
-
-GOOD (minimal lock hold time):
-  ble_addr_t peer_id_copy;
-  {
-    MutexGuard lock(state_mutex_);
-    peer_id_copy = post_disc_timers_[0].peer_id;  // Fast memory copy
-  }  // Lock released immediately
-  ESP_LOGD(TAG, "Peer: %s", addr_to_str(peer_id_copy).c_str());  // Safe - no
-lock held
-
-Why: On ESP32-C3 (single core), holding a mutex during logging can cause the
-NimBLE task to miss critical timing windows (e.g., supervision timeout), leading
-to dropped connections.
-
-Usage pattern:
-  {
-    MutexGuard lock(state_mutex_);
-    // ONLY fast memory operations here (reads, writes, simple arithmetic)
-  }  // Mutex automatically released
-  // Logging, NVS access, string formatting happen here (outside critical
-section)
-*/
-class MutexGuard {
- public:
-  explicit MutexGuard(SemaphoreHandle_t mutex) : mutex_(mutex) {
-    if (mutex_) {
-      xSemaphoreTake(mutex_, portMAX_DELAY);
-    }
-  }
-
-  ~MutexGuard() {
-    if (mutex_) {
-      xSemaphoreGive(mutex_);
-    }
-  }
-
-  // Disable copy and move
-  MutexGuard(const MutexGuard&) = delete;
-  MutexGuard& operator=(const MutexGuard&) = delete;
-
- private:
-  SemaphoreHandle_t mutex_;
-};
-
 // Serialize BLE host control operations across ESPHome and NimBLE task
 // contexts.
 //
@@ -691,8 +630,14 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
     irk_cache_.erase(irk_cache_.begin());
     out_decision.evicted_oldest = true;
   }
-  irk_cache_.push_back(
-      { irk_hex, addr, addr_type, now, connection_generation, 0, false, next_capture_label_ });
+  IRKCacheEntry entry;
+  entry.irk_hex = irk_hex;
+  entry.mac_addr = addr;
+  entry.addr_type = addr_type;
+  entry.last_published_ms = now;
+  entry.last_observed_generation = connection_generation;
+  entry.label = next_capture_label_;
+  irk_cache_.push_back(std::move(entry));
   if (!next_capture_label_.empty()) {
     out_decision.label = next_capture_label_;
     consume_capture_label_();  // Consume-once: next device starts unlabeled
@@ -856,7 +801,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
             deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
       }
     }
-    // BUG5 FIX: Guard stop_advertising() with is_advertising() to prevent
+    // Guard stop_advertising() with is_advertising() to prevent
     // double stop (spurious HA state updates). Only needed when advertising is
     // actually running (e.g., called from timer paths like DISC_DELAYED).
     if (self->is_advertising()) {
@@ -1460,7 +1405,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       if (self->connected_ && self->conn_handle_ == ev->enc_change.conn_handle) {
         self->enc_ready_ = true;
         self->enc_time_ = now_ms();
-        // BUG1 FIX: Initialize irk_last_try_ms_ to now so the ENC_TRY_INTERVAL_MS
+        // Initialize irk_last_try_ms_ to now so the ENC_TRY_INTERVAL_MS
         // guard in poll_irk_if_due() is correctly enforced on the first poll
         // attempt. Without this, (now - 0) is huge and the interval check is
         // bypassed immediately.
@@ -1931,8 +1876,8 @@ void IRKCaptureComponent::loop() {
   notify_bond_clear_();
 
   // Timers for IRK checks
-  handle_post_disconnect_timer(now);
-  handle_late_enc_timer(now);
+  run_peer_timer_(post_disc_timers_, now, "DISC_DELAYED");
+  run_peer_timer_(late_enc_timers_, now, "ENC_LATE");
 
   // Rotation must not starve security timeouts or IRK polling on a connection
   // that arrived while the radio was stopping.
@@ -2035,7 +1980,7 @@ void IRKCaptureComponent::setup_ble() {
     // Cancel the request without relying on the old host event being serviced.
     // Leave its event object intact: a delayed wake-up checks current state.
     if (g_irk_instance->bond_clear_pending_) {
-      g_irk_instance->bond_clear_result_.state = "cancelled";
+      g_irk_instance->bond_clear_result_.state = BondClearState::CANCELLED;
       g_irk_instance->bond_clear_result_.reason = "Bluetooth restarted; retry once ready.";
     }
     g_irk_instance->bond_clear_pending_ = false;
@@ -2168,7 +2113,7 @@ bool IRKCaptureComponent::register_gatt_services() {
   devinfo_chrs[0].arg = (void*) this;  // Manufacturer Name
   devinfo_chrs[1].arg = (void*) this;  // Model Number
 
-  // BUG4 FIX: Explicitly zero the handle globals before any registration
+  // Explicitly zero the handle globals before any registration
   // attempt. The Keyboard profile GATT table has no HR service (it does include
   // the Protected service), so g_hr_handle would retain a stale value from a
   // prior boot if a Keyboard→Heart Sensor fallback occurs. Zeroing both here
@@ -2739,10 +2684,6 @@ void IRKCaptureComponent::refresh_identity() {
   request_mac_rotation_(true);
 }
 
-void IRKCaptureComponent::refresh_mac() {
-  request_mac_rotation_(false);
-}
-
 bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const std::string* accepted_name,
                                                 uint32_t expected_host_generation,
                                                 uint32_t expected_rotation_generation,
@@ -3246,14 +3187,6 @@ void IRKCaptureComponent::cancel_peer_timers_(const ble_addr_t& peer_id,
   }
 }
 
-void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
-  run_peer_timer_(post_disc_timers_, now, "DISC_DELAYED");
-}
-
-void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
-  run_peer_timer_(late_enc_timers_, now, "ENC_LATE");
-}
-
 void IRKCaptureComponent::run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers,
                                           uint32_t now, const char* context_tag) {
   // Consume one due entry per loop; any others run on later ticks.
@@ -3351,7 +3284,7 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     if (!sec_retry_done_copy && (now - sec_init_time_copy) > TimingConfig::SEC_RETRY_DELAY_MS) {
       uint32_t elapsed = now - sec_init_time_copy;
       ESP_LOGI(TAG, "Retrying security initiate after %" PRIu32 " ms", elapsed);
-      // BUG2 FIX: Set sec_retry_done_ under mutex BEFORE calling
+      // Set sec_retry_done_ under mutex BEFORE calling
       // ble_gap_security_initiate(). Writing it after the BLE call is a race: a
       // NimBLE callback could fire during the call and read sec_retry_done_ as
       // false, causing a double retry.
@@ -3897,22 +3830,22 @@ BondClearResult IRKCaptureComponent::request_bond_clear() {
     bond_clear_result_.history_cleared = true;
     bond_clear_result_.reason.clear();
     if (!bond_clear_task_) {
-      bond_clear_result_.state = "failed";
+      bond_clear_result_.state = BondClearState::FAILED;
       bond_clear_result_.reason = "Bond-clear worker unavailable; restart the device to retry.";
     } else if (!host_synced_) {
-      bond_clear_result_.state = "busy";
+      bond_clear_result_.state = BondClearState::BUSY;
       bond_clear_result_.reason = "Bluetooth is not ready; retry once ready.";
     } else if (mac_rotation_state_ != MacRotationState::IDLE) {
-      bond_clear_result_.state = "busy";
+      bond_clear_result_.state = BondClearState::BUSY;
       bond_clear_result_.reason = "Bluetooth identity is changing; retry once idle.";
     } else {
-      bond_clear_result_.state = "pending";
+      bond_clear_result_.state = BondClearState::PENDING;
       bond_clear_pending_ = true;
       bond_clear_host_generation_ = host_generation_;
     }
     result = bond_clear_result_;
   }
-  if (result.state == "pending") {
+  if (result.state == BondClearState::PENDING) {
     notify_bond_clear_();
   } else {
     ESP_LOGW(TAG, "Forget All Bonds: history cleared; stored bonds retained. %s",
@@ -3952,7 +3885,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   int stop_rc = BLE_HS_EBUSY;
   uint32_t operation_id;
   uint32_t host_generation;
-  std::string state = "busy";
+  BondClearState state = BondClearState::BUSY;
   std::string reason = "Bluetooth maintenance is busy; retry once idle.";
   {
     MutexGuard lock(state_mutex_);
@@ -3989,7 +3922,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
           reason = "A device is connected; disconnect it and retry.";
         } else if (active ||
                    (stop_rc != 0 && stop_rc != BLE_HS_EALREADY && stop_rc != BLE_HS_EINVAL)) {
-          state = stop_rc == BLE_HS_EBUSY ? "busy" : "failed";
+          state = stop_rc == BLE_HS_EBUSY ? BondClearState::BUSY : BondClearState::FAILED;
           reason = "Bluetooth advertising could not stop; retry once idle.";
         }
       }
@@ -4000,10 +3933,10 @@ void IRKCaptureComponent::handle_forget_bonds_() {
     // Flash work must not hold either component mutex.
     const int rc = ble_store_clear();
     if (rc != 0) {
-      state = "failed";
+      state = BondClearState::FAILED;
       reason = "Bond storage could not be cleared; retry.";
     } else {
-      state = "succeeded";
+      state = BondClearState::SUCCEEDED;
       reason.clear();
     }
   }
@@ -4014,7 +3947,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
     bond_clear_result_.state = state;
     bond_clear_result_.reason = reason;
   }
-  if (state == "succeeded") {
+  if (state == BondClearState::SUCCEEDED) {
     ESP_LOGI(TAG, "All BLE bonds cleared");
   } else {
     ESP_LOGW(TAG, "Forget All Bonds: history cleared; pairings may remain. %s", reason.c_str());
