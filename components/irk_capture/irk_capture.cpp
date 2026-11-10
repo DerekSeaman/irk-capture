@@ -167,6 +167,8 @@ struct TimingConfig {
   static constexpr uint32_t MIN_REPUBLISH_INTERVAL_MS =
       60000;  // Min time between republishing same IRK (60s)
   static constexpr uint8_t MAC_ROTATION_MAX_RETRIES = 10;  // Max retries for MAC rotation
+  static constexpr uint32_t MAC_ROTATION_RETRY_MS = 250;   // First retry delay; doubles each retry
+  static constexpr uint32_t MAC_ROTATION_RETRY_MAX_MS = 2000;  // Ceiling for that backoff
   static constexpr uint32_t MAC_ROTATION_SETTLE_DELAY_MS =
       500;  // Delay after adv stop before MAC change
   static constexpr uint32_t STATUS_RESULT_HOLD_MS =
@@ -250,6 +252,8 @@ static const char* sm_reason_str(uint8_t reason) {
 Connect → Initiate security
 ENC_CHANGE (success) → immediate IRK read from store; if available: publish &
 disconnect (tested working behavior); otherwise schedule a late read at +5s.
+A stored bond with no IRK is also a final outcome: publish "no IRK", disconnect,
+and hold advertising off briefly so a bonded peer cannot reconnect in a loop.
 ENC_CHANGE (failure) → delete the failing peer's bond and terminate the
 connection to force fresh pairing on reconnect; on a DHKey check failure,
 additionally suppress the next advertising cycle to prod the peer into resetting.
@@ -1467,6 +1471,8 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
         // NimBLE has completed key distribution before reporting ENC_CHANGE
         // success. Preserve this outcome before timeout cleanup can delete it.
         self->publish_no_irk_(d.peer_id_addr, connection_generation, true, origin);
+        self->close_after_no_irk_(ev->enc_change.conn_handle, connection_generation,
+                                  "after ENC no-IRK result");
       } else {
         ESP_LOGW(TAG, "IRK failed validation (all-zero or all-FF); scheduling late check");
         self->schedule_late_enc_check(d.peer_id_addr, connection_generation, origin);
@@ -2660,7 +2666,18 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
     rc = ble_hs_id_set_rnd(mac);
   }
 
+  // NimBLE returns EINVAL only when it rejects the address bytes themselves, so
+  // the same address can never succeed: draw another before retrying. Every
+  // other failure comes from the controller or host being busy and may clear.
+  const bool replace_address = rc == BLE_HS_EINVAL;
+  uint8_t replacement[6];
+  if (replace_address) {
+    esp_fill_random(replacement, sizeof(replacement));
+    replacement[5] |= 0xC0;  // Static random address, as in request_mac_rotation_()
+  }
+
   bool aborted = false;
+  uint32_t retry_delay = 0;
   {
     MutexGuard lock(state_mutex_);
     // A reset or replacement request during the BLE call invalidates its
@@ -2678,7 +2695,7 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
       commit_generated_name_(mac);
     } else {
       retries = ++mac_rotation_retries_;
-      aborted = rc != BLE_HS_EINVAL || retries >= TimingConfig::MAC_ROTATION_MAX_RETRIES;
+      aborted = retries >= TimingConfig::MAC_ROTATION_MAX_RETRIES;
       if (aborted) {
         mac_rotation_state_ = MacRotationState::IDLE;
         mac_rotation_retries_ = 0;
@@ -2688,6 +2705,14 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
         // next plain rotation, such as the one a name change from Home
         // Assistant triggers.
         identity_refresh_pending_ = false;
+      } else {
+        // Back off instead of spending the whole budget within a few loop
+        // ticks, which is shorter than any transient condition lasts.
+        const uint8_t doublings = std::min<uint8_t>(retries - 1, 8);
+        retry_delay = std::min(TimingConfig::MAC_ROTATION_RETRY_MS << doublings,
+                               TimingConfig::MAC_ROTATION_RETRY_MAX_MS);
+        mac_rotation_ready_time_ = deadline_after(now_ms(), retry_delay);
+        if (replace_address) std::memcpy(pending_mac_, replacement, sizeof(pending_mac_));
       }
     }
   }
@@ -2701,8 +2726,9 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   } else if (aborted) {
     ESP_LOGE(TAG, "MAC rotation aborted rc=%d after %u attempts", rc, retries);
   } else {
-    ESP_LOGW(TAG, "MAC rotation rc=%d, retry %u/%u", rc, retries,
-             TimingConfig::MAC_ROTATION_MAX_RETRIES);
+    ESP_LOGW(TAG, "MAC rotation rc=%d, retry %u/%u in %" PRIu32 " ms%s", rc, retries,
+             TimingConfig::MAC_ROTATION_MAX_RETRIES, retry_delay,
+             replace_address ? " with a new address" : "");
     return;
   }
   start_advertising();  // With the new address, or the old one after an abort.
@@ -3125,6 +3151,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
   if (!bond.irk_present) {
     // This read is called only by polling after successful encryption.
     publish_no_irk_(desc.peer_id_addr, connection_generation, true, origin);
+    close_after_no_irk_(conn_handle, connection_generation, "after poll no-IRK result");
     return false;
   }
 
@@ -3621,6 +3648,32 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
            "No IRK was provided. If this device uses a fixed BLE address, use this MAC "
            "directly: %s",
            addr.c_str());
+}
+
+void IRKCaptureComponent::close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
+                                              const char* context) {
+  // A completed pairing without an IRK is as final as a capture. Leaving the
+  // link up would hold the only connection slot until the 90 s pairing timeout
+  // and then report a timeout that never happened. The bond is still stored,
+  // so the peer may reconnect at once and reach the same outcome: hold
+  // advertising off briefly so that cannot become a tight reconnect loop.
+  {
+    MutexGuard lock(state_mutex_);
+    // The store read ran unlocked. Never close a replacement connection that
+    // reused this handle, or a link this component is not tracking.
+    if (!connected_ || conn_handle_ != conn_handle || connection_generation == 0 ||
+        connection_generation_ != connection_generation)
+      return;
+    if (advertising_requested_) {
+      adv_restart_time_ = deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
+    }
+  }
+  int term_rc;
+  {
+    BleOpGuard ble_lock(ble_op_mutex_);
+    term_rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+  }
+  log_terminate_result(term_rc, context);
 }
 
 void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str,

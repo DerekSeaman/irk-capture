@@ -395,7 +395,7 @@ class IRKCaptureComponent : public Component {
   MacRotationState mac_rotation_state_ { MacRotationState::IDLE };
   uint8_t pending_mac_[6] { 0 };            // Pre-generated MAC for rotation
   uint8_t mac_rotation_retries_ { 0 };      // Retry counter for MAC rotation
-  uint32_t mac_rotation_ready_time_ { 0 };  // Time when rotation can start (after settling delay)
+  uint32_t mac_rotation_ready_time_ { 0 };  // Earliest next attempt (settle delay or retry backoff)
   uint32_t mac_rotation_generation_ { 0 };  // Invalidates work after reset or a new request
 
   // IRK capture tracking with deduplication and rate limiting
@@ -544,6 +544,10 @@ class IRKCaptureComponent : public Component {
   bool is_valid_irk(const uint8_t irk[16]);
   void publish_no_irk_(const ble_addr_t& peer_id, uint32_t connection_generation,
                        bool pairing_completed, CaptureOrigin origin = CaptureOrigin::UNKNOWN);
+  // Ends a link whose pairing completed without an IRK, if it is still the
+  // connection the result was read for. Safe from the NimBLE and main tasks.
+  void close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
+                           const char* context);
   bool should_publish_irk(const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
                           uint32_t connection_generation, bool force_pairing_publish,
                           bool& out_should_stop_adv, bool& out_is_new_device,
