@@ -38,6 +38,9 @@ esp32:
 logger:
   level: DEBUG
   baud_rate: 115200
+  # Bluetooth events log from the NimBLE task in bursts of a dozen lines. The
+  # 768-byte default drops the last lines of a capture from the network log.
+  task_log_buffer_size: 2048
 
 api:
   # encryption.key comes from the device YAML.
