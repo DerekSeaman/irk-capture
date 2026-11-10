@@ -2695,6 +2695,9 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
     log_mac("Effective");
     ESP_LOGI(TAG, "MAC rotation complete: %02X:%02X:%02X:%02X:%02X:%02X", mac[5], mac[4], mac[3],
              mac[2], mac[1], mac[0]);
+    // start_advertising() publishes the address only when it starts the radio.
+    // With advertising off, the sensor would keep showing the previous address.
+    publish_effective_mac();
   } else if (aborted) {
     ESP_LOGE(TAG, "MAC rotation aborted rc=%d after %u attempts", rc, retries);
   } else {
