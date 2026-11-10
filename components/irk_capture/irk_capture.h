@@ -376,8 +376,7 @@ class IRKCaptureComponent : public Component {
   uint32_t enc_time_ { 0 };
   bool sec_retry_done_ { false };
   uint32_t sec_init_time_ms_ { 0 };
-  bool suppress_next_adv_ { false };  // Prevent immediate re-advertising after IRK re-publish
-  uint32_t adv_restart_time_ { 0 };   // Time to auto-restart advertising after suppression
+  uint32_t adv_restart_time_ { 0 };  // When to restart advertising after a hold-off; 0 = none
   uint8_t advertising_start_attempts_ { 0 };
   uint32_t advertising_failure_log_time_ { 0 };
   bool random_address_ready_ { false };
@@ -389,10 +388,9 @@ class IRKCaptureComponent : public Component {
 
   // MAC rotation state machine (non-blocking event-driven implementation)
   enum class MacRotationState {
-    IDLE,              // No MAC rotation pending
-    REQUESTED,         // refresh_mac() called, waiting for disconnect
-    READY_TO_ROTATE,   // Disconnected, ready to perform rotation in loop()
-    ROTATION_COMPLETE  // Rotation done, ready to restart advertising
+    IDLE,            // No MAC rotation pending
+    REQUESTED,       // refresh_mac() called, waiting for disconnect
+    READY_TO_ROTATE  // Disconnected, ready to perform rotation in loop()
   };
   MacRotationState mac_rotation_state_ { MacRotationState::IDLE };
   uint8_t pending_mac_[6] { 0 };            // Pre-generated MAC for rotation
@@ -456,7 +454,6 @@ class IRKCaptureComponent : public Component {
   // state_mutex_) and the main-task loop() drains them via
   // flush_pending_publishes_().
   bool pending_adv_pub_ { false };
-  bool pending_adv_val_ { false };
   bool pending_irk_pub_ { false };
   std::string pending_irk_hex_;
   std::string pending_irk_addr_;
@@ -468,11 +465,9 @@ class IRKCaptureComponent : public Component {
   // their entity state is staged here and published from the main task like
   // everything else rather than written directly from the caller's context.
   bool pending_stop_after_capture_pub_ { false };
-  bool pending_stop_after_capture_val_ { false };
   bool pending_label_pub_ { false };
   std::string pending_label_val_;
   bool pending_ble_name_pub_ { false };
-  std::string pending_ble_name_;
 
   // Host state — written by NimBLE reset/sync callbacks and read by the ESPHome
   // main task. Atomic storage provides cross-core visibility without requiring
@@ -514,7 +509,7 @@ class IRKCaptureComponent : public Component {
   //           manufacturer_name_,
   //           mac_rotation_state_, pending_mac_,
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
-  //           suppress_next_adv_, adv_restart_time_, capture_events_,
+  //           adv_restart_time_, capture_events_,
   //           unique_devices_, irk_cache_ (deduplication state),
   //           capture_result_, capture_result_generation_,
   //           bond_clear_pending_, bond_clear_host_generation_, bond_clear_result_,
@@ -522,7 +517,7 @@ class IRKCaptureComponent : public Component {
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
   //           connection_timeout_,
   //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
-  //           pending_adv_/pending_irk_/pending_effmac_/pending_ble_name_,
+  //           every pending_* staging field, stop_after_capture_, next_capture_label_,
   //           last_result_generation_
   SemaphoreHandle_t state_mutex_ { nullptr };
 
@@ -570,6 +565,10 @@ class IRKCaptureComponent : public Component {
                                CaptureOrigin origin = CaptureOrigin::UNKNOWN);
   void handle_post_disconnect_timer(uint32_t now);
   void handle_late_enc_timer(uint32_t now);
+  void run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers, uint32_t now,
+                       const char* context_tag);
+  void cancel_peer_timers_(const ble_addr_t& peer_id,
+                           uint32_t connection_generation);  // Caller holds state_mutex_
 
   // Loop helpers
   void handle_mac_rotation_(uint32_t now);
@@ -584,7 +583,6 @@ class IRKCaptureComponent : public Component {
 
   // Deferred entity publishing (see pending_* fields). Staged from any context,
   // drained only on the ESPHome main task in loop().
-  void stage_advertising_publish_(bool value);
   void flush_pending_publishes_();
   // Reboots from the main loop. Safe to call from any task, including after
   // the component has been marked failed.
