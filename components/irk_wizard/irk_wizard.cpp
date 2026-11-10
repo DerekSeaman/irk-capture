@@ -209,22 +209,24 @@ void IRKWizardComponent::refresh_snapshot_() {
   if (!irk_capture_) return;
   WizardSnapshot next;
   next.status = status_sensor_ ? status_sensor_->state : "idle";
-  next.history_json = irk_capture_->build_history_json();
+  // One lock on irk_capture's state for the whole snapshot.
+  const irk_capture::SessionState core = irk_capture_->get_session_state();
+  next.history_json = core.history_json;
   next.irk = irk_sensor_ ? irk_sensor_->state : "";
   next.device_mac = device_mac_sensor_ ? device_mac_sensor_->state : "";
   next.effective_mac = effective_mac_sensor_ ? effective_mac_sensor_->state : "";
-  next.next_capture_label = irk_capture_->get_next_capture_label();
-  const bool keyboard = irk_capture_->get_ble_profile() == irk_capture::BLEProfile::KEYBOARD;
+  next.next_capture_label = core.next_capture_label;
+  const bool keyboard = core.profile == irk_capture::BLEProfile::KEYBOARD;
   next.profile = keyboard ? "Keyboard" : "Heart Sensor";
   // get_ble_name() is the name on air, already accounting for the Keyboard
   // profile's "Logitech K380" and for anything that has replaced it since
   // boot. Deciding it here instead would send the user hunting for a name the
   // device stopped advertising the moment the identity was refreshed.
-  next.advertised_name = irk_capture_->get_ble_name();
-  next.advertising = irk_capture_->is_advertising_requested();
-  next.stop_after_capture = irk_capture_->get_stop_after_capture();
-  next.capture_result = irk_capture_->get_capture_result();
-  next.bond_clear = irk_capture_->get_bond_clear_result();
+  next.advertised_name = core.advertised_name;
+  next.advertising = core.advertising_requested;
+  next.stop_after_capture = core.stop_after_capture;
+  next.capture_result = core.capture_result;
+  next.bond_clear = core.bond_clear;
   if (next.history_json.empty()) next.history_json = "[]";
 
   MutexGuard lock(snapshot_mutex_);
@@ -244,8 +246,17 @@ static esp_err_t handle_post_fresh_identity(httpd_req_t* req);
 static esp_err_t handle_post_reboot(httpd_req_t* req);
 static esp_err_t handle_post_stop_after_capture(httpd_req_t* req);
 
+// The wizard has no reason to be framed or to have its responses reinterpreted
+// as another type. Without these, a page on another origin could overlay the
+// wizard in a frame and trick a signed-in user into pressing its controls.
+static void set_security_headers(httpd_req_t* req) {
+  httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
+  httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+}
+
 static esp_err_t send_json(httpd_req_t* req, const std::string& body) {
   httpd_resp_set_type(req, "application/json");
+  set_security_headers(req);
   // /api/status carries the captured IRK and the peer's identity address, which
   // permanently deanonymize a phone. no-store keeps them out of the browser's
   // disk cache and out of any intermediary, rather than merely requiring
@@ -406,9 +417,9 @@ void IRKWizardComponent::loop() {
     return;
   }
 
-  // Each refresh takes irk_capture's state_mutex_ several times, which the
-  // NimBLE task also contends for during pairing. Poll briskly only while
-  // someone is actually using the wizard; otherwise back right off.
+  // Each refresh takes irk_capture's state_mutex_, which the NimBLE task also
+  // contends for during pairing, and copies the capture history. Poll briskly
+  // only while someone is actually using the wizard; otherwise back right off.
   uint32_t now = millis();
   const bool active = (now - last_request_ms_.load(std::memory_order_relaxed)) < 30000;
   if (now - last_snapshot_ms_ < (active ? 500 : 5000)) return;
@@ -432,6 +443,7 @@ static esp_err_t handle_index(httpd_req_t* req) {
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
   httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+  set_security_headers(req);
   return httpd_resp_send(req, reinterpret_cast<const char*>(self->page_data()), self->page_size());
 }
 

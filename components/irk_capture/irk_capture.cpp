@@ -587,7 +587,9 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
  * @brief Checks if IRK should be published (deduplication + rate limiting)
  *
  * CRITICAL: Caller MUST hold state_mutex_ before calling this function.
- * This function modifies irk_cache_.
+ * This function modifies irk_cache_. It therefore does not log: it records
+ * what it decided in out_decision, and the caller reports that with
+ * log_publish_decision() once the lock is released.
  *
  * MEMORY SAFETY: This function prevents duplicate entries in irk_cache_ by
  * checking if the identity address already exists before adding. Even if the
@@ -602,23 +604,17 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
  * extraction paths from the same connection
  * @param force_pairing_publish True for an explicit pairing or REPEAT_PAIRING;
  * bypasses rate limiting
- * @param out_should_stop_adv [out] Set to true if caller should stop
- * advertising (limit reached)
- * @param out_is_new_device [out] True when a new identity address was cached
- * @param out_limit_just_reached [out] True only on the first over-limit reconnect
+ * @param out_decision [out] The outcome and the details needed to log it
  * @return true if should publish, false if duplicate/rate-limited
  */
 bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const std::string& addr,
                                              uint8_t addr_type, uint32_t connection_generation,
-                                             bool force_pairing_publish, bool& out_should_stop_adv,
-                                             bool& out_is_new_device, bool& out_limit_just_reached,
-                                             bool& out_key_changed) {
+                                             bool force_pairing_publish,
+                                             PublishDecision& out_decision) {
   // PRECONDITION: Caller holds state_mutex_
-  out_should_stop_adv = false;
-  out_is_new_device = false;
-  out_limit_just_reached = false;
-  out_key_changed = false;
-  uint32_t now = now_ms();
+  using Reason = PublishDecision::Reason;
+  out_decision = {};
+  const uint32_t now = now_ms();
 
   // Identity address, rather than IRK, defines a unique device. A legitimate
   // re-pair can rotate the IRK without becoming a second device.
@@ -628,70 +624,60 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
       // Count the connection once and silently coalesce the remaining paths.
       if (connection_generation != 0) {
         if (entry.last_observed_generation == connection_generation) {
+          out_decision.reason = Reason::DUPLICATE_PATH;
           return false;
         }
         // A delayed timer from an older connection must not move the cache back
         // to an earlier generation or count as another reconnect.
         if (entry.last_observed_generation != 0 &&
             static_cast<int32_t>(connection_generation - entry.last_observed_generation) < 0) {
+          out_decision.reason = Reason::STALE_CONNECTION;
           return false;
         }
         entry.last_observed_generation = connection_generation;
       }
 
       // A changed IRK for a known identity is security-significant and should
-      // always be shown, but it is still the same unique device.
-      if (entry.irk_hex != irk_hex) {
-        out_key_changed = true;
+      // always be shown, but it is still the same unique device. A fresh
+      // pairing or REPEAT_PAIRING is an explicit user action: always surface
+      // its IRK, even when unchanged and inside the normal interval.
+      const bool key_changed = entry.irk_hex != irk_hex;
+      if (key_changed || force_pairing_publish) {
         entry.irk_hex = irk_hex;
         entry.reconnect_count = 0;
         entry.reconnect_limit_reported = false;
         entry.last_published_ms = now;
-        restore_capture_history_(entry);
-        ESP_LOGI(TAG, "IRK updated for known identity %s", addr.c_str());
-        return true;
-      }
-
-      // A fresh pairing or REPEAT_PAIRING is an explicit user action. Always
-      // surface its IRK, even when unchanged and inside the normal interval.
-      if (force_pairing_publish) {
-        entry.reconnect_count = 0;
-        entry.reconnect_limit_reported = false;
-        entry.last_published_ms = now;
-        restore_capture_history_(entry);
-        ESP_LOGI(TAG, "Pairing completed; publishing IRK again");
+        restore_capture_history_(entry, out_decision);
+        out_decision.reason = key_changed ? Reason::KEY_CHANGED : Reason::PAIRED_AGAIN;
+        out_decision.publish = true;
         return true;
       }
 
       if (entry.reconnect_count < std::numeric_limits<uint16_t>::max()) {
         entry.reconnect_count++;
       }
+      out_decision.reconnect_count = entry.reconnect_count;
 
       // Count reconnecting connections, not the number of extraction paths.
       if (entry.reconnect_count > 5) {
-        if (!entry.reconnect_limit_reported) {
-          ESP_LOGW(TAG,
-                   "Reconnect limit reached (%u connections). Device keeps reconnecting; "
-                   "unpair from Bluetooth settings to stop.",
-                   entry.reconnect_count);
-          entry.reconnect_limit_reported = true;
-          out_limit_just_reached = true;
-        }
-        out_should_stop_adv = true;
+        out_decision.reason = Reason::RECONNECT_LIMIT;
+        out_decision.limit_just_reached = !entry.reconnect_limit_reported;
+        entry.reconnect_limit_reported = true;
+        out_decision.stop_adv = true;
         return false;
       }
 
-      // Rate limit ordinary bonded reconnects per device. This is intentionally
-      // verbose-only: routine suppression should not dominate debug logs.
-      if ((now - entry.last_published_ms) < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
-        ESP_LOGV(TAG, "Suppressing bonded reconnect IRK (published %" PRIu32 " ms ago)",
-                 now - entry.last_published_ms);
+      // Rate limit ordinary bonded reconnects per device.
+      out_decision.since_published_ms = now - entry.last_published_ms;
+      if (out_decision.since_published_ms < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
+        out_decision.reason = Reason::RATE_LIMITED;
         return false;
       }
 
-      ESP_LOGI(TAG, "Re-publishing IRK after bonded reconnect (%u/5)", entry.reconnect_count);
       entry.last_published_ms = now;
-      restore_capture_history_(entry);
+      restore_capture_history_(entry, out_decision);
+      out_decision.reason = Reason::RECONNECT;
+      out_decision.publish = true;
       return true;
     }
   }
@@ -702,27 +688,78 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
   if (irk_cache_.size() >= cache_limit) {
     // Evict oldest (FIFO). Note: documented behavior; intentional to cap memory
     // and keep UX predictable.
-    ESP_LOGD(TAG, "IRK cache full (%zu entries), evicting oldest entry", cache_limit);
     irk_cache_.erase(irk_cache_.begin());
+    out_decision.evicted_oldest = true;
   }
   irk_cache_.push_back(
       { irk_hex, addr, addr_type, now, connection_generation, 0, false, next_capture_label_ });
   if (!next_capture_label_.empty()) {
-    ESP_LOGI(TAG, "Tagged new capture with label '%s'", next_capture_label_.c_str());
+    out_decision.label = next_capture_label_;
     consume_capture_label_();  // Consume-once: next device starts unlabeled
   }
-  out_is_new_device = true;
-  ESP_LOGD(TAG, "New IRK added to cache (total: %zu/%zu)", irk_cache_.size(), cache_limit);
+  out_decision.reason = Reason::NEW_DEVICE;
+  out_decision.cache_size = irk_cache_.size();
+  out_decision.cache_limit = cache_limit;
+  out_decision.publish = true;
   return true;
 }
 
-void IRKCaptureComponent::restore_capture_history_(IRKCacheEntry& entry) {
+void IRKCaptureComponent::restore_capture_history_(IRKCacheEntry& entry,
+                                                   PublishDecision& out_decision) {
   // A new publication can restore a forgotten history row, but duplicate
   // extraction paths from the same connection must leave it hidden.
   if (entry.in_history) return;
   entry.in_history = true;
   entry.label = next_capture_label_;
-  if (!next_capture_label_.empty()) consume_capture_label_();
+  if (!next_capture_label_.empty()) {
+    out_decision.label = next_capture_label_;
+    consume_capture_label_();
+  }
+}
+
+// Reports a should_publish_irk() decision. Runs after state_mutex_ is released:
+// formatting and the UART must not stall the NimBLE task (see MutexGuard).
+static void log_publish_decision(const PublishDecision& decision, const std::string& addr) {
+  using Reason = PublishDecision::Reason;
+  switch (decision.reason) {
+    case Reason::DUPLICATE_PATH:
+    case Reason::STALE_CONNECTION:
+      break;  // Routine coalescing of read paths; nothing worth a line.
+    case Reason::KEY_CHANGED:
+      ESP_LOGI(TAG, "IRK updated for known identity %s", addr.c_str());
+      break;
+    case Reason::PAIRED_AGAIN:
+      ESP_LOGI(TAG, "Pairing completed; publishing IRK again");
+      break;
+    case Reason::RECONNECT_LIMIT:
+      if (decision.limit_just_reached) {
+        ESP_LOGW(TAG,
+                 "Reconnect limit reached (%u connections). Device keeps reconnecting; "
+                 "unpair from Bluetooth settings to stop.",
+                 decision.reconnect_count);
+      }
+      break;
+    case Reason::RATE_LIMITED:
+      // Intentionally verbose-only: routine suppression should not dominate
+      // debug logs.
+      ESP_LOGV(TAG, "Suppressing bonded reconnect IRK (published %" PRIu32 " ms ago)",
+               decision.since_published_ms);
+      break;
+    case Reason::RECONNECT:
+      ESP_LOGI(TAG, "Re-publishing IRK after bonded reconnect (%u/5)", decision.reconnect_count);
+      break;
+    case Reason::NEW_DEVICE:
+      if (decision.evicted_oldest) {
+        ESP_LOGD(TAG, "IRK cache full (%zu entries), evicted the oldest entry",
+                 decision.cache_limit);
+      }
+      ESP_LOGD(TAG, "New IRK added to cache (total: %zu/%zu)", decision.cache_size,
+               decision.cache_limit);
+      break;
+  }
+  if (!decision.label.empty()) {
+    ESP_LOGI(TAG, "Tagged capture with label '%s'", decision.label.c_str());
+  }
 }
 
 //======================== Output helpers (centralized) ========================
@@ -759,10 +796,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   bool max_reached = false;
   bool stop_after_capture_hit = false;
   bool should_publish;
-  bool should_stop_adv = false;
-  bool is_new_device = false;
-  bool key_changed = false;
-  bool limit_just_reached = false;
+  PublishDecision decision;
   bool force_pairing_publish = false;
   bool is_repair = false;
   bool capture_event = false;
@@ -776,9 +810,11 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     // redundant. Cancel them before they can create log or counter noise.
     self->cancel_peer_timers_(peer_id_addr, connection_generation);
 
-    should_publish = self->should_publish_irk(
-        irk_hex, addr_str, peer_id_addr.type, connection_generation, force_pairing_publish,
-        should_stop_adv, is_new_device, limit_just_reached, key_changed);
+    should_publish =
+        self->should_publish_irk(irk_hex, addr_str, peer_id_addr.type, connection_generation,
+                                 force_pairing_publish, decision);
+    const bool is_new_device = decision.reason == PublishDecision::Reason::NEW_DEVICE;
+    const bool key_changed = decision.reason == PublishDecision::Reason::KEY_CHANGED;
 
     if (should_publish) {
       self->capture_events_++;
@@ -807,10 +843,12 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     }
   }  // Release mutex before slow logging/publishing operations
 
+  log_publish_decision(decision, addr_str);
+
   // Reconnect-loop defense: hold advertising off for a few seconds. The
   // deadline covers both cases: a live link (the disconnect handler sees a
   // restart already scheduled) and a delayed read that finds the radio on.
-  if (should_stop_adv) {
+  if (decision.stop_adv) {
     {
       MutexGuard lock(self->state_mutex_);
       if (self->advertising_requested_) {
@@ -824,7 +862,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     if (self->is_advertising()) {
       self->stop_advertising();
     }
-    if (limit_just_reached) {
+    if (decision.limit_just_reached) {
       ESP_LOGI(TAG,
                "Reconnect limit reached; suppressing advertising to break the reconnect loop.");
     }
@@ -1965,36 +2003,6 @@ void IRKCaptureComponent::setup_ble() {
     ESP_LOGE(TAG, "nvs_flash_init failed (err=%d)", err);
     this->mark_failed(LOG_STR("NVS initialization failed"));
     return;
-  }
-
-  // NVS health check - verify storage actually works
-  // Single open/close with write, verify, and cleanup in one pass
-  nvs_handle_t nvs_test_handle;
-  err = nvs_open("irk_test", NVS_READWRITE, &nvs_test_handle);
-  if (err == ESP_OK) {
-    esp_err_t werr = nvs_set_u32(nvs_test_handle, "test", 0xDEADBEEF);
-    if (werr == ESP_OK) {
-      esp_err_t cerr = nvs_commit(nvs_test_handle);
-      if (cerr == ESP_OK) {
-        ESP_LOGI(TAG, "NVS health check passed");
-      } else {
-        ESP_LOGW(TAG, "NVS health check commit failed (err=%d) - continuing", cerr);
-      }
-    } else {
-      ESP_LOGW(TAG, "NVS health check write failed (err=%d) - continuing", werr);
-    }
-    // Clean up test data in same handle (best-effort)
-    esp_err_t erase_test_err = nvs_erase_all(nvs_test_handle);
-    if (erase_test_err != ESP_OK) {
-      ESP_LOGW(TAG, "NVS cleanup erase failed (err=%d)", erase_test_err);
-    }
-    esp_err_t cleanup_commit_err = nvs_commit(nvs_test_handle);
-    if (cleanup_commit_err != ESP_OK) {
-      ESP_LOGW(TAG, "NVS cleanup commit failed (err=%d)", cleanup_commit_err);
-    }
-    nvs_close(nvs_test_handle);
-  } else {
-    ESP_LOGW(TAG, "NVS health check open failed (err=%d) - continuing", err);
   }
 
   // NimBLE host. Without a working host and bond store the component cannot
@@ -4024,12 +4032,18 @@ std::string IRKCaptureComponent::build_history_json() {
     MutexGuard lock(state_mutex_);
     cache_copy = irk_cache_;
   }
+  return format_history_json_(cache_copy);
+}
 
+std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCacheEntry>& cache) {
+  // {"mac":"<17>","irk":"<32>","label":"<up to 24>","reconnects":<up to 5>},
+  // is 94 bytes of framing and fixed-width values plus the label and count.
+  static constexpr size_t ENTRY_RESERVE = 94 + CAPTURE_LABEL_MAX_LEN + 5;
   std::string json;
-  json.reserve(cache_copy.size() * 64 + 2);
+  json.reserve(cache.size() * ENTRY_RESERVE + 2);
   json += "[";
   bool first = true;
-  for (const auto& entry : cache_copy) {
+  for (const auto& entry : cache) {
     if (!entry.in_history) continue;
     if (!first) json += ",";
     first = false;
@@ -4049,6 +4063,27 @@ std::string IRKCaptureComponent::build_history_json() {
   json += "]";
 
   return json;
+}
+
+SessionState IRKCaptureComponent::get_session_state() {
+  // One lock for everything a status page shows. Reading the same values
+  // through the individual getters takes state_mutex_ once per value, several
+  // times a second, in competition with the NimBLE task during pairing.
+  SessionState state;
+  std::vector<IRKCacheEntry> cache_copy;
+  {
+    MutexGuard lock(state_mutex_);
+    cache_copy = irk_cache_;
+    state.next_capture_label = next_capture_label_;
+    state.advertised_name = advertised_name_();
+    state.profile = ble_profile_;
+    state.advertising_requested = advertising_requested_;
+    state.stop_after_capture = stop_after_capture_;
+    state.capture_result = capture_result_;
+    state.bond_clear = bond_clear_result_;
+  }
+  state.history_json = format_history_json_(cache_copy);
+  return state;
 }
 
 const char* IRKCaptureComponent::status_value_locked_(uint32_t now) {

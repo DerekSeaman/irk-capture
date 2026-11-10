@@ -167,6 +167,43 @@ struct CaptureResult {
   std::string device_mac;
 };
 
+// What should_publish_irk() decided and why. Filled in under state_mutex_ and
+// logged by the caller once the lock is released.
+struct PublishDecision {
+  enum class Reason : uint8_t {
+    DUPLICATE_PATH,    // Another read path already handled this connection
+    STALE_CONNECTION,  // Delayed read from a connection older than the latest seen
+    KEY_CHANGED,       // A known identity presented a different IRK
+    PAIRED_AGAIN,      // Explicit pairing or re-pair with the same IRK
+    RECONNECT_LIMIT,   // A bonded peer keeps reconnecting
+    RATE_LIMITED,      // Bonded reconnect inside the republish interval
+    RECONNECT,         // Bonded reconnect that is republished
+    NEW_DEVICE,        // First capture of this identity
+  };
+  Reason reason { Reason::DUPLICATE_PATH };
+  bool publish { false };
+  bool stop_adv { false };            // Caller should hold advertising off
+  bool limit_just_reached { false };  // True only on the first over-limit reconnect
+  bool evicted_oldest { false };      // The cache was full; its oldest entry was dropped
+  uint16_t reconnect_count { 0 };
+  uint32_t since_published_ms { 0 };
+  size_t cache_size { 0 };
+  size_t cache_limit { 0 };
+  std::string label;  // Label this publication consumed, if any
+};
+
+// The session values a status page shows, copied under a single lock.
+struct SessionState {
+  std::string history_json { "[]" };
+  std::string next_capture_label;
+  std::string advertised_name;
+  BLEProfile profile { BLEProfile::KEYBOARD };
+  bool advertising_requested { false };
+  bool stop_after_capture { false };
+  CaptureResult capture_result;
+  BondClearResult bond_clear;
+};
+
 // Free-function helpers (external linkage). Definitions live in the .cpp.
 int handle_gap_connect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
 int handle_gap_disconnect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -332,6 +369,8 @@ class IRKCaptureComponent : public Component {
   // Assistant caps a state at 255 characters and shows anything longer as
   // unknown, which this passes at the third device.
   std::string build_history_json();
+  // Thread-safe snapshot for a status page; includes build_history_json().
+  SessionState get_session_state();
 
  protected:
   // Configuration/state
@@ -568,12 +607,13 @@ class IRKCaptureComponent : public Component {
                            const char* context);
   bool should_publish_irk(const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
                           uint32_t connection_generation, bool force_pairing_publish,
-                          bool& out_should_stop_adv, bool& out_is_new_device,
-                          bool& out_limit_just_reached, bool& out_key_changed);
-  void restore_capture_history_(IRKCacheEntry& entry);  // Caller holds state_mutex_
-  void notify_bond_clear_();                            // Nonblocking worker wake-up
-  void queue_bond_clear_();                             // Worker task only
-  void handle_forget_bonds_();                          // NimBLE event-queue callback only
+                          PublishDecision& out_decision);
+  // Caller holds state_mutex_.
+  void restore_capture_history_(IRKCacheEntry& entry, PublishDecision& out_decision);
+  static std::string format_history_json_(const std::vector<IRKCacheEntry>& cache);
+  void notify_bond_clear_();    // Nonblocking worker wake-up
+  void queue_bond_clear_();     // Worker task only
+  void handle_forget_bonds_();  // NimBLE event-queue callback only
 
   // Timer handlers
   bool enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers,
