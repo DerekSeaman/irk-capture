@@ -39,9 +39,31 @@ class IRKCaptureComponent;
 
 // Latest history/bond-clear request. A terminal result remains available until
 // another request starts so HTTP clients can observe asynchronous completion.
+enum class BondClearState : uint8_t { IDLE, PENDING, BUSY, FAILED, CANCELLED, SUCCEEDED };
+
+// The name a state has in the wizard's JSON. The wizard page compares these
+// strings, so they are part of its HTTP contract.
+inline const char* bond_clear_state_name(BondClearState state) {
+  switch (state) {
+    case BondClearState::PENDING:
+      return "pending";
+    case BondClearState::BUSY:
+      return "busy";
+    case BondClearState::FAILED:
+      return "failed";
+    case BondClearState::CANCELLED:
+      return "cancelled";
+    case BondClearState::SUCCEEDED:
+      return "succeeded";
+    case BondClearState::IDLE:
+      break;
+  }
+  return "idle";
+}
+
 struct BondClearResult {
   uint32_t operation_id { 0 };
-  std::string state { "idle" };
+  BondClearState state { BondClearState::IDLE };
   std::string reason;
   bool history_cleared { false };
 };
@@ -141,7 +163,7 @@ class IRKCaptureStopAfterCaptureSwitch : public switch_::Switch, public Componen
 };
 
 // Text input: label attached to the next new device this session captures.
-// Consumed (and left as-is in the UI) the moment a new identity is cached.
+// Consumed, and cleared in the UI, the moment a new identity is cached.
 class IRKCaptureLabelText : public text::Text, public Component {
  public:
   void set_parent(IRKCaptureComponent* parent) {
@@ -165,6 +187,43 @@ struct CaptureResult {
   uint32_t sequence { 0 };
   std::string irk;
   std::string device_mac;
+};
+
+// What should_publish_irk() decided and why. Filled in under state_mutex_ and
+// logged by the caller once the lock is released.
+struct PublishDecision {
+  enum class Reason : uint8_t {
+    DUPLICATE_PATH,    // Another read path already handled this connection
+    STALE_CONNECTION,  // Delayed read from a connection older than the latest seen
+    KEY_CHANGED,       // A known identity presented a different IRK
+    PAIRED_AGAIN,      // Explicit pairing or re-pair with the same IRK
+    RECONNECT_LIMIT,   // A bonded peer keeps reconnecting
+    RATE_LIMITED,      // Bonded reconnect inside the republish interval
+    RECONNECT,         // Bonded reconnect that is republished
+    NEW_DEVICE,        // First capture of this identity
+  };
+  Reason reason { Reason::DUPLICATE_PATH };
+  bool publish { false };
+  bool stop_adv { false };            // Caller should hold advertising off
+  bool limit_just_reached { false };  // True only on the first over-limit reconnect
+  bool evicted_oldest { false };      // The cache was full; its oldest entry was dropped
+  uint16_t reconnect_count { 0 };
+  uint32_t since_published_ms { 0 };
+  size_t cache_size { 0 };
+  size_t cache_limit { 0 };
+  std::string label;  // Label this publication consumed, if any
+};
+
+// The session values a status page shows, copied under a single lock.
+struct SessionState {
+  std::string history_json { "[]" };
+  std::string next_capture_label;
+  std::string advertised_name;
+  BLEProfile profile { BLEProfile::KEYBOARD };
+  bool advertising_requested { false };
+  bool stop_after_capture { false };
+  CaptureResult capture_result;
+  BondClearResult bond_clear;
 };
 
 // Free-function helpers (external linkage). Definitions live in the .cpp.
@@ -191,12 +250,6 @@ class IRKCaptureComponent : public Component {
     capture_triggers_.push_back(trigger);
   }
 
-  // Friend classes for UI components (access protected members)
-  friend class IRKCaptureText;
-  friend class IRKCaptureSwitch;
-  friend class IRKCaptureButton;
-  friend class IRKCaptureSelect;
-
   // Friend functions for GAP event handlers and helpers (access private
   // members)
   friend int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -207,15 +260,9 @@ class IRKCaptureComponent : public Component {
                                   const std::string& irk_hex, const char* context_tag,
                                   uint32_t connection_generation, CaptureOrigin origin);
 
-  // Friend declarations for GATT callback functions (access protected members)
+  // The Device Information read callback copies names under state_mutex_.
   friend int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle,
                               struct ble_gatt_access_ctxt* ctxt, void* arg);
-  friend int chr_read_batt(uint16_t conn_handle, uint16_t attr_handle,
-                           struct ble_gatt_access_ctxt* ctxt, void* arg);
-  friend int chr_read_hr(uint16_t conn_handle, uint16_t attr_handle,
-                         struct ble_gatt_access_ctxt* ctxt, void* arg);
-  friend int chr_read_protected(uint16_t conn_handle, uint16_t attr_handle,
-                                struct ble_gatt_access_ctxt* ctxt, void* arg);
 
   // Configuration setters
   void set_ble_name(const std::string& name) {
@@ -286,8 +333,6 @@ class IRKCaptureComponent : public Component {
   // Main-task wizard action: claim a baseline and request advertising in the
   // same state transaction, then let the normal BLE start gates run.
   CaptureResult begin_capture();
-  void refresh_mac();
-
   // Rotates the address and adopts a name carrying the profile and the new
   // address's low two octets ("IRK HR 7F3A", "IRK KB 7F3A") until the next
   // reboot. Both halves change together because rotating the address alone
@@ -332,10 +377,12 @@ class IRKCaptureComponent : public Component {
   // Assistant caps a state at 255 characters and shows anything longer as
   // unknown, which this passes at the third device.
   std::string build_history_json();
+  // Thread-safe snapshot for a status page; includes build_history_json().
+  SessionState get_session_state();
 
  protected:
   // Configuration/state
-  std::string ble_name_ { "IRK Capture" };
+  std::string ble_name_ { DEFAULT_BLE_NAME };
   // Set by refresh_identity() and consumed when the rotation commits: the
   // name carries the address that actually took effect, which is only known
   // once ble_hs_id_set_rnd() has succeeded.
@@ -389,31 +436,42 @@ class IRKCaptureComponent : public Component {
   // MAC rotation state machine (non-blocking event-driven implementation)
   enum class MacRotationState {
     IDLE,            // No MAC rotation pending
-    REQUESTED,       // refresh_mac() called, waiting for disconnect
+    REQUESTED,       // Rotation requested, waiting for disconnect
     READY_TO_ROTATE  // Disconnected, ready to perform rotation in loop()
   };
   MacRotationState mac_rotation_state_ { MacRotationState::IDLE };
   uint8_t pending_mac_[6] { 0 };            // Pre-generated MAC for rotation
   uint8_t mac_rotation_retries_ { 0 };      // Retry counter for MAC rotation
-  uint32_t mac_rotation_ready_time_ { 0 };  // Time when rotation can start (after settling delay)
+  uint32_t mac_rotation_ready_time_ { 0 };  // Earliest next attempt (settle delay or retry backoff)
   uint32_t mac_rotation_generation_ { 0 };  // Invalidates work after reset or a new request
 
   // IRK capture tracking with deduplication and rate limiting
   struct IRKCacheEntry {
     std::string irk_hex;
     std::string mac_addr;
-    uint8_t addr_type;
-    uint32_t last_published_ms;
-    uint32_t last_observed_generation;
-    uint16_t reconnect_count;
-    bool reconnect_limit_reported;
+    uint8_t addr_type { 0 };
+    uint32_t last_published_ms { 0 };
+    uint32_t last_observed_generation { 0 };
+    uint16_t reconnect_count { 0 };
+    bool reconnect_limit_reported { false };
     std::string label;         // Optional user label for the visible history entry
     bool in_history { true };  // History can be cleared without losing deduplication
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
-  uint32_t capture_events_ { 0 };         // IRK publications this session
-  uint32_t unique_devices_ { 0 };         // New identity addresses this session
-  uint32_t pairing_start_time_ { 0 };     // Global pairing timeout
+  // Most entries irk_cache_ holds before the oldest is evicted. The floor
+  // keeps reconnect deduplication working with a small max_captures. Unlimited
+  // mode (max_captures 0) has no capture limit to size from, so it keeps the
+  // most recent UNLIMITED_CACHE_ENTRIES devices; an evicted device that
+  // returns is treated as new.
+  static constexpr size_t MIN_CACHE_ENTRIES = 10;
+  static constexpr size_t UNLIMITED_CACHE_ENTRIES = 32;
+  size_t cache_limit_() const {
+    if (max_captures_ == 0) return UNLIMITED_CACHE_ENTRIES;
+    return max_captures_ > MIN_CACHE_ENTRIES ? max_captures_ : MIN_CACHE_ENTRIES;
+  }
+  uint32_t capture_events_ { 0 };      // IRK publications this session
+  uint32_t unique_devices_ { 0 };      // New identity addresses this session
+  uint32_t pairing_start_time_ { 0 };  // Global pairing timeout
   CaptureResult capture_result_;
   uint32_t capture_result_generation_ { 0 };  // Coalesces accepted successful results
   // on_capture fires once per capture_result_.sequence; main task only.
@@ -430,8 +488,8 @@ class IRKCaptureComponent : public Component {
   uint32_t bond_clear_host_generation_ { 0 };
   BondClearResult bond_clear_result_;
 
-  // Wizard-facing session state (see README). Protected by state_mutex_ like
-  // the rest of this block.
+  // Wizard-facing session state (see README). The entity pointers are set
+  // once before setup(); the rest is protected by state_mutex_ unless noted.
   text_sensor::TextSensor* status_sensor_ { nullptr };
   IRKCaptureForgetBondsButton* forget_bonds_button_ { nullptr };
   IRKCaptureStopAfterCaptureSwitch* stop_after_capture_switch_ { nullptr };
@@ -441,7 +499,14 @@ class IRKCaptureComponent : public Component {
   bool stop_after_capture_ { false };
   // Consumed by the next new cache entry.
   std::string next_capture_label_;
-  // Avoids redundant status publishes.
+  // Caller holds state_mutex_. Clears the label and stages the same for its
+  // entity, which would otherwise keep showing a label that is no longer armed.
+  void consume_capture_label_() {
+    next_capture_label_.clear();
+    pending_label_val_.clear();
+    pending_label_pub_ = true;
+  }
+  // Avoids redundant status publishes. Main task only; not locked.
   std::string last_status_value_;
   // Terminal status belongs to last_result_generation_, just like the IRK
   // sensor. NONE also covers ordinary bonded reconnects (no capture event).
@@ -505,7 +570,7 @@ class IRKCaptureComponent : public Component {
   //           random_address_ready_, host_generation_,
   //           pairing_start_time_,
   //           ble_name_, ble_name_generation_, identity_refresh_pending_, generated_name_active_,
-  //           keyboard_name_custom_,
+  //           keyboard_name_custom_, ble_profile_,
   //           manufacturer_name_,
   //           mac_rotation_state_, pending_mac_,
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
@@ -518,7 +583,9 @@ class IRKCaptureComponent : public Component {
   //           connection_timeout_,
   //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
   //           every pending_* staging field, stop_after_capture_, next_capture_label_,
-  //           last_result_generation_
+  //           last_result_generation_, capture_status_, status_result_hold_until_
+  // Not protected, because only the main task touches them: last_loop_,
+  // last_notify_, last_status_value_, fired_capture_sequence_, capture_triggers_.
   SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Serializes BLE control operations that can be called from both NimBLE and
@@ -544,14 +611,19 @@ class IRKCaptureComponent : public Component {
   bool is_valid_irk(const uint8_t irk[16]);
   void publish_no_irk_(const ble_addr_t& peer_id, uint32_t connection_generation,
                        bool pairing_completed, CaptureOrigin origin = CaptureOrigin::UNKNOWN);
+  // Ends a link whose pairing completed without an IRK, if it is still the
+  // connection the result was read for. Safe from the NimBLE and main tasks.
+  void close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
+                           const char* context);
   bool should_publish_irk(const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
                           uint32_t connection_generation, bool force_pairing_publish,
-                          bool& out_should_stop_adv, bool& out_is_new_device,
-                          bool& out_limit_just_reached, bool& out_key_changed);
-  void restore_capture_history_(IRKCacheEntry& entry);  // Caller holds state_mutex_
-  void notify_bond_clear_();                            // Nonblocking worker wake-up
-  void queue_bond_clear_();                             // Worker task only
-  void handle_forget_bonds_();                          // NimBLE event-queue callback only
+                          PublishDecision& out_decision);
+  // Caller holds state_mutex_.
+  void restore_capture_history_(IRKCacheEntry& entry, PublishDecision& out_decision);
+  static std::string format_history_json_(const std::vector<IRKCacheEntry>& cache);
+  void notify_bond_clear_();    // Nonblocking worker wake-up
+  void queue_bond_clear_();     // Worker task only
+  void handle_forget_bonds_();  // NimBLE event-queue callback only
 
   // Timer handlers
   bool enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers,
@@ -563,8 +635,6 @@ class IRKCaptureComponent : public Component {
                                       CaptureOrigin origin = CaptureOrigin::UNKNOWN);
   void schedule_late_enc_check(const ble_addr_t& peer_id, uint32_t connection_generation,
                                CaptureOrigin origin = CaptureOrigin::UNKNOWN);
-  void handle_post_disconnect_timer(uint32_t now);
-  void handle_late_enc_timer(uint32_t now);
   void run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers, uint32_t now,
                        const char* context_tag);
   void cancel_peer_timers_(const ble_addr_t& peer_id,

@@ -4,6 +4,7 @@
 
 #include <cstring>
 
+#include "esphome/components/irk_capture/mutex_guard.h"
 #include "esphome/components/network/util.h"
 #if defined(USE_WIFI) && defined(USE_WIFI_AP)
 #include "esphome/components/wifi/wifi_component.h"
@@ -17,23 +18,8 @@ namespace irk_wizard {
 
 static const char* const TAG = "irk_wizard";
 
-//======================== Thread safety ========================
-// Mirrors irk_capture's MutexGuard: RAII wrapper so every lock/unlock pair
-// is exception- and early-return-safe.
-class MutexGuard {
- public:
-  explicit MutexGuard(SemaphoreHandle_t mutex) : mutex_(mutex) {
-    if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
-  }
-  ~MutexGuard() {
-    if (mutex_) xSemaphoreGive(mutex_);
-  }
-  MutexGuard(const MutexGuard&) = delete;
-  MutexGuard& operator=(const MutexGuard&) = delete;
-
- private:
-  SemaphoreHandle_t mutex_;
-};
+// irk_capture's RAII guard, so every lock/unlock pair here is early-return-safe.
+using irk_capture::MutexGuard;
 
 static esp_err_t send_unauthorized(httpd_req_t* req) {
   httpd_resp_set_status(req, "401 Unauthorized");
@@ -159,8 +145,9 @@ void IRKWizardComponent::reboot() {
 void IRKWizardComponent::set_advertising(bool on) {
   if (!on) {
     MutexGuard lock(snapshot_mutex_);
-    if (capture_start_.state == "pending" || capture_start_.state == "ready")
-      capture_start_.state = "cancelled";
+    if (capture_start_.state == CaptureStartState::PENDING ||
+        capture_start_.state == CaptureStartState::READY)
+      capture_start_.state = CaptureStartState::CANCELLED;
   }
   this->defer([this, on]() {
     if (irk_capture_) irk_capture_->set_advertising_requested(on);
@@ -174,14 +161,15 @@ CaptureStart IRKWizardComponent::start_capture() {
     MutexGuard lock(snapshot_mutex_);
     request.operation_id = capture_start_.operation_id + 1;
     if (request.operation_id == 0) request.operation_id = 1;
-    request.state = "pending";
+    request.state = CaptureStartState::PENDING;
     request.boot_id = boot_id;
     capture_start_ = request;
   }
   this->defer([this, id = request.operation_id]() {
     {
       MutexGuard lock(snapshot_mutex_);
-      if (capture_start_.operation_id != id || capture_start_.state != "pending") return;
+      if (capture_start_.operation_id != id || capture_start_.state != CaptureStartState::PENDING)
+        return;
     }
     const bool available = irk_capture_ && !irk_capture_->is_failed();
     // The core takes the baseline and installs ON intent in one state lock.
@@ -190,10 +178,11 @@ CaptureStart IRKWizardComponent::start_capture() {
     MutexGuard lock(snapshot_mutex_);
     // OFF or another start can arrive while the radio operation runs. Its
     // queued main-task command still owns the final intent and acknowledgement.
-    if (capture_start_.operation_id != id || capture_start_.state != "pending") return;
+    if (capture_start_.operation_id != id || capture_start_.state != CaptureStartState::PENDING)
+      return;
     capture_start_.boot_id = baseline.boot_id;
     capture_start_.sequence = baseline.sequence;
-    capture_start_.state = available ? "ready" : "failed";
+    capture_start_.state = available ? CaptureStartState::READY : CaptureStartState::FAILED;
   });
   return request;
 }
@@ -209,22 +198,24 @@ void IRKWizardComponent::refresh_snapshot_() {
   if (!irk_capture_) return;
   WizardSnapshot next;
   next.status = status_sensor_ ? status_sensor_->state : "idle";
-  next.history_json = irk_capture_->build_history_json();
+  // One lock on irk_capture's state for the whole snapshot.
+  const irk_capture::SessionState core = irk_capture_->get_session_state();
+  next.history_json = core.history_json;
   next.irk = irk_sensor_ ? irk_sensor_->state : "";
   next.device_mac = device_mac_sensor_ ? device_mac_sensor_->state : "";
   next.effective_mac = effective_mac_sensor_ ? effective_mac_sensor_->state : "";
-  next.next_capture_label = irk_capture_->get_next_capture_label();
-  const bool keyboard = irk_capture_->get_ble_profile() == irk_capture::BLEProfile::KEYBOARD;
+  next.next_capture_label = core.next_capture_label;
+  const bool keyboard = core.profile == irk_capture::BLEProfile::KEYBOARD;
   next.profile = keyboard ? "Keyboard" : "Heart Sensor";
   // get_ble_name() is the name on air, already accounting for the Keyboard
   // profile's "Logitech K380" and for anything that has replaced it since
   // boot. Deciding it here instead would send the user hunting for a name the
   // device stopped advertising the moment the identity was refreshed.
-  next.advertised_name = irk_capture_->get_ble_name();
-  next.advertising = irk_capture_->is_advertising_requested();
-  next.stop_after_capture = irk_capture_->get_stop_after_capture();
-  next.capture_result = irk_capture_->get_capture_result();
-  next.bond_clear = irk_capture_->get_bond_clear_result();
+  next.advertised_name = core.advertised_name;
+  next.advertising = core.advertising_requested;
+  next.stop_after_capture = core.stop_after_capture;
+  next.capture_result = core.capture_result;
+  next.bond_clear = core.bond_clear;
   if (next.history_json.empty()) next.history_json = "[]";
 
   MutexGuard lock(snapshot_mutex_);
@@ -244,8 +235,17 @@ static esp_err_t handle_post_fresh_identity(httpd_req_t* req);
 static esp_err_t handle_post_reboot(httpd_req_t* req);
 static esp_err_t handle_post_stop_after_capture(httpd_req_t* req);
 
+// The wizard has no reason to be framed or to have its responses reinterpreted
+// as another type. Without these, a page on another origin could overlay the
+// wizard in a frame and trick a signed-in user into pressing its controls.
+static void set_security_headers(httpd_req_t* req) {
+  httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
+  httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+}
+
 static esp_err_t send_json(httpd_req_t* req, const std::string& body) {
   httpd_resp_set_type(req, "application/json");
+  set_security_headers(req);
   // /api/status carries the captured IRK and the peer's identity address, which
   // permanently deanonymize a phone. no-store keeps them out of the browser's
   // disk cache and out of any intermediary, rather than merely requiring
@@ -299,7 +299,8 @@ static bool matching_boot_baseline(httpd_req_t* req, const std::string& body, ui
 
 static std::string bond_clear_json(const irk_capture::BondClearResult& result) {
   return "{\"operation_id\":" + std::to_string(result.operation_id) + ",\"state\":\"" +
-         json_escape(result.state) + "\",\"reason\":\"" + json_escape(result.reason) +
+         irk_capture::bond_clear_state_name(result.state) + "\",\"reason\":\"" +
+         json_escape(result.reason) +
          "\",\"history_cleared\":" + (result.history_cleared ? "true" : "false") + "}";
 }
 
@@ -310,7 +311,8 @@ bool IRKWizardComponent::start_server_() {
   // ctrl_port, which defaults to 32768 for ALL instances. ESPHome's own
   // web_server: (port 80) already holds that default, so leaving it here
   // makes our httpd_start() fail with "error in creating ctrl socket (112)".
-  // Offset it by our server port to stay clear of that and of each other.
+  // Offset it by our server port to stay clear of that and of each other. The
+  // config schema limits port to 32767 so the sum fits the 16-bit field.
   config.ctrl_port = 32768 + port_;
   config.max_uri_handlers = 12;
   config.lru_purge_enable = true;
@@ -351,7 +353,12 @@ bool IRKWizardComponent::start_server_() {
     uri_handler.user_ctx = this;
     esp_err_t rc = httpd_register_uri_handler(server_, &uri_handler);
     if (rc != ESP_OK) {
+      // A server missing a route looks healthy but has controls that return
+      // 404. Report the start as failed so loop() retries it as a whole.
       ESP_LOGE(TAG, "Failed to register %s: %s", route.uri, esp_err_to_name(rc));
+      httpd_stop(server_);
+      server_ = nullptr;
+      return false;
     }
   }
   return true;
@@ -400,9 +407,9 @@ void IRKWizardComponent::loop() {
     return;
   }
 
-  // Each refresh takes irk_capture's state_mutex_ several times, which the
-  // NimBLE task also contends for during pairing. Poll briskly only while
-  // someone is actually using the wizard; otherwise back right off.
+  // Each refresh takes irk_capture's state_mutex_, which the NimBLE task also
+  // contends for during pairing, and copies the capture history. Poll briskly
+  // only while someone is actually using the wizard; otherwise back right off.
   uint32_t now = millis();
   const bool active = (now - last_request_ms_.load(std::memory_order_relaxed)) < 30000;
   if (now - last_snapshot_ms_ < (active ? 500 : 5000)) return;
@@ -426,6 +433,7 @@ static esp_err_t handle_index(httpd_req_t* req) {
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
   httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+  set_security_headers(req);
   return httpd_resp_send(req, reinterpret_cast<const char*>(self->page_data()), self->page_size());
 }
 
@@ -459,7 +467,7 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
           json_escape(s.capture_result.irk) + "\",\"device_mac\":\"" +
           json_escape(s.capture_result.device_mac) + "\"},";
   json += "\"capture_start\":{\"operation_id\":" + std::to_string(s.capture_start.operation_id) +
-          ",\"state\":\"" + s.capture_start.state +
+          ",\"state\":\"" + capture_start_state_name(s.capture_start.state) +
           "\",\"boot_id\":" + std::to_string(s.capture_start.boot_id) +
           ",\"sequence\":" + std::to_string(s.capture_start.sequence) + "},";
   json += "\"bond_clear\":" + bond_clear_json(s.bond_clear);
@@ -554,7 +562,9 @@ static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
   std::string json = bond_clear_json(result);
   json.pop_back();
   json += ",\"boot_id\":" + std::to_string(self->irk_capture()->get_capture_result().boot_id) + "}";
-  if (result.state == "pending") httpd_resp_set_status(req, "202 Accepted");
+  if (result.state == irk_capture::BondClearState::PENDING) {
+    httpd_resp_set_status(req, "202 Accepted");
+  }
   return send_json(req, json);
 }
 
@@ -562,11 +572,17 @@ static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
   if (!json_request(req)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  if (!self->irk_capture()) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return send_json(req, "{\"error\":\"Capture component unavailable\"}");
+  }
   std::string body = read_request_body(req);
   bool enabled = false;
-  if (json_extract_bool(body, "enabled", enabled) && self->irk_capture()) {
-    self->irk_capture()->set_stop_after_capture(enabled);
+  if (!json_extract_bool(body, "enabled", enabled)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return send_json(req, "{\"error\":\"enabled must be a boolean\"}");
   }
+  self->irk_capture()->set_stop_after_capture(enabled);
   return send_ok(req);
 }
 

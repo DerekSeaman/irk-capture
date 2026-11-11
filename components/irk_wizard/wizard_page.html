@@ -676,5 +676,8 @@ function refresh(){
   return refreshInFlight;
 }
 refresh();
-setInterval(refresh, 1200);
+// A hidden tab has nobody to show a status to. Skipping its polls stops the
+// device rebuilding its snapshot twice a second for a page nobody is watching.
+setInterval(function(){ if(!document.hidden) refresh(); }, 1200);
+document.addEventListener('visibilitychange',function(){ if(!document.hidden) refresh(); });
 </script></body></html>

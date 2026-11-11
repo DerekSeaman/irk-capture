@@ -48,7 +48,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_IRK_ID): cv.use_id(text_sensor.TextSensor),
         cv.Required(CONF_DEVICE_MAC_ID): cv.use_id(text_sensor.TextSensor),
         cv.Required(CONF_EFFECTIVE_MAC_ID): cv.use_id(text_sensor.TextSensor),
-        cv.Optional(CONF_PORT, default=8080): cv.int_range(min=1, max=65535),
+        # The server's internal control socket uses 32768 + port, which must
+        # also fit in 16 bits.
+        cv.Optional(CONF_PORT, default=8080): cv.int_range(min=1, max=32767),
         # HTTP Basic auth, required. A captured IRK permanently deanonymizes
         # a phone's rotating BLE address, and an open device on the LAN is
         # reachable by anything else on it, including a page in a browser.

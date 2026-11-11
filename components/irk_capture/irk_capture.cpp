@@ -18,6 +18,7 @@
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
+#include "mutex_guard.h"
 
 // Some ESP-IDF 5.x package variants omit this prototype from headers. NimBLE's
 // implementation returns void; declaring it as int reads an undefined return
@@ -28,7 +29,7 @@ namespace esphome {
 namespace irk_capture {
 
 static const char* const TAG = "irk_capture";
-static constexpr char VERSION[] = "1.7.2";
+static constexpr char VERSION[] = "1.7.3";
 static constexpr char HEX[] = "0123456789abcdef";
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
@@ -53,10 +54,13 @@ enc_change, etc.)
 button, text)
 3. Bond-clear worker: Enqueues NimBLE wake-ups; may wait for queue capacity,
 but never holds a component mutex while doing so or deletes bonds itself
+4. esp_http_server task (only with irk_wizard): calls the thread-safe getters,
+set_next_capture_label(), set_stop_after_capture() and request_bond_clear().
+Everything else the wizard does is deferred to the main task.
 
 THREAD SAFETY RULES:
 -    ALL reads/writes to shared state MUST use state_mutex_
--    The complete list of state it protects is next to state_mutex_ in irk_capture.h
+-    The state it protects is listed next to state_mutex_ in irk_capture.h
 -    RAII MutexGuard class ensures exception-safe lock/unlock
 -    Mutex MUST be released before calling BLE stack APIs (prevents deadlock)
 -    Entity publish_state() is NOT safe to call from the NimBLE task. BLE-context
@@ -111,9 +115,10 @@ Component operates as a state machine with these primary states:
    - Transitions to ENCRYPTED when BLE_GAP_EVENT_ENC_CHANGE succeeds
 
 4. ENCRYPTED (connected_ = true, enc_ready_ = true)
-   - Secure connection established, polling for IRK in NVS bond store
+   - Secure connection established, polling NimBLE's bond store for the IRK
    - Stops IRK polling after 45s; transitions to DISCONNECTING when an IRK is
-     captured or when the global 90s pairing timeout terminates the link
+     captured, when the bond turns out to hold no IRK, or when the global 90s
+     pairing timeout terminates the link
 
 5. DISCONNECTING (connected_ = false, adv_restart_time_ may be set)
    - IRK retrieval attempts continue via timers after disconnect
@@ -125,8 +130,10 @@ Key flags:
 -    enc_ready_: Encryption/pairing completed successfully
 -    irk_gave_up_: Exceeded 45s timeout without capturing IRK
 -    adv_restart_time_: Nonzero while a restart of advertising is being held
-off (reconnect-loop defense, DHKey failure, timeout cooldown, start retry)
--    sec_retry_done_: Already attempted one security retry after ENC failure
+off (reconnect-loop defense, DHKey failure, no-IRK result, timeout cooldown,
+start retry)
+-    sec_retry_done_: The one security retry for this connection has been used
+(it fires when encryption has not completed ~2s after connect)
 */
 
 // Timing configuration (all values in ms)
@@ -135,23 +142,25 @@ struct TimingConfig {
   static constexpr uint32_t HR_NOTIFY_INTERVAL_MS =
       1000;  // Heart rate notification interval (keeps connection alive)
   static constexpr uint32_t ENC_TO_FIRST_TRY_DELAY_MS =
-      1000;  // Delay from encryption to first IRK poll (allows NVS write to
-             // complete)
+      1000;  // Delay from encryption to first IRK poll (NimBLE stores the
+             // keys after it reports ENC_CHANGE)
   static constexpr uint32_t ENC_TRY_INTERVAL_MS =
       1000;  // Interval between IRK polling attempts while connected
   static constexpr uint32_t ENC_GIVE_UP_AFTER_MS =
       45000;  // Maximum time to poll for IRK before giving up
   static constexpr uint32_t POST_DISC_DELAY_MS =
-      800;  // Delay after disconnect for deferred IRK check (allows NVS flush)
+      800;  // Delay after disconnect for the fallback IRK check (lets a bond
+            // write that was still in flight finish)
   static constexpr uint32_t ENC_LATE_READ_DELAY_MS =
-      5000;  // Extended delay for IRK check after failed encryption
-  static constexpr uint32_t SEC_RETRY_DELAY_MS =
-      2000;  // Delay before retrying security after encryption failure
+      5000;  // Fallback IRK check after encryption succeeded but the bond
+             // could not be read yet
+  static constexpr uint32_t SEC_RETRY_DELAY_MS = 2000;  // Retry security once if encryption has not
+                                                        // completed this long after connect
   static constexpr uint32_t SEC_TIMEOUT_MS = 20000;  // Timeout for encryption to complete (assumes
                                                      // peer forgot pairing)
   static constexpr uint32_t ADV_SUPPRESS_RESTART_DELAY_MS =
-      5000;  // Delay before auto-restarting advertising after a suppression
-             // (reconnect-loop break / IRK re-publish)
+      5000;  // Delay before auto-restarting advertising after a hold-off
+             // (reconnect-loop defense, DHKey failure, no-IRK result)
   static constexpr uint32_t ADV_RETRY_MS = 1000;  // Backoff after advertising start contention
   static constexpr uint8_t ADV_FAST_ATTEMPTS = 5;
   static constexpr uint32_t ADV_SLOW_RETRY_MS = 60000;
@@ -167,6 +176,8 @@ struct TimingConfig {
   static constexpr uint32_t MIN_REPUBLISH_INTERVAL_MS =
       60000;  // Min time between republishing same IRK (60s)
   static constexpr uint8_t MAC_ROTATION_MAX_RETRIES = 10;  // Max retries for MAC rotation
+  static constexpr uint32_t MAC_ROTATION_RETRY_MS = 250;   // First retry delay; doubles each retry
+  static constexpr uint32_t MAC_ROTATION_RETRY_MAX_MS = 2000;  // Ceiling for that backoff
   static constexpr uint32_t MAC_ROTATION_SETTLE_DELAY_MS =
       500;  // Delay after adv stop before MAC change
   static constexpr uint32_t STATUS_RESULT_HOLD_MS =
@@ -250,14 +261,17 @@ static const char* sm_reason_str(uint8_t reason) {
 Connect → Initiate security
 ENC_CHANGE (success) → immediate IRK read from store; if available: publish &
 disconnect (tested working behavior); otherwise schedule a late read at +5s.
+A stored bond with no IRK is also a final outcome: publish "no IRK", disconnect,
+and hold advertising off briefly so a bonded peer cannot reconnect in a loop.
 ENC_CHANGE (failure) → delete the failing peer's bond and terminate the
 connection to force fresh pairing on reconnect; on a DHKey check failure,
 additionally suppress the next advertising cycle to prod the peer into resetting.
 (Separately, retry_security_if_needed() initiates security once more if
 encryption has not completed ~2s after connect — this is timeout-driven, not a
 response to an ENC_CHANGE failure.)
-DISCONNECT → immediate store read; schedule delayed read at +800ms; restart
-advertising.
+DISCONNECT → if this connection has not produced a result yet: immediate store
+read, and a delayed read at +800ms if that is inconclusive. Then restart
+advertising unless a hold-off is pending or the capture limit was reached.
 While connected (post ENC) → poll every 1s starting at +1s, stop polling after
 45s, and disconnect immediately whenever an IRK is captured.
 All address reporting uses the peer identity address; IRK hex is reversed for
@@ -373,68 +387,6 @@ static bool is_encrypted(uint16_t conn_handle) {
   return false;
 }
 
-//======================== Thread Safety: RAII Mutex Guard
-//========================
-/*
-RAII wrapper for FreeRTOS mutex to ensure exception-safe locking.
-Used to protect shared state accessed by both NimBLE task and ESPHome main task.
-
-CRITICAL PERFORMANCE OPTIMIZATION:
-Always minimize mutex hold time by copying data out before releasing the lock,
-then performing slow operations (logging, NVS access) AFTER the lock is
-released.
-
-BAD (blocks NimBLE task during slow UART logging):
-  {
-    MutexGuard lock(state_mutex_);
-    peer_id = post_disc_timers_[0].peer_id;
-    ESP_LOGD(TAG, "Peer: %s", addr_to_str(peer_id).c_str()); // SLOW - UART
-bottleneck!
-  }
-
-GOOD (minimal lock hold time):
-  ble_addr_t peer_id_copy;
-  {
-    MutexGuard lock(state_mutex_);
-    peer_id_copy = post_disc_timers_[0].peer_id;  // Fast memory copy
-  }  // Lock released immediately
-  ESP_LOGD(TAG, "Peer: %s", addr_to_str(peer_id_copy).c_str());  // Safe - no
-lock held
-
-Why: On ESP32-C3 (single core), holding a mutex during logging can cause the
-NimBLE task to miss critical timing windows (e.g., supervision timeout), leading
-to dropped connections.
-
-Usage pattern:
-  {
-    MutexGuard lock(state_mutex_);
-    // ONLY fast memory operations here (reads, writes, simple arithmetic)
-  }  // Mutex automatically released
-  // Logging, NVS access, string formatting happen here (outside critical
-section)
-*/
-class MutexGuard {
- public:
-  explicit MutexGuard(SemaphoreHandle_t mutex) : mutex_(mutex) {
-    if (mutex_) {
-      xSemaphoreTake(mutex_, portMAX_DELAY);
-    }
-  }
-
-  ~MutexGuard() {
-    if (mutex_) {
-      xSemaphoreGive(mutex_);
-    }
-  }
-
-  // Disable copy and move
-  MutexGuard(const MutexGuard&) = delete;
-  MutexGuard& operator=(const MutexGuard&) = delete;
-
- private:
-  SemaphoreHandle_t mutex_;
-};
-
 // Serialize BLE host control operations across ESPHome and NimBLE task
 // contexts.
 //
@@ -537,12 +489,18 @@ static void log_mac(const char* prefix) {
   }
 }
 
+// A read callback that cannot fill its response must say so. Returning 0 would
+// send the peer a truncated or empty value as if it were complete.
+static int append_att_value(struct os_mbuf* om, const void* data, size_t len) {
+  return os_mbuf_append(om, data, len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
+
 // Helper to safely append const string or default value
 static int append_const_string_or_default(struct os_mbuf* om, const char* str,
                                           const char* default_str) {
   // Safely append string to mbuf, using default if str is nullptr or empty
   const char* val = (str && str[0] != '\0') ? str : default_str;
-  return os_mbuf_append(om, val, strlen(val));
+  return append_att_value(om, val, strlen(val));
 }
 
 static void log_spacer() {
@@ -577,13 +535,15 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
  * @brief Checks if IRK should be published (deduplication + rate limiting)
  *
  * CRITICAL: Caller MUST hold state_mutex_ before calling this function.
- * This function modifies irk_cache_.
+ * This function modifies irk_cache_. It therefore does not log: it records
+ * what it decided in out_decision, and the caller reports that with
+ * log_publish_decision() once the lock is released.
  *
  * MEMORY SAFETY: This function prevents duplicate entries in irk_cache_ by
  * checking if the identity address already exists before adding. Even if the
  * same device reconnects 100 times, it will only have ONE entry in the cache
- * (updated in-place). Cache cap derived from max(max_captures_, 10) prevents
- * unbounded memory growth on ESP32-C3.
+ * (updated in-place). cache_limit_() caps the cache, so memory stays bounded
+ * on ESP32-C3 even when max_captures is 0 (unlimited).
  *
  * @param irk_hex IRK in hex string format
  * @param addr MAC address string
@@ -592,23 +552,17 @@ bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
  * extraction paths from the same connection
  * @param force_pairing_publish True for an explicit pairing or REPEAT_PAIRING;
  * bypasses rate limiting
- * @param out_should_stop_adv [out] Set to true if caller should stop
- * advertising (limit reached)
- * @param out_is_new_device [out] True when a new identity address was cached
- * @param out_limit_just_reached [out] True only on the first over-limit reconnect
+ * @param out_decision [out] The outcome and the details needed to log it
  * @return true if should publish, false if duplicate/rate-limited
  */
 bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const std::string& addr,
                                              uint8_t addr_type, uint32_t connection_generation,
-                                             bool force_pairing_publish, bool& out_should_stop_adv,
-                                             bool& out_is_new_device, bool& out_limit_just_reached,
-                                             bool& out_key_changed) {
+                                             bool force_pairing_publish,
+                                             PublishDecision& out_decision) {
   // PRECONDITION: Caller holds state_mutex_
-  out_should_stop_adv = false;
-  out_is_new_device = false;
-  out_limit_just_reached = false;
-  out_key_changed = false;
-  uint32_t now = now_ms();
+  using Reason = PublishDecision::Reason;
+  out_decision = {};
+  const uint32_t now = now_ms();
 
   // Identity address, rather than IRK, defines a unique device. A legitimate
   // re-pair can rotate the IRK without becoming a second device.
@@ -618,102 +572,148 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
       // Count the connection once and silently coalesce the remaining paths.
       if (connection_generation != 0) {
         if (entry.last_observed_generation == connection_generation) {
+          out_decision.reason = Reason::DUPLICATE_PATH;
           return false;
         }
         // A delayed timer from an older connection must not move the cache back
         // to an earlier generation or count as another reconnect.
         if (entry.last_observed_generation != 0 &&
             static_cast<int32_t>(connection_generation - entry.last_observed_generation) < 0) {
+          out_decision.reason = Reason::STALE_CONNECTION;
           return false;
         }
         entry.last_observed_generation = connection_generation;
       }
 
       // A changed IRK for a known identity is security-significant and should
-      // always be shown, but it is still the same unique device.
-      if (entry.irk_hex != irk_hex) {
-        out_key_changed = true;
+      // always be shown, but it is still the same unique device. A fresh
+      // pairing or REPEAT_PAIRING is an explicit user action: always surface
+      // its IRK, even when unchanged and inside the normal interval.
+      const bool key_changed = entry.irk_hex != irk_hex;
+      if (key_changed || force_pairing_publish) {
         entry.irk_hex = irk_hex;
         entry.reconnect_count = 0;
         entry.reconnect_limit_reported = false;
         entry.last_published_ms = now;
-        restore_capture_history_(entry);
-        ESP_LOGI(TAG, "IRK updated for known identity %s", addr.c_str());
-        return true;
-      }
-
-      // A fresh pairing or REPEAT_PAIRING is an explicit user action. Always
-      // surface its IRK, even when unchanged and inside the normal interval.
-      if (force_pairing_publish) {
-        entry.reconnect_count = 0;
-        entry.reconnect_limit_reported = false;
-        entry.last_published_ms = now;
-        restore_capture_history_(entry);
-        ESP_LOGI(TAG, "Pairing completed; publishing IRK again");
+        restore_capture_history_(entry, out_decision);
+        out_decision.reason = key_changed ? Reason::KEY_CHANGED : Reason::PAIRED_AGAIN;
+        out_decision.publish = true;
         return true;
       }
 
       if (entry.reconnect_count < std::numeric_limits<uint16_t>::max()) {
         entry.reconnect_count++;
       }
+      out_decision.reconnect_count = entry.reconnect_count;
 
       // Count reconnecting connections, not the number of extraction paths.
       if (entry.reconnect_count > 5) {
-        if (!entry.reconnect_limit_reported) {
-          ESP_LOGW(TAG,
-                   "Reconnect limit reached (%u connections). Device keeps reconnecting; "
-                   "unpair from Bluetooth settings to stop.",
-                   entry.reconnect_count);
-          entry.reconnect_limit_reported = true;
-          out_limit_just_reached = true;
-        }
-        out_should_stop_adv = true;
+        out_decision.reason = Reason::RECONNECT_LIMIT;
+        out_decision.limit_just_reached = !entry.reconnect_limit_reported;
+        entry.reconnect_limit_reported = true;
+        out_decision.stop_adv = true;
         return false;
       }
 
-      // Rate limit ordinary bonded reconnects per device. This is intentionally
-      // verbose-only: routine suppression should not dominate debug logs.
-      if ((now - entry.last_published_ms) < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
-        ESP_LOGV(TAG, "Suppressing bonded reconnect IRK (published %" PRIu32 " ms ago)",
-                 now - entry.last_published_ms);
+      // Rate limit ordinary bonded reconnects per device.
+      out_decision.since_published_ms = now - entry.last_published_ms;
+      if (out_decision.since_published_ms < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
+        out_decision.reason = Reason::RATE_LIMITED;
         return false;
       }
 
-      ESP_LOGI(TAG, "Re-publishing IRK after bonded reconnect (%u/5)", entry.reconnect_count);
       entry.last_published_ms = now;
-      restore_capture_history_(entry);
+      restore_capture_history_(entry, out_decision);
+      out_decision.reason = Reason::RECONNECT;
+      out_decision.publish = true;
       return true;
     }
   }
 
-  // New IRK - add to cache with FIFO eviction
-  // Cache cap derived from max(max_captures_, 10) to prevent unbounded memory
-  // growth
-  size_t cache_limit = (max_captures_ > 10) ? max_captures_ : 10;
+  // New IRK - add to cache with FIFO eviction. cache_limit_() bounds memory,
+  // including in unlimited mode.
+  const size_t cache_limit = cache_limit_();
   if (irk_cache_.size() >= cache_limit) {
     // Evict oldest (FIFO). Note: documented behavior; intentional to cap memory
     // and keep UX predictable.
-    ESP_LOGD(TAG, "IRK cache full (%zu entries), evicting oldest entry", cache_limit);
     irk_cache_.erase(irk_cache_.begin());
+    out_decision.evicted_oldest = true;
   }
-  irk_cache_.push_back(
-      { irk_hex, addr, addr_type, now, connection_generation, 0, false, next_capture_label_ });
+  IRKCacheEntry entry;
+  entry.irk_hex = irk_hex;
+  entry.mac_addr = addr;
+  entry.addr_type = addr_type;
+  entry.last_published_ms = now;
+  entry.last_observed_generation = connection_generation;
+  entry.label = next_capture_label_;
+  irk_cache_.push_back(std::move(entry));
   if (!next_capture_label_.empty()) {
-    ESP_LOGI(TAG, "Tagged new capture with label '%s'", next_capture_label_.c_str());
-    next_capture_label_.clear();  // Consume-once: next device starts unlabeled
+    out_decision.label = next_capture_label_;
+    consume_capture_label_();  // Consume-once: next device starts unlabeled
   }
-  out_is_new_device = true;
-  ESP_LOGD(TAG, "New IRK added to cache (total: %zu/%zu)", irk_cache_.size(), cache_limit);
+  out_decision.reason = Reason::NEW_DEVICE;
+  out_decision.cache_size = irk_cache_.size();
+  out_decision.cache_limit = cache_limit;
+  out_decision.publish = true;
   return true;
 }
 
-void IRKCaptureComponent::restore_capture_history_(IRKCacheEntry& entry) {
+void IRKCaptureComponent::restore_capture_history_(IRKCacheEntry& entry,
+                                                   PublishDecision& out_decision) {
   // A new publication can restore a forgotten history row, but duplicate
   // extraction paths from the same connection must leave it hidden.
   if (entry.in_history) return;
   entry.in_history = true;
   entry.label = next_capture_label_;
-  next_capture_label_.clear();
+  if (!next_capture_label_.empty()) {
+    out_decision.label = next_capture_label_;
+    consume_capture_label_();
+  }
+}
+
+// Reports a should_publish_irk() decision. Runs after state_mutex_ is released:
+// formatting and the UART must not stall the NimBLE task (see MutexGuard).
+static void log_publish_decision(const PublishDecision& decision, const std::string& addr) {
+  using Reason = PublishDecision::Reason;
+  switch (decision.reason) {
+    case Reason::DUPLICATE_PATH:
+    case Reason::STALE_CONNECTION:
+      break;  // Routine coalescing of read paths; nothing worth a line.
+    case Reason::KEY_CHANGED:
+      ESP_LOGI(TAG, "IRK updated for known identity %s", addr.c_str());
+      break;
+    case Reason::PAIRED_AGAIN:
+      ESP_LOGI(TAG, "Pairing completed; publishing IRK again");
+      break;
+    case Reason::RECONNECT_LIMIT:
+      if (decision.limit_just_reached) {
+        ESP_LOGW(TAG,
+                 "Reconnect limit reached (%u connections). Device keeps reconnecting; "
+                 "unpair from Bluetooth settings to stop.",
+                 decision.reconnect_count);
+      }
+      break;
+    case Reason::RATE_LIMITED:
+      // Intentionally verbose-only: routine suppression should not dominate
+      // debug logs.
+      ESP_LOGV(TAG, "Suppressing bonded reconnect IRK (published %" PRIu32 " ms ago)",
+               decision.since_published_ms);
+      break;
+    case Reason::RECONNECT:
+      ESP_LOGI(TAG, "Re-publishing IRK after bonded reconnect (%u/5)", decision.reconnect_count);
+      break;
+    case Reason::NEW_DEVICE:
+      if (decision.evicted_oldest) {
+        ESP_LOGD(TAG, "IRK cache full (%zu entries), evicted the oldest entry",
+                 decision.cache_limit);
+      }
+      ESP_LOGD(TAG, "New IRK added to cache (total: %zu/%zu)", decision.cache_size,
+               decision.cache_limit);
+      break;
+  }
+  if (!decision.label.empty()) {
+    ESP_LOGI(TAG, "Tagged capture with label '%s'", decision.label.c_str());
+  }
 }
 
 //======================== Output helpers (centralized) ========================
@@ -721,18 +721,19 @@ void IRKCaptureComponent::restore_capture_history_(IRKCacheEntry& entry) {
 /**
  * @brief Centralized IRK output helper - logs and publishes IRK to Home
  * Assistant sensors
- * @param self Pointer to IRKCaptureComponent instance (may be null during
- * cleanup)
+ * @param self Pointer to IRKCaptureComponent instance (null is ignored)
  * @param peer_id_addr Peer's identity address (stable across reconnections)
  * @param irk_hex IRK in hex string format (already reversed for output
  * compatibility)
- * @param context_tag Context label for logging (e.g., "ENC_IMMEDIATE",
- * "DISC_IMMEDIATE", "POLL_CONNECTED")
+ * @param context_tag Read path, for the log: "ENC_CHANGE", "DISC_IMMEDIATE",
+ * "POLL_CONNECTED", "DISC_DELAYED" or "ENC_LATE"
  * @param connection_generation Monotonic connection identifier
+ * @param origin How the connection began; a fresh pairing or re-pair is always
+ * published, a bonded reconnect is rate-limited
  *
  * This is the single point of IRK output, ensuring consistent formatting across
- * all capture paths. Called from multiple locations: ENC_CHANGE, DISCONNECT,
- * post-disconnect timer, polling loop.
+ * all capture paths. Called from ENC_CHANGE, DISCONNECT, the polling loop and
+ * both delayed-read timers (post-disconnect and late-encryption).
  */
 void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                          const std::string& irk_hex, const char* context_tag,
@@ -750,10 +751,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   bool max_reached = false;
   bool stop_after_capture_hit = false;
   bool should_publish;
-  bool should_stop_adv = false;
-  bool is_new_device = false;
-  bool key_changed = false;
-  bool limit_just_reached = false;
+  PublishDecision decision;
   bool force_pairing_publish = false;
   bool is_repair = false;
   bool capture_event = false;
@@ -767,9 +765,11 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     // redundant. Cancel them before they can create log or counter noise.
     self->cancel_peer_timers_(peer_id_addr, connection_generation);
 
-    should_publish = self->should_publish_irk(
-        irk_hex, addr_str, peer_id_addr.type, connection_generation, force_pairing_publish,
-        should_stop_adv, is_new_device, limit_just_reached, key_changed);
+    should_publish =
+        self->should_publish_irk(irk_hex, addr_str, peer_id_addr.type, connection_generation,
+                                 force_pairing_publish, decision);
+    const bool is_new_device = decision.reason == PublishDecision::Reason::NEW_DEVICE;
+    const bool key_changed = decision.reason == PublishDecision::Reason::KEY_CHANGED;
 
     if (should_publish) {
       self->capture_events_++;
@@ -798,10 +798,12 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     }
   }  // Release mutex before slow logging/publishing operations
 
+  log_publish_decision(decision, addr_str);
+
   // Reconnect-loop defense: hold advertising off for a few seconds. The
   // deadline covers both cases: a live link (the disconnect handler sees a
   // restart already scheduled) and a delayed read that finds the radio on.
-  if (should_stop_adv) {
+  if (decision.stop_adv) {
     {
       MutexGuard lock(self->state_mutex_);
       if (self->advertising_requested_) {
@@ -809,13 +811,13 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
             deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
       }
     }
-    // BUG5 FIX: Guard stop_advertising() with is_advertising() to prevent
+    // Guard stop_advertising() with is_advertising() to prevent
     // double stop (spurious HA state updates). Only needed when advertising is
     // actually running (e.g., called from timer paths like DISC_DELAYED).
     if (self->is_advertising()) {
       self->stop_advertising();
     }
-    if (limit_just_reached) {
+    if (decision.limit_just_reached) {
       ESP_LOGI(TAG,
                "Reconnect limit reached; suppressing advertising to break the reconnect loop.");
     }
@@ -1004,91 +1006,71 @@ int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt
 
   ESP_LOGD(TAG, "DevInfo read (%s): value='%s'", is_manufacturer ? "Manufacturer" : "Model",
            value_copy.c_str());
-  append_const_string_or_default(ctxt->om, value_copy.c_str(),
-                                 is_manufacturer ? "ESPresense" : "IRK Capture");
-  return 0;
+  return append_const_string_or_default(ctxt->om, value_copy.c_str(),
+                                        is_manufacturer ? "ESPresense" : DEFAULT_BLE_NAME);
 }
 int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
   uint8_t lvl = 100;  // Placeholder static battery level
-  os_mbuf_append(ctxt->om, &lvl, 1);
-  return 0;
+  return append_att_value(ctxt->om, &lvl, 1);
 }
 int chr_read_hr(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
   uint8_t buf[2];
   size_t len;
   hr_measurement_sample(buf, &len);
-  os_mbuf_append(ctxt->om, buf, len);
-  return 0;
+  return append_att_value(ctxt->om, buf, len);
 }
 int chr_read_hid_protocol(uint16_t, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
   uint8_t protocol_mode = 0x01;  // Report protocol mode
-  os_mbuf_append(ctxt->om, &protocol_mode, 1);
-  return 0;
+  return append_att_value(ctxt->om, &protocol_mode, 1);
 }
 int chr_read_protected(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt,
                        void* arg) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
-  append_const_string_or_default(ctxt->om, (const char*) arg, "Protected Info");
-  return 0;
+  return append_const_string_or_default(ctxt->om, (const char*) arg, "Protected Info");
 }
 
 //======================== BLE name sanitization ========================
 
 std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
-  // Validate and sanitize BLE name for runtime changes from Home Assistant
+  // Keeps the characters that are safe to advertise (alphanumeric, space,
+  // hyphen, underscore), trims surrounding spaces, then limits the length.
+  // Returns an empty string when nothing usable remains; the caller decides
+  // whether that means a default name or a rejected change.
   std::string sanitized;
-  // 12 chars for Samsung S24/S25 compatibility with single-UUID advertising.
-  sanitized.reserve(BLE_NAME_MAX_LEN);
-
-  // Check for empty string
-  if (name.empty()) {
-    ESP_LOGW(TAG, "BLE name cannot be empty, using default 'IRK Capture'");
-    return "IRK Capture";
-  }
-
-  // Sanitize: allow only safe characters (alphanumeric, space, hyphen,
-  // underscore)
+  sanitized.reserve(name.size());
+  size_t rejected = 0;
   for (char c : name) {
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' ||
         c == '-' || c == '_') {
       sanitized += c;
     } else {
-      // Log rejected character
-      ESP_LOGW(TAG, "Rejected invalid character in BLE name: 0x%02X ('%c')", (uint8_t) c,
-               (c >= 32 && c <= 126) ? c : '?');
-    }
-
-    // Enforce 12-byte limit for Samsung S24/S25 compatibility (clean profile
-    // with single UUID)
-    if (sanitized.length() >= BLE_NAME_MAX_LEN) {
-      ESP_LOGW(TAG, "BLE name truncated to 12 bytes (Samsung compatibility)");
-      break;
+      rejected++;
     }
   }
-
-  // Trim leading and trailing whitespace
-  size_t start = sanitized.find_first_not_of(' ');
-  size_t end = sanitized.find_last_not_of(' ');
-  if (start != std::string::npos) {
-    sanitized = sanitized.substr(start, end - start + 1);
-  } else {
-    sanitized.clear();
+  if (rejected != 0) {
+    ESP_LOGW(TAG, "Removed %zu unsupported character(s) from the BLE name", rejected);
   }
 
-  // Final validation: ensure we have at least one character
-  if (sanitized.empty()) {
-    ESP_LOGW(TAG,
-             "BLE name contained only invalid characters, using default 'IRK "
-             "Capture'");
-    return "IRK Capture";
+  // Trim before truncating so leading spaces do not use up the length limit.
+  const size_t start = sanitized.find_first_not_of(' ');
+  if (start == std::string::npos) {
+    ESP_LOGW(TAG, "BLE name has no usable characters");
+    return "";
+  }
+  sanitized = sanitized.substr(start, sanitized.find_last_not_of(' ') - start + 1);
+
+  // 12 bytes for Samsung S24/S25 compatibility with single-UUID advertising.
+  if (sanitized.length() > BLE_NAME_MAX_LEN) {
+    ESP_LOGW(TAG, "BLE name truncated to %zu bytes (Samsung compatibility)", BLE_NAME_MAX_LEN);
+    sanitized.resize(BLE_NAME_MAX_LEN);
+    // The cut can land just after a space.
+    sanitized.erase(sanitized.find_last_not_of(' ') + 1);
   }
 
-  // Log if sanitization changed the input
   if (sanitized != name) {
     ESP_LOGI(TAG, "BLE name sanitized: '%s' -> '%s'", name.c_str(), sanitized.c_str());
   }
-
   return sanitized;
 }
 
@@ -1255,15 +1237,6 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   return 0;
 }
 
-/**
- * @brief Handles BLE_GAP_EVENT_DISCONNECT - called when peer disconnects
- * @param self Pointer to IRKCaptureComponent instance
- * @param ev GAP event structure containing disconnect reason
- * @return 0 (always)
- *
- * Attempts immediate IRK read from NVS, schedules delayed read (+800ms),
- * and restarts advertising unless a restart is already scheduled.
- */
 // ble_gap_terminate() returns EALREADY when a disconnect is already under way,
 // for example one started by a timeout or a MAC rotation. That is not a failure.
 static void log_terminate_result(int rc, const char* context) {
@@ -1279,6 +1252,17 @@ static void log_no_irk_for_peer(const ble_addr_t& peer_id) {
            addr_to_str(peer_id).c_str());
 }
 
+/**
+ * @brief Handles BLE_GAP_EVENT_DISCONNECT - called when peer disconnects
+ * @param self Pointer to IRKCaptureComponent instance
+ * @param ev GAP event structure containing disconnect reason
+ * @return 0 (always)
+ *
+ * If the connection has not produced a result yet, reads the peer's bond once
+ * more and schedules a delayed read (+800ms) when that is inconclusive. Then
+ * restarts advertising, unless the capture limit was reached, the user turned
+ * advertising off, or a restart is already scheduled after a hold-off.
+ */
 int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)", ev->disconnect.reason, ev->disconnect.reason);
 
@@ -1395,9 +1379,12 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
  * @param ev GAP event structure containing encryption status
  * @return 0 (always)
  *
- * On success (status=0): Attempts immediate IRK read and schedules delayed read
- * (+5s). On failure: Logs detailed error, deletes stale bond, and retries
- * security once.
+ * On success (status=0): reads the peer's bond at once. A valid IRK is
+ * published and the link closed; a bond without an IRK is reported as "no IRK"
+ * and the link closed; otherwise a delayed read is scheduled (+5s).
+ * On failure: logs the decoded reason, deletes only this peer's bond and closes
+ * the link so the peer pairs afresh. It does not retry security; the single
+ * retry in retry_security_if_needed() is time-based.
  */
 int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   ESP_LOGI(TAG, "ENC_CHANGE status=%d (0x%02X)", ev->enc_change.status, ev->enc_change.status);
@@ -1428,13 +1415,17 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     ESP_LOGI(TAG, "Encryption established; attempting immediate IRK capture");
     {
       MutexGuard lock(self->state_mutex_);
-      self->enc_ready_ = true;
-      self->enc_time_ = now_ms();
-      // BUG1 FIX: Initialize irk_last_try_ms_ to now so the ENC_TRY_INTERVAL_MS
-      // guard in poll_irk_if_due() is correctly enforced on the first poll
-      // attempt. Without this, (now - 0) is huge and the interval check is
-      // bypassed immediately.
-      self->irk_last_try_ms_ = now_ms();
+      // Encryption on a link this component is not tracking (a failed CONNECT
+      // whose link stayed up) must not mark the active connection as secured.
+      if (self->connected_ && self->conn_handle_ == ev->enc_change.conn_handle) {
+        self->enc_ready_ = true;
+        self->enc_time_ = now_ms();
+        // Initialize irk_last_try_ms_ to now so the ENC_TRY_INTERVAL_MS
+        // guard in poll_irk_if_due() is correctly enforced on the first poll
+        // attempt. Without this, (now - 0) is huge and the interval check is
+        // bypassed immediately.
+        self->irk_last_try_ms_ = now_ms();
+      }
     }
 
     // Immediate store read using identity address
@@ -1467,6 +1458,8 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
         // NimBLE has completed key distribution before reporting ENC_CHANGE
         // success. Preserve this outcome before timeout cleanup can delete it.
         self->publish_no_irk_(d.peer_id_addr, connection_generation, true, origin);
+        self->close_after_no_irk_(ev->enc_change.conn_handle, connection_generation,
+                                  "after ENC no-IRK result");
       } else {
         ESP_LOGW(TAG, "IRK failed validation (all-zero or all-FF); scheduling late check");
         self->schedule_late_enc_check(d.peer_id_addr, connection_generation, origin);
@@ -1516,8 +1509,8 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
 /**
  * @brief Handles BLE_GAP_EVENT_REPEAT_PAIRING - peer attempting to pair when
  * already bonded
- * @param self Pointer to IRKCaptureComponent instance (unused, but kept for
- * consistency)
+ * @param self Pointer to IRKCaptureComponent instance; the connection is
+ * marked as an explicit re-pair so its IRK is always published
  * @param ev GAP event structure containing repeat pairing details
  * @return BLE_GAP_REPEAT_PAIRING_RETRY after a successful stale-bond deletion;
  * BLE_GAP_REPEAT_PAIRING_IGNORE if recovery cannot be prepared safely
@@ -1734,8 +1727,10 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 void IRKCaptureComponent::setup() {
   ESP_LOGI(TAG, "IRK Capture v%s ready", VERSION);
 
-  // Sanitize initial name from YAML
+  // Sanitize initial name from YAML. The config validator already rejects
+  // anything this would change, so the fallback only guards other callers.
   ble_name_ = sanitize_ble_name(ble_name_);
+  if (ble_name_.empty()) ble_name_ = DEFAULT_BLE_NAME;
 
   // Initialize mutex for thread-safe access to shared state
   state_mutex_ = xSemaphoreCreateMutex();
@@ -1778,10 +1773,7 @@ void IRKCaptureComponent::setup() {
   // Clear in-memory IRK cache for fresh session (complements ble_store_clear()
   // which is called later during BLE stack initialization)
   irk_cache_.clear();
-  // Derive cache capacity from max_captures_ (floor of 10 to handle
-  // deduplication of reconnections)
-  size_t cache_cap = (max_captures_ > 10) ? max_captures_ : 10;
-  irk_cache_.reserve(cache_cap);
+  irk_cache_.reserve(cache_limit_());
   capture_events_ = 0;
   unique_devices_ = 0;
   connection_generation_ = 0;
@@ -1899,8 +1891,8 @@ void IRKCaptureComponent::loop() {
   notify_bond_clear_();
 
   // Timers for IRK checks
-  handle_post_disconnect_timer(now);
-  handle_late_enc_timer(now);
+  run_peer_timer_(post_disc_timers_, now, "DISC_DELAYED");
+  run_peer_timer_(late_enc_timers_, now, "ENC_LATE");
 
   // Rotation must not starve security timeouts or IRK polling on a connection
   // that arrived while the radio was stopping.
@@ -1947,7 +1939,7 @@ void IRKCaptureComponent::loop() {
   }
   if (!is_connected || conn_handle_copy == BLE_HS_CONN_HANDLE_NONE) return;
 
-  // HR notify and IRK polling (post-ENC)
+  // HR notify (from connect, to keep the link active) and IRK polling (post-ENC)
   notify_hr_if_due(now);
   poll_irk_if_due(now);
 }
@@ -1955,7 +1947,7 @@ void IRKCaptureComponent::loop() {
 //======================== BLE setup/registry ========================
 
 void IRKCaptureComponent::setup_ble() {
-  // NVS for key store
+  // NVS holds the persisted BLE profile. Bonds are kept in RAM (see below).
   esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_LOGW(TAG, "NVS full or version mismatch - erasing");
@@ -1971,36 +1963,6 @@ void IRKCaptureComponent::setup_ble() {
     ESP_LOGE(TAG, "nvs_flash_init failed (err=%d)", err);
     this->mark_failed(LOG_STR("NVS initialization failed"));
     return;
-  }
-
-  // NVS health check - verify storage actually works
-  // Single open/close with write, verify, and cleanup in one pass
-  nvs_handle_t nvs_test_handle;
-  err = nvs_open("irk_test", NVS_READWRITE, &nvs_test_handle);
-  if (err == ESP_OK) {
-    esp_err_t werr = nvs_set_u32(nvs_test_handle, "test", 0xDEADBEEF);
-    if (werr == ESP_OK) {
-      esp_err_t cerr = nvs_commit(nvs_test_handle);
-      if (cerr == ESP_OK) {
-        ESP_LOGI(TAG, "NVS health check passed");
-      } else {
-        ESP_LOGW(TAG, "NVS health check commit failed (err=%d) - continuing", cerr);
-      }
-    } else {
-      ESP_LOGW(TAG, "NVS health check write failed (err=%d) - continuing", werr);
-    }
-    // Clean up test data in same handle (best-effort)
-    esp_err_t erase_test_err = nvs_erase_all(nvs_test_handle);
-    if (erase_test_err != ESP_OK) {
-      ESP_LOGW(TAG, "NVS cleanup erase failed (err=%d)", erase_test_err);
-    }
-    esp_err_t cleanup_commit_err = nvs_commit(nvs_test_handle);
-    if (cleanup_commit_err != ESP_OK) {
-      ESP_LOGW(TAG, "NVS cleanup commit failed (err=%d)", cleanup_commit_err);
-    }
-    nvs_close(nvs_test_handle);
-  } else {
-    ESP_LOGW(TAG, "NVS health check open failed (err=%d) - continuing", err);
   }
 
   // NimBLE host. Without a working host and bond store the component cannot
@@ -2033,7 +1995,7 @@ void IRKCaptureComponent::setup_ble() {
     // Cancel the request without relying on the old host event being serviced.
     // Leave its event object intact: a delayed wake-up checks current state.
     if (g_irk_instance->bond_clear_pending_) {
-      g_irk_instance->bond_clear_result_.state = "cancelled";
+      g_irk_instance->bond_clear_result_.state = BondClearState::CANCELLED;
       g_irk_instance->bond_clear_result_.reason = "Bluetooth restarted; retry once ready.";
     }
     g_irk_instance->bond_clear_pending_ = false;
@@ -2087,9 +2049,9 @@ void IRKCaptureComponent::setup_ble() {
   // so the bond itself is disposable once the capture completes.
   ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
-  // Clear all bonds on boot for a "clean slate" - prevents bond table from
-  // filling up and ensures privacy (no old IRKs persist across reboots or
-  // device ownership changes)
+  // Bonds are kept in RAM only: __init__.py disables CONFIG_BT_NIMBLE_NVS_PERSIST,
+  // so no peer key outlives a reboot or a change of device ownership. Clearing
+  // here as well keeps that true if a build ever enables persistence.
   rc = ble_store_clear();
   if (rc != 0) {
     ESP_LOGE(TAG, "ble_store_clear on boot failed rc=%d", rc);
@@ -2166,12 +2128,11 @@ bool IRKCaptureComponent::register_gatt_services() {
   devinfo_chrs[0].arg = (void*) this;  // Manufacturer Name
   devinfo_chrs[1].arg = (void*) this;  // Model Number
 
-  // BUG4 FIX: Explicitly zero the handle globals before any registration
-  // attempt. The Keyboard profile GATT table has no HR service (it does include
-  // the Protected service), so g_hr_handle would retain a stale value from a
-  // prior boot if a Keyboard→Heart Sensor fallback occurs. Zeroing both here
-  // makes the state explicit and predictable regardless of which registration
-  // path is taken.
+  // NimBLE fills these in only for the characteristics it registers, in
+  // ble_gatts_start(). The Keyboard table has no HR service, so g_hr_handle
+  // stays 0 there, which is how notify_hr_if_due() knows there is nothing to
+  // notify. Zeroing both first makes that explicit for either registration
+  // path, including the Keyboard→Heart Sensor fallback.
   g_hr_handle = 0;
   g_prot_handle = 0;
 
@@ -2318,13 +2279,18 @@ void IRKCaptureComponent::start_advertising() {
     const bool use_scan_response = current_profile == BLEProfile::KEYBOARD;
     // The Keyboard default has 13 bytes; custom names normally have at most 12.
     // Guard the conversion even if configuration or a future caller bypasses
-    // normalization. A name field alone can occupy 29 bytes of a 31-byte packet.
+    // normalization. A legacy packet carries 31 bytes and a name field has a
+    // 2-byte header, so a scan response fits 29 bytes of name. The Heart Sensor
+    // advertisement also carries flags (3), appearance (4) and one 16-bit UUID
+    // (4), which leaves 18.
+    const size_t max_name_len = use_scan_response ? 29 : 18;
     size_t raw_len = name_copy.size();
-    if (raw_len > 29) {
-      ESP_LOGW(TAG, "BLE name too long (%zu bytes), truncating to 29", raw_len);
-      raw_len = 29;
+    if (raw_len > max_name_len) {
+      ESP_LOGW(TAG, "BLE name too long (%zu bytes), truncating to %zu", raw_len, max_name_len);
+      raw_len = max_name_len;
     }
     const uint8_t name_len = (uint8_t) raw_len;
+    const bool name_complete = raw_len == name_copy.size();
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.appearance_is_present = 1;
     fields.num_uuids16 = 1;
@@ -2336,14 +2302,14 @@ void IRKCaptureComponent::start_advertising() {
       // Put the name in the scan response's separate 31-byte budget.
       rsp_fields.name = (uint8_t*) name_copy.c_str();
       rsp_fields.name_len = name_len;
-      rsp_fields.name_is_complete = 1;
+      rsp_fields.name_is_complete = name_complete;
     } else {
       profile_name = "Heart Sensor";
       fields.appearance = APPEARANCE_HEART_RATE_SENSOR;
       fields.uuids16 = const_cast<ble_uuid16_t*>(&UUID_SVC_HR);
       fields.name = (uint8_t*) name_copy.c_str();
       fields.name_len = name_len;
-      fields.name_is_complete = 1;
+      fields.name_is_complete = name_complete;
     }
 
     if (rc == 0) {
@@ -2378,9 +2344,10 @@ void IRKCaptureComponent::start_advertising() {
       advp.itvl_min = 0x00A0;
       advp.itvl_max = 0x00F0;
 
-      // Use explicit RANDOM address type (our static random address set in
-      // setup_ble/refresh_mac) Avoids Samsung One UI 7 "Maximum Restrictions"
-      // filtering RPA addresses as tracking risks
+      // Use explicit RANDOM address type: our static random address, set
+      // above on the first start and by handle_mac_rotation_() afterwards.
+      // Avoids Samsung One UI 7 "Maximum Restrictions" filtering RPA
+      // addresses as tracking risks
       constexpr uint8_t own_addr_type = BLE_OWN_ADDR_RANDOM;
       operation = "start";
       rc = ble_gap_adv_start(own_addr_type, nullptr, BLE_HS_FOREVER, &advp,
@@ -2629,8 +2596,8 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
         return;
       adv_restart_time_ = 0;
     }
-    // NVS and logging must not hold either component mutex: a slow flash
-    // operation must not make a NimBLE callback wait on ble_op_mutex_.
+    // The store clear and logging must not hold either component mutex: a
+    // slow operation must not make a NimBLE callback wait on ble_op_mutex_.
     log_mac("Previous");
     ESP_LOGI(TAG, "Clearing bonds and waiting %" PRIu32 " ms before MAC rotation",
              TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS);
@@ -2660,7 +2627,18 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
     rc = ble_hs_id_set_rnd(mac);
   }
 
+  // NimBLE returns EINVAL only when it rejects the address bytes themselves, so
+  // the same address can never succeed: draw another before retrying. Every
+  // other failure comes from the controller or host being busy and may clear.
+  const bool replace_address = rc == BLE_HS_EINVAL;
+  uint8_t replacement[6];
+  if (replace_address) {
+    esp_fill_random(replacement, sizeof(replacement));
+    replacement[5] |= 0xC0;  // Static random address, as in request_mac_rotation_()
+  }
+
   bool aborted = false;
+  uint32_t retry_delay = 0;
   {
     MutexGuard lock(state_mutex_);
     // A reset or replacement request during the BLE call invalidates its
@@ -2678,7 +2656,7 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
       commit_generated_name_(mac);
     } else {
       retries = ++mac_rotation_retries_;
-      aborted = rc != BLE_HS_EINVAL || retries >= TimingConfig::MAC_ROTATION_MAX_RETRIES;
+      aborted = retries >= TimingConfig::MAC_ROTATION_MAX_RETRIES;
       if (aborted) {
         mac_rotation_state_ = MacRotationState::IDLE;
         mac_rotation_retries_ = 0;
@@ -2688,6 +2666,14 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
         // next plain rotation, such as the one a name change from Home
         // Assistant triggers.
         identity_refresh_pending_ = false;
+      } else {
+        // Back off instead of spending the whole budget within a few loop
+        // ticks, which is shorter than any transient condition lasts.
+        const uint8_t doublings = std::min<uint8_t>(retries - 1, 8);
+        retry_delay = std::min(TimingConfig::MAC_ROTATION_RETRY_MS << doublings,
+                               TimingConfig::MAC_ROTATION_RETRY_MAX_MS);
+        mac_rotation_ready_time_ = deadline_after(now_ms(), retry_delay);
+        if (replace_address) std::memcpy(pending_mac_, replacement, sizeof(pending_mac_));
       }
     }
   }
@@ -2701,8 +2687,9 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   } else if (aborted) {
     ESP_LOGE(TAG, "MAC rotation aborted rc=%d after %u attempts", rc, retries);
   } else {
-    ESP_LOGW(TAG, "MAC rotation rc=%d, retry %u/%u", rc, retries,
-             TimingConfig::MAC_ROTATION_MAX_RETRIES);
+    ESP_LOGW(TAG, "MAC rotation rc=%d, retry %u/%u in %" PRIu32 " ms%s", rc, retries,
+             TimingConfig::MAC_ROTATION_MAX_RETRIES, retry_delay,
+             replace_address ? " with a new address" : "");
     return;
   }
   start_advertising();  // With the new address, or the old one after an abort.
@@ -2710,10 +2697,6 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
 
 void IRKCaptureComponent::refresh_identity() {
   request_mac_rotation_(true);
-}
-
-void IRKCaptureComponent::refresh_mac() {
-  request_mac_rotation_(false);
 }
 
 bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const std::string* accepted_name,
@@ -2881,6 +2864,14 @@ bool IRKCaptureComponent::update_ble_name(const std::string& name) {
     keyboard_default = ble_profile_ == BLEProfile::KEYBOARD && name == KEYBOARD_DEFAULT_NAME;
   }
   const std::string accepted_name = keyboard_default ? name : sanitize_ble_name(name);
+  if (accepted_name.empty()) {
+    // Nothing usable was entered. Substituting a default here would rename the
+    // device, rotate its address and clear its bonds for what was a typo, so
+    // keep the current name and put it back on display.
+    MutexGuard lock(state_mutex_);
+    pending_ble_name_pub_ = true;
+    return false;
+  }
   uint32_t host_generation;
   uint32_t rotation_generation;
   uint32_t name_generation;
@@ -2960,10 +2951,10 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     ESP_LOGW(TAG,
              "Profile change requires restart to update GATT database - "
              "scheduling safe reboot...");
-    // set_ble_profile() can be reached from a caller that is not the main task
-    // (the wizard serves it from esp_http_server's task). Deferring the reboot
-    // also lets the caller finish first - an HTTP handler gets to send its
-    // response instead of the connection dropping mid-reply.
+    // This function publishes entities directly, so it must run on the main
+    // task; the wizard defers its call here for that reason. The reboot is
+    // still deferred so the caller finishes first: the select publishes its
+    // new state, and a wizard request has already been answered.
     request_reboot_();
   }
 }
@@ -3125,6 +3116,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
   if (!bond.irk_present) {
     // This read is called only by polling after successful encryption.
     publish_no_irk_(desc.peer_id_addr, connection_generation, true, origin);
+    close_after_no_irk_(conn_handle, connection_generation, "after poll no-IRK result");
     return false;
   }
 
@@ -3208,14 +3200,6 @@ void IRKCaptureComponent::cancel_peer_timers_(const ble_addr_t& peer_id,
         timer = {};
     }
   }
-}
-
-void IRKCaptureComponent::handle_post_disconnect_timer(uint32_t now) {
-  run_peer_timer_(post_disc_timers_, now, "DISC_DELAYED");
-}
-
-void IRKCaptureComponent::handle_late_enc_timer(uint32_t now) {
-  run_peer_timer_(late_enc_timers_, now, "ENC_LATE");
 }
 
 void IRKCaptureComponent::run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers,
@@ -3315,7 +3299,7 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     if (!sec_retry_done_copy && (now - sec_init_time_copy) > TimingConfig::SEC_RETRY_DELAY_MS) {
       uint32_t elapsed = now - sec_init_time_copy;
       ESP_LOGI(TAG, "Retrying security initiate after %" PRIu32 " ms", elapsed);
-      // BUG2 FIX: Set sec_retry_done_ under mutex BEFORE calling
+      // Set sec_retry_done_ under mutex BEFORE calling
       // ble_gap_security_initiate(). Writing it after the BLE call is a race: a
       // NimBLE callback could fire during the call and read sec_retry_done_ as
       // false, causing a double retry.
@@ -3441,7 +3425,7 @@ bool IRKCaptureComponent::handle_connection_timeout_(uint32_t now) {
   if (clear_bond) {
     ESP_LOGW(TAG, "%s timeout; clearing bond for %s", label,
              addr_to_str(desc.peer_id_addr).c_str());
-    // Flash work must run outside both component locks.
+    // Store work takes NimBLE's host lock; run it outside both component locks.
     const int delete_rc = ble_store_util_delete_peer(&desc.peer_id_addr);
     {
       MutexGuard lock(state_mutex_);
@@ -3621,6 +3605,32 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
            "No IRK was provided. If this device uses a fixed BLE address, use this MAC "
            "directly: %s",
            addr.c_str());
+}
+
+void IRKCaptureComponent::close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
+                                              const char* context) {
+  // A completed pairing without an IRK is as final as a capture. Leaving the
+  // link up would hold the only connection slot until the 90 s pairing timeout
+  // and then report a timeout that never happened. The bond is still stored,
+  // so the peer may reconnect at once and reach the same outcome: hold
+  // advertising off briefly so that cannot become a tight reconnect loop.
+  {
+    MutexGuard lock(state_mutex_);
+    // The store read ran unlocked. Never close a replacement connection that
+    // reused this handle, or a link this component is not tracking.
+    if (!connected_ || conn_handle_ != conn_handle || connection_generation == 0 ||
+        connection_generation_ != connection_generation)
+      return;
+    if (advertising_requested_) {
+      adv_restart_time_ = deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
+    }
+  }
+  int term_rc;
+  {
+    BleOpGuard ble_lock(ble_op_mutex_);
+    term_rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+  }
+  log_terminate_result(term_rc, context);
 }
 
 void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str,
@@ -3835,22 +3845,22 @@ BondClearResult IRKCaptureComponent::request_bond_clear() {
     bond_clear_result_.history_cleared = true;
     bond_clear_result_.reason.clear();
     if (!bond_clear_task_) {
-      bond_clear_result_.state = "failed";
+      bond_clear_result_.state = BondClearState::FAILED;
       bond_clear_result_.reason = "Bond-clear worker unavailable; restart the device to retry.";
     } else if (!host_synced_) {
-      bond_clear_result_.state = "busy";
+      bond_clear_result_.state = BondClearState::BUSY;
       bond_clear_result_.reason = "Bluetooth is not ready; retry once ready.";
     } else if (mac_rotation_state_ != MacRotationState::IDLE) {
-      bond_clear_result_.state = "busy";
+      bond_clear_result_.state = BondClearState::BUSY;
       bond_clear_result_.reason = "Bluetooth identity is changing; retry once idle.";
     } else {
-      bond_clear_result_.state = "pending";
+      bond_clear_result_.state = BondClearState::PENDING;
       bond_clear_pending_ = true;
       bond_clear_host_generation_ = host_generation_;
     }
     result = bond_clear_result_;
   }
-  if (result.state == "pending") {
+  if (result.state == BondClearState::PENDING) {
     notify_bond_clear_();
   } else {
     ESP_LOGW(TAG, "Forget All Bonds: history cleared; stored bonds retained. %s",
@@ -3890,7 +3900,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   int stop_rc = BLE_HS_EBUSY;
   uint32_t operation_id;
   uint32_t host_generation;
-  std::string state = "busy";
+  BondClearState state = BondClearState::BUSY;
   std::string reason = "Bluetooth maintenance is busy; retry once idle.";
   {
     MutexGuard lock(state_mutex_);
@@ -3927,7 +3937,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
           reason = "A device is connected; disconnect it and retry.";
         } else if (active ||
                    (stop_rc != 0 && stop_rc != BLE_HS_EALREADY && stop_rc != BLE_HS_EINVAL)) {
-          state = stop_rc == BLE_HS_EBUSY ? "busy" : "failed";
+          state = stop_rc == BLE_HS_EBUSY ? BondClearState::BUSY : BondClearState::FAILED;
           reason = "Bluetooth advertising could not stop; retry once idle.";
         }
       }
@@ -3935,13 +3945,13 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   }
 
   if (can_clear) {
-    // Flash work must not hold either component mutex.
+    // Store work takes NimBLE's host lock; hold neither component mutex.
     const int rc = ble_store_clear();
     if (rc != 0) {
-      state = "failed";
+      state = BondClearState::FAILED;
       reason = "Bond storage could not be cleared; retry.";
     } else {
-      state = "succeeded";
+      state = BondClearState::SUCCEEDED;
       reason.clear();
     }
   }
@@ -3952,7 +3962,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
     bond_clear_result_.state = state;
     bond_clear_result_.reason = reason;
   }
-  if (state == "succeeded") {
+  if (state == BondClearState::SUCCEEDED) {
     ESP_LOGI(TAG, "All BLE bonds cleared");
   } else {
     ESP_LOGW(TAG, "Forget All Bonds: history cleared; pairings may remain. %s", reason.c_str());
@@ -3970,12 +3980,18 @@ std::string IRKCaptureComponent::build_history_json() {
     MutexGuard lock(state_mutex_);
     cache_copy = irk_cache_;
   }
+  return format_history_json_(cache_copy);
+}
 
+std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCacheEntry>& cache) {
+  // {"mac":"<17>","irk":"<32>","label":"<up to 24>","reconnects":<up to 5>},
+  // is 94 bytes of framing and fixed-width values plus the label and count.
+  static constexpr size_t ENTRY_RESERVE = 94 + CAPTURE_LABEL_MAX_LEN + 5;
   std::string json;
-  json.reserve(cache_copy.size() * 64 + 2);
+  json.reserve(cache.size() * ENTRY_RESERVE + 2);
   json += "[";
   bool first = true;
-  for (const auto& entry : cache_copy) {
+  for (const auto& entry : cache) {
     if (!entry.in_history) continue;
     if (!first) json += ",";
     first = false;
@@ -3995,6 +4011,27 @@ std::string IRKCaptureComponent::build_history_json() {
   json += "]";
 
   return json;
+}
+
+SessionState IRKCaptureComponent::get_session_state() {
+  // One lock for everything a status page shows. Reading the same values
+  // through the individual getters takes state_mutex_ once per value, several
+  // times a second, in competition with the NimBLE task during pairing.
+  SessionState state;
+  std::vector<IRKCacheEntry> cache_copy;
+  {
+    MutexGuard lock(state_mutex_);
+    cache_copy = irk_cache_;
+    state.next_capture_label = next_capture_label_;
+    state.advertised_name = advertised_name_();
+    state.profile = ble_profile_;
+    state.advertising_requested = advertising_requested_;
+    state.stop_after_capture = stop_after_capture_;
+    state.capture_result = capture_result_;
+    state.bond_clear = bond_clear_result_;
+  }
+  state.history_json = format_history_json_(cache_copy);
+  return state;
 }
 
 const char* IRKCaptureComponent::status_value_locked_(uint32_t now) {

@@ -20,9 +20,28 @@
 namespace esphome {
 namespace irk_wizard {
 
+enum class CaptureStartState : uint8_t { IDLE, PENDING, READY, CANCELLED, FAILED };
+
+// The name a state has in /api/status. The wizard page compares these strings.
+inline const char* capture_start_state_name(CaptureStartState state) {
+  switch (state) {
+    case CaptureStartState::PENDING:
+      return "pending";
+    case CaptureStartState::READY:
+      return "ready";
+    case CaptureStartState::CANCELLED:
+      return "cancelled";
+    case CaptureStartState::FAILED:
+      return "failed";
+    case CaptureStartState::IDLE:
+      break;
+  }
+  return "idle";
+}
+
 struct CaptureStart {
   uint32_t operation_id { 0 };
-  std::string state { "idle" };
+  CaptureStartState state { CaptureStartState::IDLE };
   uint32_t boot_id { 0 };
   uint32_t sequence { 0 };
 };
@@ -104,8 +123,9 @@ class IRKWizardComponent : public Component {
   }
   // HTTP Basic auth, required by the config schema. The expected header value
   // is precomputed once here so request handling is a constant-time string
-  // compare with no base64 decoding (and no credentials living in RAM in
-  // plaintext beyond this encoded form).
+  // compare with no base64 decoding. This is not secrecy at rest: base64 is
+  // reversible, and the username and password are compiled into the firmware
+  // image as the arguments to this call.
   void set_auth(const std::string& username, const std::string& password);
 
   irk_capture::IRKCaptureComponent* irk_capture() {

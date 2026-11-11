@@ -21,8 +21,19 @@ IRKCaptureComponent = irk_capture_ns.class_("IRKCaptureComponent", cg.Component)
 CaptureTrigger = automation.Trigger.template(cg.std_string, cg.std_string)
 
 
+# The characters sanitize_ble_name() keeps at runtime (irk_capture.cpp).
+BLE_NAME_ALLOWED_CHARS = (
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_"
+)
+
+
 def validate_ble_name(value):
-    """Validate BLE name length (12 bytes max for Samsung S24/S25 compatibility)"""
+    """Reject a BLE name the device would otherwise silently alter.
+
+    The firmware removes unsupported characters, trims spaces and truncates to
+    12 bytes (Samsung S24/S25 compatibility). Failing here shows the user the
+    name that will actually be advertised.
+    """
     value = cv.string(value)
     if len(value.encode("utf-8")) > 12:
         raise cv.Invalid(
@@ -30,6 +41,14 @@ def validate_ble_name(value):
             f"Maximum 12 bytes for Samsung S24/S25 compatibility with "
             f"single-UUID advertising. Shorten your name."
         )
+    unsupported = sorted(set(value) - set(BLE_NAME_ALLOWED_CHARS))
+    if unsupported:
+        raise cv.Invalid(
+            "BLE name may contain only letters, digits, spaces, '-' and '_'. "
+            f"Remove: {' '.join(repr(c) for c in unsupported)}"
+        )
+    if value != value.strip(" ") or not value:
+        raise cv.Invalid("BLE name cannot be empty or start or end with a space.")
     return value
 
 
@@ -53,6 +72,7 @@ def validate_continuous_mode_config(config):
 
         logging.getLogger(__name__).warning(
             "max_captures=0 enables unlimited unique-device capture mode (no auto-stop). "
+            "Only the 32 most recent devices are kept in the session history. "
             "This is not recommended for production. Set a specific limit (e.g., max_captures=5)."
         )
 
@@ -122,6 +142,10 @@ async def to_code(config):
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SECURITY_ENABLE", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SM_LEGACY", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SM_SC", True)
+    # Bonds live in RAM only. A captured IRK is published and the bond is then
+    # disposable, so nothing about a peer should outlive a reboot. This is the
+    # ESP-IDF default; setting it keeps that true if the default changes.
+    esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_NVS_PERSIST", False)
     # The C++ state machine intentionally owns one connection handle and one
     # pairing session. Enforce that invariant in NimBLE as well.
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_MAX_CONNECTIONS", 1)
