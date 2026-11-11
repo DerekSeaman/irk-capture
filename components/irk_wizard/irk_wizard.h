@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 #include <string>
 
 #include "esphome/components/irk_capture/irk_capture.h"
@@ -53,7 +54,9 @@ struct CaptureStart {
 // different task than the one that publishes them.
 struct WizardSnapshot {
   std::string status { "idle" };
-  std::string history_json { "[]" };
+  // Shared so that copying a snapshot for a request does not copy the history,
+  // its only large value. Null until the first refresh; read it as "[]".
+  std::shared_ptr<const std::string> history_json;
   std::string irk;
   std::string device_mac;
   std::string effective_mac;

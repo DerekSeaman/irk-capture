@@ -138,6 +138,17 @@ jobs:
             assert(!json_extract_bool("{\"on\":1}", "on", b));
             assert(!json_extract_bool("{\"off\":true}", "on", b));
             assert(!json_extract_bool("", "on", b));
+            // a longer token is not the boolean it starts with
+            assert(!json_extract_bool("{\"on\":true1}", "on", b));
+            assert(!json_extract_bool("{\"on\":falsey}", "on", b));
+            assert(!json_extract_bool("{\"on\":true", "on", b));
+            // members are read from the object, not found by searching the
+            // text: a key inside a value or a nested object is not a member
+            b = true;
+            assert(json_extract_bool("{\"note\":\"\\\"on\\\":true\",\"on\":false}", "on", b) && !b);
+            assert(json_extract_bool("{\"x\":{\"on\":true},\"on\":false}", "on", b) && !b);
+            assert(!json_extract_bool("{\"x\":{\"on\":true}}", "on", b));
+            assert(!json_extract_bool("[true]", "on", b));
 
             std::string v;
             assert(json_extract_string("{\"label\":\"Daves iPhone\"}", "label", v));
@@ -146,13 +157,28 @@ jobs:
             assert(json_extract_string("{\"label\":\"a\\\"b\"}", "label", v));
             assert(v == "a\"b");
             assert(!json_extract_string("{\"label\":5}", "label", v));
-            // an unterminated value must not read past the end
-            assert(json_extract_string("{\"label\":\"abc", "label", v) && v == "abc");
+            // an unterminated value is rejected, and leaves the output alone
+            v = "kept";
+            assert(!json_extract_string("{\"label\":\"abc", "label", v) && v == "kept");
+            assert(!json_extract_string("{\"label\":\"x\"y}", "label", v) && v == "kept");
+            // escapes decode to the characters they stand for; reducing one
+            // to its letter would turn a pasted tab into a stray "t"
+            assert(json_extract_string("{\"label\":\"a\\tb\"}", "label", v) && v == "a\tb");
+            assert(json_extract_string("{\"label\":\"Jos\\u00e9\"}", "label", v));
+            assert(v == "Jos\xC3\xA9");
+            assert(json_extract_string("{\"label\":\"\\ud83d\\ude00\"}", "label", v));
+            assert(v == "\xF0\x9F\x98\x80");
+            assert(!json_extract_string("{\"label\":\"\\ud83d\"}", "label", v));
+            assert(!json_extract_string("{\"label\":\"\\q\"}", "label", v));
+            assert(!json_extract_string("{\"label\":\"a\tb\"}", "label", v));
 
             // escaping is what keeps the hand-built status JSON parseable
             assert(json_escape("plain") == "plain");
             assert(json_escape("a\"b") == "a\\\"b");
             assert(json_escape("a\\b") == "a\\\\b");
+            // a raw control character would make the whole response unparseable
+            assert(json_escape("a\tb\n") == "a\\u0009b\\u000a");
+            assert(json_escape(std::string("\x1f", 1)) == "\\u001f");
 
             // profile names: only the two the page sends, exactly. A switch
             // reboots and discards the session, so nothing may fall through.

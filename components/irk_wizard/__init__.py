@@ -16,6 +16,7 @@ import esphome.config_validation as cv
 from esphome.components import esp32, text_sensor
 from esphome.components.irk_capture import CONF_IRK_CAPTURE_ID, IRKCaptureComponent
 from esphome.const import CONF_ID
+from esphome.core import EsphomeError
 
 CODEOWNERS = ["@davidcoulson"]
 # network: the server start waits for a connected network or an active AP, so the
@@ -31,6 +32,26 @@ CONF_STATUS_ID = "status_id"
 CONF_IRK_ID = "irk_id"
 CONF_DEVICE_MAC_ID = "device_mac_id"
 CONF_EFFECTIVE_MAC_ID = "effective_mac_id"
+
+
+def validate_credential(value):
+    """Accept only credentials a browser sends back unchanged.
+
+    Browsers do not agree on how to encode characters outside ASCII for HTTP
+    Basic authentication (UTF-8 or Latin-1), so such a login could never match
+    the value compiled into the firmware.
+    """
+    value = cv.string_strict(value)
+    if not value:
+        raise cv.Invalid("Must not be empty.")
+    if any(ord(char) < 0x20 or ord(char) > 0x7E for char in value):
+        raise cv.Invalid(
+            "Use printable ASCII characters only. Browsers encode other "
+            "characters differently for HTTP Basic authentication, so the "
+            "login would never match."
+        )
+    return value
+
 
 irk_wizard_ns = cg.esphome_ns.namespace("irk_wizard")
 IRKWizardComponent = irk_wizard_ns.class_("IRKWizardComponent", cg.Component)
@@ -54,8 +75,8 @@ CONFIG_SCHEMA = cv.Schema(
         # HTTP Basic auth, required. A captured IRK permanently deanonymizes
         # a phone's rotating BLE address, and an open device on the LAN is
         # reachable by anything else on it, including a page in a browser.
-        cv.Required(CONF_USERNAME): cv.All(cv.string_strict, cv.Length(min=1)),
-        cv.Required(CONF_PASSWORD): cv.All(cv.string_strict, cv.Length(min=1)),
+        cv.Required(CONF_USERNAME): validate_credential,
+        cv.Required(CONF_PASSWORD): validate_credential,
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -78,7 +99,15 @@ async def to_code(config):
     # Gzip the page here rather than shipping it as source text: roughly a
     # quarter of the flash, and the browser inflates it for free. mtime=0
     # keeps the output byte-identical between builds.
-    page = (Path(__file__).parent / "wizard_page.html").read_bytes()
+    page_path = Path(__file__).parent / "wizard_page.html"
+    try:
+        page = page_path.read_bytes()
+    except OSError as err:
+        # Without this the build stops on a bare traceback that does not say
+        # which component wanted the file.
+        raise EsphomeError(
+            f"irk_wizard cannot read its page {page_path}: {err}"
+        ) from err
     packed = gzip.compress(page, compresslevel=9, mtime=0)
     page_arr = cg.progmem_array(config[CONF_PAGE_DATA_ID], list(packed))
     cg.add(var.set_page(page_arr, len(packed)))

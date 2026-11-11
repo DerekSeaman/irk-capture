@@ -219,6 +219,8 @@ var refreshAgain = false;
 var failCount = 0;
 var pendingReboot = null;
 var wizardProfileReady = false;
+var statusError = null;   // text of a status-poll error now on display, if any
+var loggedPageError = null;
 var REQUEST_TIMEOUT_MS = 5000;
 var REBOOT_WARNING_MS = 60000;
 
@@ -237,8 +239,10 @@ async function requestJson(url,options){
         var r=await fetch(url,Object.assign({},options,{cache:'no-store',signal:controller.signal}));
         responseStatus=r.status;
         var text=await r.text();
-        if(!r.ok) throw new Error('Request failed ('+r.status+'). '+text.slice(0,180));
-        return text ? JSON.parse(text) : {};
+        if(!r.ok) throw new Error('Request failed ('+r.status+'). '+errorText(text));
+        if(!text) return {};
+        try{ return JSON.parse(text); }
+        catch(parseError){ throw unreadable('response'); }
       })(),
       new Promise(function(resolve,reject){
         timer=setTimeout(function(){
@@ -252,6 +256,40 @@ async function requestJson(url,options){
     if(responseStatus>=400) e.httpStatus=responseStatus;
     throw e;
   }finally{ clearTimeout(timer); }
+}
+// The device's own explanation when it sent one, else the start of the body.
+function errorText(text){
+  try{
+    var parsed=JSON.parse(text);
+    if(parsed && typeof parsed.error==='string') return parsed.error;
+  }catch(e){}
+  return text.slice(0,180);
+}
+// The device answered, but not with something this page can use. That is a
+// different problem from the device being unreachable, and is reported as one.
+function unreadable(what){
+  var e=new Error('The device sent a '+what+' this page could not read. Reload the page; if it continues, reboot the ESP32.');
+  e.badResponse=true;
+  return e;
+}
+function validStatus(d){
+  return !!d && typeof d==='object' && validBootId(d.boot_id) &&
+    typeof d.status==='string' && typeof d.profile==='string';
+}
+// Shows an error found by a status poll. A control's own error is more
+// specific than a poll's, so one already on display is left alone.
+function showStatusError(message){
+  var banner=el('actionError');
+  if(!banner.classList.contains('hide') && banner.textContent!==statusError) return;
+  statusError=message; showError(new Error(message));
+}
+// A bug while drawing the page must not pass for a lost connection either.
+function pageError(e){
+  var detail=e && e.message ? e.message : String(e);
+  if(detail!==loggedPageError && typeof console!=='undefined' && console.error){
+    loggedPageError=detail; console.error(e);
+  }
+  showStatusError('This page hit an unexpected error and may be out of date. Reload it; if it continues, please report it.');
 }
 function post(url,body,beforeSend){
   // Preserve user control order, especially START followed by Stop or Back.
@@ -645,7 +683,7 @@ function refresh(){
     try{
       var d=await requestJson('/api/status');
       if(epoch!==statusEpoch) return;
-      if(!validBootId(d.boot_id)) throw new Error('Invalid device status');
+      if(!validStatus(d)) throw unreadable('status');
       if(lastData && d.boot_id!==lastData.boot_id){
         hideClearMessage('forgetDone'); hideClearMessage('panelForgetDone');
         if(!pendingReboot) wizardProfileReady=false;
@@ -663,10 +701,25 @@ function refresh(){
         }
       }
       failCount=0;
-      lastData=d; updateClearStatus(d); render(d);
+      lastData=d;
+      // A good poll retires the previous poll's error, unless a control has
+      // since replaced it with its own message.
+      if(statusError!==null){
+        if(el('actionError').textContent===statusError) clearError();
+        statusError=null;
+      }
+      try{ updateClearStatus(d); render(d); }
+      catch(e){ pageError(e); }
     }catch(e){
-      // A profile change reboots the device; say so instead of going silent.
-      if(epoch===statusEpoch) ++failCount;
+      if(epoch!==statusEpoch) return;
+      if(e.badResponse || e.httpStatus){
+        // The device answered, so it is not offline: show what it said. Only a
+        // request that got no answer counts toward the reconnecting banner.
+        failCount=0; showStatusError(e.message);
+      }else{
+        // A profile change reboots the device; say so instead of going silent.
+        ++failCount;
+      }
     }finally{
       rebootState();
       refreshInFlight=null;
