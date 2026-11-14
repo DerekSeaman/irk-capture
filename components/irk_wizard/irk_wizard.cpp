@@ -25,12 +25,18 @@ using irk_capture::MutexGuard;
 
 static esp_err_t send_json(httpd_req_t* req, const std::string& body);
 
-// Answers with an HTTP error and a JSON {"error": message}. Returns false so a
-// check that has to report its own failure can end with "return send_error(...)".
+// Answers with an HTTP error and a JSON {"error": message}, and returns what
+// the send returned so a handler can end with "return reply_error(...)".
 // message must not need JSON escaping.
-static bool send_error(httpd_req_t* req, const char* status, const char* message) {
+static esp_err_t reply_error(httpd_req_t* req, const char* status, const char* message) {
   httpd_resp_set_status(req, status);
-  send_json(req, std::string("{\"error\":\"") + message + "\"}");
+  return send_json(req, std::string("{\"error\":\"") + message + "\"}");
+}
+
+// The same answer for a check that reports its own failure: always false, so
+// the check can end with "return send_error(...)".
+static bool send_error(httpd_req_t* req, const char* status, const char* message) {
+  reply_error(req, status, message);
   return false;
 }
 
@@ -85,7 +91,9 @@ static bool authorized(httpd_req_t* req) {
   const uint32_t now = millis();
   AuthThrottle& throttle = self->client_throttles().for_client(client_key(req), now);
   if (throttle.locked(now)) {
-    httpd_resp_set_hdr(req, "Retry-After", "30");  // AuthThrottle::LOCKOUT_MS
+    // The header value must outlive this call; httpd keeps only the pointer.
+    static const std::string RETRY_AFTER = std::to_string(AuthThrottle::LOCKOUT_MS / 1000);
+    httpd_resp_set_hdr(req, "Retry-After", RETRY_AFTER.c_str());
     return send_error(req, "429 Too Many Requests", "Too many failed attempts, try again shortly");
   }
 
@@ -187,6 +195,25 @@ static irk_capture::IRKCaptureComponent* usable_capture(httpd_req_t* req) {
     return nullptr;
   }
   return capture;
+}
+
+// What a command needs before it can act. As with authorized(), a false return
+// from begin_command() means the response has already been sent, so the
+// handler must just return ESP_OK. The checks run in a fixed order: login,
+// content type, a usable capture component, then the body.
+struct Command {
+  std::string body;
+  irk_capture::IRKCaptureComponent* capture { nullptr };
+};
+enum : uint8_t { NEEDS_CAPTURE = 1, NEEDS_BODY = 2 };
+
+static bool begin_command(httpd_req_t* req, uint8_t needs, Command& command) {
+  if (!authorized(req) || !json_request(req)) return false;
+  if (needs & NEEDS_CAPTURE) {
+    command.capture = usable_capture(req);
+    if (command.capture == nullptr) return false;
+  }
+  return !(needs & NEEDS_BODY) || read_request_body(req, command.body);
 }
 
 //======================== Snapshot ========================
@@ -369,14 +396,10 @@ static bool matching_boot_baseline(httpd_req_t* req, const std::string& body, ui
                               !expected_boot_id.empty() && expected_boot_id.size() <= 10 &&
                               expected_boot_id.find_first_not_of("0123456789") == std::string::npos;
   if (!valid_baseline) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    send_json(req, "{\"error\":\"expected_boot_id must be a quoted boot identity\"}");
-    return false;
+    return send_error(req, "400 Bad Request", "expected_boot_id must be a quoted boot identity");
   }
   if (expected_boot_id != std::to_string(boot_id)) {
-    httpd_resp_set_status(req, "409 Conflict");
-    send_json(req, "{\"error\":\"Device already restarted; refresh and try again\"}");
-    return false;
+    return send_error(req, "409 Conflict", "Device already restarted; refresh and try again");
   }
   return true;
 }
@@ -583,27 +606,21 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
 }
 
 static esp_err_t handle_post_advertising(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
-  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  if (usable_capture(req) == nullptr) return ESP_OK;
-  std::string body;
-  if (!read_request_body(req, body)) return ESP_OK;
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return ESP_OK;
   bool on = false;
-  if (!json_extract_bool(body, "on", on)) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    return send_json(req, "{\"error\":\"on must be a boolean\"}");
+  if (!json_extract_bool(command.body, "on", on)) {
+    return reply_error(req, "400 Bad Request", "on must be a boolean");
   }
-  self->set_advertising(on);
+  static_cast<IRKWizardComponent*>(req->user_ctx)->set_advertising(on);
   return send_ok(req);
 }
 
 static esp_err_t handle_post_capture_start(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
-  // Without this the request is accepted and the page is told only that the
-  // start "failed", with advice to retry something that needs a reboot.
-  if (usable_capture(req) == nullptr) return ESP_OK;
+  // Without the capture check the request is accepted and the page is told only
+  // that the start "failed", with advice to retry something that needs a reboot.
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
   const auto start = static_cast<IRKWizardComponent*>(req->user_ctx)->start_capture();
   httpd_resp_set_status(req, "202 Accepted");
   return send_json(req, "{\"operation_id\":" + std::to_string(start.operation_id) +
@@ -611,11 +628,12 @@ static esp_err_t handle_post_capture_start(httpd_req_t* req) {
 }
 
 static esp_err_t handle_post_profile(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
+  // A failed capture component still accepts a profile change: switching
+  // profile and rebooting is the way out of a GATT table that will not register.
+  Command command;
+  if (!begin_command(req, NEEDS_BODY, command)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  std::string body;
-  if (!read_request_body(req, body)) return ESP_OK;
+  const std::string& body = command.body;
   std::string profile;
   bool keyboard = false;
   if (!json_extract_string(body, "profile", profile) || !parse_profile_name(profile, keyboard)) {
@@ -625,9 +643,8 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
   uint32_t boot_id = 0;
   if (!matching_boot_baseline(req, body, boot_id)) return ESP_OK;
   if (!self->try_begin_profile_change()) {
-    httpd_resp_set_status(req, "409 Conflict");
-    return send_json(req,
-                     "{\"error\":\"A profile change is already in progress; retry after reboot\"}");
+    return reply_error(req, "409 Conflict",
+                       "A profile change is already in progress; retry after reboot");
   }
   const auto requested =
       keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
@@ -645,26 +662,20 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
 }
 
 static esp_err_t handle_post_label(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
-  auto* capture = usable_capture(req);
-  if (capture == nullptr) return ESP_OK;
-  std::string body;
-  if (!read_request_body(req, body)) return ESP_OK;
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return ESP_OK;
   std::string label;
-  if (!json_extract_string(body, "label", label)) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    return send_json(req, "{\"error\":\"label must be a string\"}");
+  if (!json_extract_string(command.body, "label", label)) {
+    return reply_error(req, "400 Bad Request", "label must be a string");
   }
-  const std::string saved_label = capture->set_next_capture_label(label);
+  const std::string saved_label = command.capture->set_next_capture_label(label);
   return send_json(req, "{\"ok\":true,\"label\":\"" + json_escape(saved_label) + "\"}");
 }
 
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
-  auto* capture = usable_capture(req);
-  if (capture == nullptr) return ESP_OK;
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
+  auto* capture = command.capture;
   const auto result = capture->request_bond_clear();
   std::string json = bond_clear_json(result);
   json.pop_back();
@@ -676,37 +687,30 @@ static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
 }
 
 static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
-  auto* capture = usable_capture(req);
-  if (capture == nullptr) return ESP_OK;
-  std::string body;
-  if (!read_request_body(req, body)) return ESP_OK;
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return ESP_OK;
   bool enabled = false;
-  if (!json_extract_bool(body, "enabled", enabled)) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    return send_json(req, "{\"error\":\"enabled must be a boolean\"}");
+  if (!json_extract_bool(command.body, "enabled", enabled)) {
+    return reply_error(req, "400 Bad Request", "enabled must be a boolean");
   }
-  capture->set_stop_after_capture(enabled);
+  command.capture->set_stop_after_capture(enabled);
   return send_ok(req);
 }
 
 static esp_err_t handle_post_fresh_identity(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
-  if (usable_capture(req) == nullptr) return ESP_OK;
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
   static_cast<IRKWizardComponent*>(req->user_ctx)->fresh_identity();
   return send_ok(req);
 }
 
 static esp_err_t handle_post_reboot(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
+  // A reboot is how a failed component recovers, so it needs no usable one.
+  Command command;
+  if (!begin_command(req, NEEDS_BODY, command)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  std::string body;
-  if (!read_request_body(req, body)) return ESP_OK;
   uint32_t boot_id = 0;
-  if (!matching_boot_baseline(req, body, boot_id)) return ESP_OK;
+  if (!matching_boot_baseline(req, command.body, boot_id)) return ESP_OK;
   ESP_LOGI(TAG, "Reboot requested from the wizard");
   // Read the core identity, not the periodic snapshot, and finish sending the
   // acknowledgment before starting the reboot delay. A lost response can still

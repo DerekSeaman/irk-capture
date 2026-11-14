@@ -44,19 +44,30 @@ Usage pattern:
   }  // Mutex automatically released
   // Logging, NVS access, string formatting happen here (outside critical
 section)
+
+A timeout may be given for a lock that must not stall its caller:
+  MutexGuard lock(mutex, pdMS_TO_TICKS(200));
+  if (!lock.acquired()) return;  // Try again later
 */
 class MutexGuard {
  public:
-  explicit MutexGuard(SemaphoreHandle_t mutex) : mutex_(mutex) {
+  explicit MutexGuard(SemaphoreHandle_t mutex, TickType_t timeout = portMAX_DELAY)
+      : mutex_(mutex), acquired_(false) {
     if (mutex_) {
-      xSemaphoreTake(mutex_, portMAX_DELAY);
+      acquired_ = (xSemaphoreTake(mutex_, timeout) == pdTRUE);
     }
   }
 
   ~MutexGuard() {
-    if (mutex_) {
+    if (mutex_ && acquired_) {
       xSemaphoreGive(mutex_);
     }
+  }
+
+  // False if the wait timed out, or if there is no mutex. Always true for the
+  // default, unbounded wait on a real mutex.
+  bool acquired() const {
+    return acquired_;
   }
 
   // Disable copy and move
@@ -65,6 +76,7 @@ class MutexGuard {
 
  private:
   SemaphoreHandle_t mutex_;
+  bool acquired_;
 };
 
 }  // namespace irk_capture

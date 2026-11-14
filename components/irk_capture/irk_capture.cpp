@@ -370,11 +370,25 @@ static std::string to_hex_rev(const uint8_t* data, size_t len) {
   return out;
 }
 
-static std::string addr_to_str(const ble_addr_t& a) {
+// NimBLE stores an address little-endian; this prints it most significant byte first.
+static std::string mac_to_str(const uint8_t mac[6]) {
   char buf[18];
-  snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", a.val[5], a.val[4], a.val[3],
-           a.val[2], a.val[1], a.val[0]);
+  snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", mac[5], mac[4], mac[3], mac[2],
+           mac[1], mac[0]);
   return std::string(buf);
+}
+
+static std::string addr_to_str(const ble_addr_t& a) {
+  return mac_to_str(a.val);
+}
+
+// A BLE static random address: the top two bits of the most significant byte
+// (the last one, as NimBLE stores it) are 11. That is the only structural
+// requirement (Core Spec Vol 6, Part B, 1.3.2); the IEEE 802 unicast/multicast
+// bit does not apply to BLE. The result can never be all-zero.
+static void make_static_random_addr(uint8_t out[6]) {
+  esp_fill_random(out, 6);
+  out[5] |= 0xC0;
 }
 
 static bool addr_is_zero(const ble_addr_t& a) {
@@ -394,40 +408,13 @@ static bool is_encrypted(uint16_t conn_handle) {
   return false;
 }
 
-// Serialize BLE host control operations across ESPHome and NimBLE task
-// contexts.
+// Serializes BLE host control operations across the ESPHome and NimBLE tasks.
+// The same guard as MutexGuard; the name says which lock is being taken.
 //
-// Usage:
-//   BleOpGuard g(mutex_);                         // portMAX_DELAY (NimBLE callbacks)
-//   BleOpGuard g(mutex_, pdMS_TO_TICKS(200));     // timeout (ESPHome main loop)
-//   if (!g.acquired()) { ESP_LOGW(...); return; } // bail on timeout
-class BleOpGuard {
- public:
-  explicit BleOpGuard(SemaphoreHandle_t mutex, TickType_t timeout = portMAX_DELAY)
-      : mutex_(mutex), acquired_(false) {
-    if (mutex_) {
-      acquired_ = (xSemaphoreTake(mutex_, timeout) == pdTRUE);
-    }
-  }
-
-  ~BleOpGuard() {
-    if (mutex_ && acquired_) {
-      xSemaphoreGive(mutex_);
-    }
-  }
-
-  // Returns false if the mutex was not acquired (timed out).
-  bool acquired() const {
-    return acquired_;
-  }
-
-  BleOpGuard(const BleOpGuard&) = delete;
-  BleOpGuard& operator=(const BleOpGuard&) = delete;
-
- private:
-  SemaphoreHandle_t mutex_;
-  bool acquired_;
-};
+//   BleOpGuard g(ble_op_mutex_);            // waits without limit (NimBLE callbacks)
+//   BleOpGuard g(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));  // bounded
+//   if (!g.acquired()) { ...; return; }     // bail on timeout
+using BleOpGuard = MutexGuard;
 
 static void hr_measurement_sample(uint8_t* buf, size_t* len) {
   buf[0] = 0x00;  // Flags byte: bit0=0 (UINT8 format), bit1-2=0 (sensor contact
@@ -488,9 +475,7 @@ static void log_mac(const char* prefix) {
   uint8_t mac[6];
   uint8_t type;
   if (get_own_addr(mac, &type)) {
-    ble_addr_t addr {};
-    for (int i = 0; i < 6; ++i) addr.val[i] = mac[i];
-    ESP_LOGI(TAG, "%s MAC: %s (type=%u)", prefix, addr_to_str(addr).c_str(), type);
+    ESP_LOGI(TAG, "%s MAC: %s (type=%u)", prefix, mac_to_str(mac).c_str(), type);
   } else {
     ESP_LOGW(TAG, "%s MAC: unknown (could not read)", prefix);
   }
@@ -1588,10 +1573,7 @@ int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* e
   int rc = ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d);
   if (rc == 0) {
     const ble_addr_t* peer = &d.peer_id_addr;
-    ESP_LOGW(TAG,
-             "Repeat pairing from %02X:%02X:%02X:%02X:%02X:%02X (clearing "
-             "stale peer bond)",
-             peer->val[5], peer->val[4], peer->val[3], peer->val[2], peer->val[1], peer->val[0]);
+    ESP_LOGW(TAG, "Repeat pairing from %s (clearing stale peer bond)", addr_to_str(*peer).c_str());
     // NimBLE requires the application to delete the old bond before returning
     // RETRY. Returning RETRY after a failed delete would just re-enter the same
     // repeat-pairing check and can strand the peer in a timeout loop.
@@ -2389,7 +2371,7 @@ void IRKCaptureComponent::start_advertising() {
   bool address_initialized = false;
   bool recovered = false;
   {
-    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
     if (!ble_lock.acquired()) {
       handle_advertising_failure_(BLE_HS_EBUSY, host_generation, "BLE operation lock");
       return;
@@ -2402,8 +2384,7 @@ void IRKCaptureComponent::start_advertising() {
     }
     if (!address_ready) {
       uint8_t rnd[6];
-      esp_fill_random(rnd, sizeof(rnd));
-      rnd[5] |= 0xC0;
+      make_static_random_addr(rnd);
       operation = "random address setup";
       rc = ble_hs_id_set_rnd(rnd);
       {
@@ -2556,7 +2537,7 @@ void IRKCaptureComponent::stop_advertising() {
   bool still_active;
   bool lock_timeout = false;
   {
-    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
     if (!ble_lock.acquired()) {
       lock_timeout = true;
     } else {
@@ -2774,7 +2755,7 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
 
   int rc;
   {
-    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
     if (!ble_lock.acquired()) return;  // Retry on a later loop without log flooding.
     {
       MutexGuard lock(state_mutex_);
@@ -2789,8 +2770,7 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   const bool replace_address = rc == BLE_HS_EINVAL;
   uint8_t replacement[6];
   if (replace_address) {
-    esp_fill_random(replacement, sizeof(replacement));
-    replacement[5] |= 0xC0;  // Static random address, as in request_mac_rotation_()
+    make_static_random_addr(replacement);
   }
 
   bool aborted = false;
@@ -2827,8 +2807,7 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   }
   if (rc == 0) {
     log_mac("Effective");
-    ESP_LOGI(TAG, "MAC rotation complete: %02X:%02X:%02X:%02X:%02X:%02X", mac[5], mac[4], mac[3],
-             mac[2], mac[1], mac[0]);
+    ESP_LOGI(TAG, "MAC rotation complete: %s", mac_to_str(mac).c_str());
     // start_advertising() publishes the address only when it starts the radio.
     // With advertising off, the sensor would keep showing the previous address.
     publish_effective_mac();
@@ -2854,18 +2833,8 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
   // Pre-generate the new MAC address before taking mutex (esp_fill_random is
   // slow)
   uint8_t temp_mac[6];
-  esp_fill_random(temp_mac, sizeof(temp_mac));
-  // NimBLE uses little-endian: temp_mac[5] is the MSB (displayed first in
-  // XX:XX:XX:XX:XX:XX). BLE Static Random Address requirement (Core Spec
-  // Vol 6, Part B, §1.3.2): top two bits of MSB must be 11. That is the
-  // only structural constraint — the unicast/multicast bit (IEEE 802) does
-  // not apply to BLE addressing.
-  temp_mac[5] |=
-      0xC0;  // Set top two bits of MSB for static random address type (BLE spec requirement)
-  // Note: all-zero is impossible after setting 0xC0 on MSB (temp_mac[5] >=
-  // 0xC0)
-  ESP_LOGD(TAG, "Pre-generated MAC: %02X:%02X:%02X:%02X:%02X:%02X", temp_mac[5], temp_mac[4],
-           temp_mac[3], temp_mac[2], temp_mac[1], temp_mac[0]);
+  make_static_random_addr(temp_mac);
+  ESP_LOGD(TAG, "Pre-generated MAC: %s", mac_to_str(temp_mac).c_str());
 
   // THREAD-SAFE: Atomically update state machine and pending MAC buffer
   bool should_stop_adv;
@@ -2916,7 +2885,7 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     // Keep the GAP write and acceptance serialized with other name writes. A
     // newer no-op name or refresh may supersede us during the stack call; in
     // that case restore the accepted GAP value before releasing the BLE lock.
-    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
     if (!ble_lock.acquired()) {
       ESP_LOGW(TAG, "update_ble_name: ble_op_mutex timeout, name update skipped");
       MutexGuard lock(state_mutex_);
@@ -2958,7 +2927,7 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     int rc = 0;
     bool terminate_started = false;
     {
-      BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+      BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
       if (ble_lock.acquired()) {
         rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
         // EALREADY means the asynchronous termination is already in progress;
@@ -3078,7 +3047,7 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
     if (profile == BLEProfile::KEYBOARD) {
       // Keyboard profile uses fixed name "Logitech K380"
       if (ble_name_text_) {
-        ble_name_text_->publish_state("Logitech K380");
+        ble_name_text_->publish_state(KEYBOARD_DEFAULT_NAME);
       }
     } else {
       // Heart Sensor profile restores the configured name
@@ -3579,7 +3548,7 @@ bool IRKCaptureComponent::handle_connection_timeout_(uint32_t now) {
   int rc = BLE_HS_EBUSY;
   bool acquired;
   {
-    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(200));
+    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
     acquired = ble_lock.acquired();
     {
       MutexGuard lock(state_mutex_);
@@ -3893,16 +3862,14 @@ void IRKCaptureComponent::publish_effective_mac() {
 
   uint8_t mac[6];
   if (get_own_addr(mac, nullptr)) {
-    char mac_str[18];
-    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X", mac[5], mac[4], mac[3],
-             mac[2], mac[1], mac[0]);
+    const std::string mac_str = mac_to_str(mac);
     // Stage only; drained on the main task in loop().
     {
       MutexGuard lock(state_mutex_);
       pending_effmac_ = mac_str;
       pending_effmac_pub_ = true;
     }
-    ESP_LOGD(TAG, "Staged effective MAC: %s", mac_str);
+    ESP_LOGD(TAG, "Staged effective MAC: %s", mac_str.c_str());
   } else {
     // The sensor keeps its previous value, which may no longer be the address in use.
     ESP_LOGW(TAG, "Own BLE address could not be read; ESP32 BLE MAC sensor not updated");
