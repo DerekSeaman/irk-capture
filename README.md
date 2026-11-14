@@ -372,6 +372,8 @@ This ESPHome IRK capture component has been successfully tested with:
 
 This is most common on some Android devices and happens when you input the captured IRK into the Private BLE Device field. This happens because Home Assistant can’t see the corresponding BLE device that matches the IRK. Some Android devices only broadcast BLE beacons very infrequently. This means Home Assistant may not have recently seen the BLE device, thus it can’t match the IRK. Unfortunately the solution to this is very device and OS specific, and may not be solvable. I suggest Googling your device and see if any settings can be changed to increase the frequency of the BLE advertising.
 
+For Android phones, you can try the following: Settings -> Companion app -> manage sensors -> BLE Transmitter. Set transmit power to high and use low latency mode. This will increase the frequency of the BLE advertising and may allow Home Assistant to see the BLE device.
+
 ### ESP32 Device Name Not Appearing in Bluetooth Settings
 
 - **Turn off Bluetooth** on your device
