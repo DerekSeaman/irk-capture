@@ -20,7 +20,7 @@ h1{font-size:20px;margin:0 0 4px}
 .pill.advertising{background:#28323a;color:var(--accent)}
 .pill.pairing,.pill.capturing,.pill.rebooting{background:#3a2f1b;color:var(--amber)}
 .pill.captured,.pill.ready{background:#1c3626;color:var(--green)}
-.pill.no_irk{background:#3a2320;color:var(--red)}
+.pill.no_irk,.pill.failed{background:#3a2320;color:var(--red)}
 .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 select,input[type=text]{width:100%;background:var(--surf2);border:1px solid var(--border);color:var(--ink1);
 border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit}
@@ -219,6 +219,7 @@ var refreshAgain = false;
 var failCount = 0;
 var pendingReboot = null;
 var wizardProfileReady = false;
+var seenIdentityOp = null; // last identity-refresh operation already reported
 var statusError = null;   // text of a status-poll error now on display, if any
 var loggedPageError = null;
 var REQUEST_TIMEOUT_MS = 5000;
@@ -549,7 +550,7 @@ el('stopAfterSwitch').addEventListener('click',function(){
 });
 
 /* ---------- rendering ---------- */
-var KNOWN=['idle','advertising','pairing','capturing','captured','no_irk','rebooting','ready'];
+var KNOWN=['idle','advertising','pairing','capturing','captured','no_irk','failed','rebooting','ready'];
 function setPill(node,status){
   var label=status==='no_irk' ? 'No IRK' : (status==='rebooting' ? 'Rebooting…' : String(status || 'idle'));
   node.textContent=label.charAt(0).toUpperCase()+label.slice(1);
@@ -582,6 +583,16 @@ function render(d){
   el('advBtn').textContent = d.advertising ? 'Stop Advertising' : 'Start Advertising';
   el('advBtn').dataset.on = d.advertising ? '1' : '0';
   el('stopAfterSwitch').classList.toggle('on', !!d.stop_after_capture);
+
+  // A rotation runs after its request was acknowledged, so its failure can
+  // only arrive here. A failure from before this page loaded is not replayed.
+  var identity=d.identity_refresh;
+  if(identity && typeof identity.operation_id==='number'){
+    var failedOp=identity.state==='failed' ? identity.operation_id : 0;
+    if(seenIdentityOp!==null && failedOp && failedOp!==seenIdentityOp)
+      showError(new Error('The ESP32 could not change its Bluetooth identity and is still using its previous name and address. Try Refresh BLE Identity again.'));
+    seenIdentityOp=failedOp || (seenIdentityOp===null ? 0 : seenIdentityOp);
+  }
 
   var history=[];
   // The device sends history as a real JSON array, not a string.
@@ -661,6 +672,9 @@ function render(d){
     } else if(d.status==='no_irk'){
       hint.textContent='Your device paired but did not hand over an identity key. '+
         'Forget this device in its Bluetooth settings, then go back a step and try again.';
+    } else if(d.status==='failed'){
+      hint.textContent='Pairing did not complete. Forget this device in its Bluetooth settings, '+
+        'then go back a step and try again.';
     } else if(d.status==='pairing'||d.status==='capturing'){
       hint.textContent='Your device is connected - finishing the key exchange. Do not touch anything.';
     } else if(!d.advertising){
@@ -687,6 +701,7 @@ function refresh(){
       if(lastData && d.boot_id!==lastData.boot_id){
         hideClearMessage('forgetDone'); hideClearMessage('panelForgetDone');
         if(!pendingReboot) wizardProfileReady=false;
+        seenIdentityOp=null;  // Operation numbers start again after a reboot.
       }
       if(pendingReboot && pendingReboot.confirming){
         if(d.boot_id!==pendingReboot.boot_id){

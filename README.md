@@ -215,7 +215,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Device BLE MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
 | **ESP32 BLE MAC** | Text Sensor | Current Bluetooth MAC address being advertised by the ESP32 |
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
-| **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, or `no_irk` |
+| **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, `no_irk`, or `failed` |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information and restores the default BLE name |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
 | **Internal Temp** | Sensor | ESP32 internal temperature (diagnostic) |
@@ -244,8 +244,9 @@ If advertising fails to start, the ESP32 keeps retrying on its own, quickly at f
 | `capturing` | Encrypted, reading the identity key from the bond store |
 | `captured` | A key was just captured (or the device was deliberately re-paired) |
 | `no_irk` | Pairing completed but the peer sent no identity key - see the IRK sensor |
+| `failed` | Pairing ended without a result, or Bluetooth did not start - see the device log |
 
-`captured` and `no_irk` stay on screen for a few seconds so you don't miss them. A device you already captured that reconnects in the background won't replace the result you're looking at.
+`captured`, `no_irk` and `failed` stay on screen for a few seconds so you don't miss them. A device you already captured that reconnects in the background won't replace the result you're looking at.
 
 ## Optional: Home Assistant Events and MQTT Publishing
 

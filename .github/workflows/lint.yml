@@ -211,6 +211,22 @@ jobs:
             assert(w.locked(near_wrap + 0x200));  // just after it
             assert(!w.locked(near_wrap + AuthThrottle::LOCKOUT_MS));
 
+            // one throttle per client: a guesser locks out only itself, a
+            // locked client keeps its slot, and when every slot is locked
+            // further clients share the overflow throttle
+            ClientThrottles table;
+            for (uint32_t key = 1; key <= 4; key++) {
+              for (int i = 0; i < 5; i++) table.for_client(key, 1000).fail(1000);
+            }
+            assert(table.for_client(1, 1000).locked(1000));
+            assert(&table.for_client(5, 1000) == &table.overflow);
+            assert(!table.overflow.locked(1000));
+            assert(table.for_client(4, 1000).locked(1000));
+            const uint32_t later = 1000 + AuthThrottle::LOCKOUT_MS;
+            table.for_client(2, later + 1);
+            assert(&table.for_client(6, later + 2) == &table.slots[0].throttle);
+            assert(table.slots[0].key == 6 && table.slots[0].throttle.failures == 0);
+
             printf("wizard_util: all assertions passed\n");
             return 0;
           }

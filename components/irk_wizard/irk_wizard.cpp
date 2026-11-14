@@ -4,6 +4,8 @@
 
 #include <cstring>
 
+#include <lwip/sockets.h>
+
 #include "esphome/components/irk_capture/mutex_guard.h"
 #include "esphome/components/network/util.h"
 #if defined(USE_WIFI) && defined(USE_WIFI_AP)
@@ -38,6 +40,34 @@ static esp_err_t send_unauthorized(httpd_req_t* req) {
   return httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
 }
 
+// Identifies the client by its address, for the per-client login throttle.
+// Returns 0, a key every unidentified client shares, if the address cannot be
+// read; that degrades to one shared throttle rather than to none.
+static uint32_t client_key(httpd_req_t* req) {
+  struct sockaddr_storage address {};
+  socklen_t length = sizeof(address);
+  if (getpeername(httpd_req_to_sockfd(req), (struct sockaddr*) &address, &length) != 0) return 0;
+  const uint8_t* bytes;
+  size_t count;
+  if (address.ss_family == AF_INET) {
+    bytes = (const uint8_t*) &((const struct sockaddr_in*) &address)->sin_addr;
+    count = 4;
+#if LWIP_IPV6
+    // lwIP only has IPv6 types when the build enables IPv6 (network:
+    // enable_ipv6). This also covers an IPv4 client on a dual-stack socket
+    // (::ffff:a.b.c.d).
+  } else if (address.ss_family == AF_INET6) {
+    bytes = (const uint8_t*) &((const struct sockaddr_in6*) &address)->sin6_addr;
+    count = 16;
+#endif
+  } else {
+    return 0;
+  }
+  uint32_t hash = 2166136261u;  // FNV-1a
+  for (size_t i = 0; i < count; i++) hash = (hash ^ bytes[i]) * 16777619u;
+  return hash != 0 ? hash : 1;
+}
+
 // Returns true when the request may proceed. On failure it has already sent
 // the response, so the handler must just return ESP_OK.
 static bool authorized(httpd_req_t* req) {
@@ -50,10 +80,10 @@ static bool authorized(httpd_req_t* req) {
     return false;
   }
 
-  // Requests are handled one at a time on httpd's task, so the throttle
-  // needs no locking.
-  AuthThrottle& throttle = self->auth_throttle();
+  // Requests are handled one at a time on httpd's task, so the throttles
+  // need no locking.
   const uint32_t now = millis();
+  AuthThrottle& throttle = self->client_throttles().for_client(client_key(req), now);
   if (throttle.locked(now)) {
     httpd_resp_set_status(req, "429 Too Many Requests");
     httpd_resp_send(req, "Too many failed attempts, try again shortly", HTTPD_RESP_USE_STRLEN);
@@ -276,6 +306,7 @@ void IRKWizardComponent::refresh_snapshot_() {
   next.stop_after_capture = core.stop_after_capture;
   next.capture_result = core.capture_result;
   next.bond_clear = core.bond_clear;
+  next.identity_refresh = core.identity_refresh;
 
   MutexGuard lock(snapshot_mutex_);
   snapshot_ = std::move(next);
@@ -531,7 +562,10 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
           ",\"state\":\"" + capture_start_state_name(s.capture_start.state) +
           "\",\"boot_id\":" + std::to_string(s.capture_start.boot_id) +
           ",\"sequence\":" + std::to_string(s.capture_start.sequence) + "},";
-  tail += "\"bond_clear\":" + bond_clear_json(s.bond_clear);
+  tail += "\"bond_clear\":" + bond_clear_json(s.bond_clear) + ",";
+  tail +=
+      "\"identity_refresh\":{\"operation_id\":" + std::to_string(s.identity_refresh.operation_id) +
+      ",\"state\":\"" + irk_capture::identity_refresh_state_name(s.identity_refresh.state) + "\"}";
   tail += "}";
 
   // Sent in pieces. The history can reach tens of kilobytes, and joining it

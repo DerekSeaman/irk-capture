@@ -70,6 +70,7 @@ struct WizardSnapshot {
   bool stop_after_capture { false };
   irk_capture::CaptureResult capture_result;
   irk_capture::BondClearResult bond_clear;
+  irk_capture::IdentityRefreshResult identity_refresh;
   CaptureStart capture_start;
 };
 
@@ -145,8 +146,8 @@ class IRKWizardComponent : public Component {
   size_t page_size() const {
     return page_size_;
   }
-  AuthThrottle& auth_throttle() {
-    return auth_throttle_;
+  ClientThrottles& client_throttles() {
+    return client_throttles_;
   }
   const std::string& expected_auth() const {
     return expected_auth_;
@@ -170,7 +171,7 @@ class IRKWizardComponent : public Component {
   uint16_t port_ { 8080 };
   const uint8_t* page_data_ { nullptr };
   size_t page_size_ { 0 };
-  AuthThrottle auth_throttle_;
+  ClientThrottles client_throttles_;
   std::string expected_auth_;  // "Basic <base64>"; empty refuses every request
   std::atomic<uint32_t> last_request_ms_ { 0 };
   std::atomic<bool> profile_change_pending_ { false };

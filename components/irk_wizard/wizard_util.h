@@ -110,6 +110,55 @@ struct AuthThrottle {
   }
 };
 
+// One throttle per client address, so a host guessing passwords locks out only
+// itself. A single shared throttle let any host on the network keep everyone
+// out indefinitely with five bad requests every thirty seconds.
+//
+// The table is small on purpose. When it is full, the least recently seen
+// client that is not locked out gives up its slot. A locked-out client keeps
+// its slot until the lockout ends, so a guesser cannot clear its own lockout
+// by sending requests from more addresses; if every slot is locked, further
+// clients share one overflow throttle.
+struct ClientThrottles {
+  static constexpr size_t SLOTS = 4;
+
+  struct Slot {
+    bool used { false };
+    uint32_t key { 0 };
+    uint32_t last_seen { 0 };
+    AuthThrottle throttle;
+  };
+  Slot slots[SLOTS];
+  AuthThrottle overflow;
+
+  AuthThrottle& for_client(uint32_t key, uint32_t now) {
+    Slot* target = nullptr;
+    for (auto& slot : slots) {
+      if (slot.used && slot.key == key) {
+        slot.last_seen = now;
+        return slot.throttle;
+      }
+      if (!slot.used && target == nullptr) target = &slot;
+    }
+    if (target == nullptr) {
+      for (auto& slot : slots) {
+        if (slot.throttle.locked(now)) continue;
+        // Wraparound-safe "seen longer ago".
+        if (target == nullptr ||
+            (uint32_t) (now - slot.last_seen) > (uint32_t) (now - target->last_seen)) {
+          target = &slot;
+        }
+      }
+    }
+    if (target == nullptr) return overflow;
+    *target = Slot {};
+    target->used = true;
+    target->key = key;
+    target->last_seen = now;
+    return target->throttle;
+  }
+};
+
 //======================== Minimal JSON ========================
 // The page sends one small, flat JSON object per request, and these helpers
 // read one top-level member of it. They walk the object instead of searching

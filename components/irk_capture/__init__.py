@@ -86,7 +86,9 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_BLE_NAME, default="IRK Capture"): validate_ble_name,
             cv.Optional(CONF_START_ON_BOOT, default=True): cv.boolean,
             cv.Optional(CONF_CONTINUOUS_MODE, default=True): cv.boolean,
-            cv.Optional(CONF_MAX_CAPTURES, default=10): cv.int_range(min=0, max=255),
+            # 64 is far more than one session needs, and it bounds the memory
+            # the capture history and the wizard's status response can use.
+            cv.Optional(CONF_MAX_CAPTURES, default=10): cv.int_range(min=0, max=64),
             # Fires once per genuine capture or re-pair with the IRK and the
             # device's identity MAC; never for background reconnects.
             cv.Optional(CONF_ON_CAPTURE): automation.validate_automation(

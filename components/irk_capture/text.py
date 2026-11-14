@@ -18,8 +18,19 @@ def capture_label_max_len():
     The firmware trims a label to that length, so the entity must offer the
     same limit. Reading it keeps one definition instead of a copy that drifts.
     """
-    header = (Path(__file__).parent / "irk_capture.h").read_text()
-    return int(re.search(r"\bCAPTURE_LABEL_MAX_LEN = (\d+);", header).group(1))
+    path = Path(__file__).parent / "irk_capture.h"
+    try:
+        header = path.read_text()
+    except OSError as err:
+        raise cv.Invalid(f"irk_capture cannot read {path}: {err}") from err
+    match = re.search(r"\bCAPTURE_LABEL_MAX_LEN = (\d+);", header)
+    if match is None:
+        # Without this the build stops on "'NoneType' object has no attribute
+        # 'group'", which says nothing about what to fix.
+        raise cv.Invalid(
+            f"irk_capture: CAPTURE_LABEL_MAX_LEN is not defined as a number in {path}"
+        )
+    return int(match.group(1))
 
 
 IRKCaptureText = irk_capture_ns.class_("IRKCaptureText", text.Text, cg.Component)

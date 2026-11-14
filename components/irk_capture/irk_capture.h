@@ -68,6 +68,31 @@ struct BondClearResult {
   bool history_cleared { false };
 };
 
+// Outcome of the latest address rotation (Refresh BLE Identity, or the one a
+// name change triggers). A rotation runs after its request has returned, so
+// this is the only way a caller learns whether it took effect.
+enum class IdentityRefreshState : uint8_t { IDLE, PENDING, SUCCEEDED, FAILED };
+
+// The name a state has in the wizard's JSON; part of its HTTP contract.
+inline const char* identity_refresh_state_name(IdentityRefreshState state) {
+  switch (state) {
+    case IdentityRefreshState::PENDING:
+      return "pending";
+    case IdentityRefreshState::SUCCEEDED:
+      return "succeeded";
+    case IdentityRefreshState::FAILED:
+      return "failed";
+    case IdentityRefreshState::IDLE:
+      break;
+  }
+  return "idle";
+}
+
+struct IdentityRefreshResult {
+  uint32_t operation_id { 0 };
+  IdentityRefreshState state { IdentityRefreshState::IDLE };
+};
+
 // BLE advertising profile options
 enum class BLEProfile : uint8_t {
   HEART_SENSOR = 0,  // Heart Rate Sensor
@@ -224,6 +249,7 @@ struct SessionState {
   bool stop_after_capture { false };
   CaptureResult capture_result;
   BondClearResult bond_clear;
+  IdentityRefreshResult identity_refresh;
 };
 
 // Free-function helpers (external linkage). Definitions live in the .cpp.
@@ -349,7 +375,7 @@ class IRKCaptureComponent : public Component {
   static int gap_event_handler(struct ble_gap_event* event, void* arg);
 
   // Sensor publishing helper
-  void publish_irk_to_sensors(const std::string& irk_hex, const char* addr_str,
+  void publish_irk_to_sensors(const std::string& irk_hex, const std::string& addr_str,
                               uint32_t connection_generation = 0, bool capture_event = false,
                               bool stop_after_result = false);
   void publish_effective_mac();
@@ -424,6 +450,12 @@ class IRKCaptureComponent : public Component {
   bool sec_retry_done_ { false };
   uint32_t sec_init_time_ms_ { 0 };
   uint32_t adv_restart_time_ { 0 };  // When to restart advertising after a hold-off; 0 = none
+  // When to retry a stop that could not get ble_op_mutex_; 0 = no retry pending.
+  uint32_t adv_stop_retry_time_ { 0 };
+  // When the Bluetooth host began to be unsynced (boot or a host reset); 0 once
+  // it syncs. Lets a host that never comes up be reported instead of ignored.
+  uint32_t host_wait_since_ { 0 };
+  uint32_t host_wait_log_time_ { 0 };  // Last stall report; 0 = not reported yet
   uint8_t advertising_start_attempts_ { 0 };
   uint32_t advertising_failure_log_time_ { 0 };
   bool random_address_ready_ { false };
@@ -431,6 +463,7 @@ class IRKCaptureComponent : public Component {
 
   // IRK polling state
   bool irk_gave_up_ { false };
+  bool irk_read_error_logged_ { false };  // One bond-read warning per connection
   uint32_t irk_last_try_ms_ { 0 };
 
   // MAC rotation state machine (non-blocking event-driven implementation)
@@ -450,7 +483,7 @@ class IRKCaptureComponent : public Component {
     std::string irk_hex;
     std::string mac_addr;
     uint8_t addr_type { 0 };
-    uint32_t last_published_ms { 0 };
+    uint64_t last_published_ms { 0 };  // 64-bit so the republish interval never wraps
     uint32_t last_observed_generation { 0 };
     uint16_t reconnect_count { 0 };
     bool reconnect_limit_reported { false };
@@ -458,21 +491,20 @@ class IRKCaptureComponent : public Component {
     bool in_history { true };  // History can be cleared without losing deduplication
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
-  // Most entries irk_cache_ holds before the oldest is evicted. The floor
-  // keeps reconnect deduplication working with a small max_captures. Unlimited
-  // mode (max_captures 0) has no capture limit to size from, so it keeps the
-  // most recent UNLIMITED_CACHE_ENTRIES devices; an evicted device that
-  // returns is treated as new.
-  static constexpr size_t MIN_CACHE_ENTRIES = 10;
-  static constexpr size_t UNLIMITED_CACHE_ENTRIES = 32;
+  // Most entries irk_cache_ holds before the oldest is evicted. The floor is
+  // well above the default capture limit on purpose: advertising can be turned
+  // back on after the limit is reached, and devices captured then must not
+  // push earlier ones out of the history. An evicted device that returns is
+  // treated as new. Unlimited mode (max_captures 0) uses the floor.
+  static constexpr size_t MIN_CACHE_ENTRIES = 32;
   size_t cache_limit_() const {
-    if (max_captures_ == 0) return UNLIMITED_CACHE_ENTRIES;
     return max_captures_ > MIN_CACHE_ENTRIES ? max_captures_ : MIN_CACHE_ENTRIES;
   }
   uint32_t capture_events_ { 0 };      // IRK publications this session
   uint32_t unique_devices_ { 0 };      // New identity addresses this session
   uint32_t pairing_start_time_ { 0 };  // Global pairing timeout
   CaptureResult capture_result_;
+  IdentityRefreshResult identity_refresh_result_;
   uint32_t capture_result_generation_ { 0 };  // Coalesces accepted successful results
   // on_capture fires once per capture_result_.sequence; main task only.
   std::vector<Trigger<std::string, std::string>*> capture_triggers_;
@@ -510,7 +542,9 @@ class IRKCaptureComponent : public Component {
   std::string last_status_value_;
   // Terminal status belongs to last_result_generation_, just like the IRK
   // sensor. NONE also covers ordinary bonded reconnects (no capture event).
-  enum class CaptureStatus { NONE, CAPTURED, NO_IRK };
+  // FAILED: a pairing ended without a result (encryption failed, or the IRK
+  // never became readable). It is shown for the hold period only.
+  enum class CaptureStatus { NONE, CAPTURED, NO_IRK, FAILED };
   CaptureStatus capture_status_ { CaptureStatus::NONE };
   uint32_t status_result_hold_until_ { 0 };
 
@@ -583,7 +617,9 @@ class IRKCaptureComponent : public Component {
   //           connection_timeout_,
   //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
   //           every pending_* staging field, stop_after_capture_, next_capture_label_,
-  //           last_result_generation_, capture_status_, status_result_hold_until_
+  //           last_result_generation_, capture_status_, status_result_hold_until_,
+  //           adv_stop_retry_time_, host_wait_since_, host_wait_log_time_,
+  //           irk_read_error_logged_, identity_refresh_result_
   // Not protected, because only the main task touches them: last_loop_,
   // last_notify_, last_status_value_, fired_capture_sequence_, capture_triggers_.
   SemaphoreHandle_t state_mutex_ { nullptr };
@@ -615,6 +651,11 @@ class IRKCaptureComponent : public Component {
   // connection the result was read for. Safe from the NimBLE and main tasks.
   void close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
                            const char* context);
+  // Disconnects with a bounded wait for ble_op_mutex_; see the definition.
+  void terminate_bounded_(uint16_t conn_handle, const char* context);
+  // Shows Status "failed" for a pairing that ended without a result.
+  void report_capture_failure_(uint32_t connection_generation);
+  void report_host_stall_(uint32_t now);  // Main task only
   bool should_publish_irk(const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
                           uint32_t connection_generation, bool force_pairing_publish,
                           PublishDecision& out_decision);
