@@ -292,6 +292,9 @@ function pageError(e){
   }
   showStatusError('This page hit an unexpected error and may be out of date. Reload it; if it continues, please report it.');
 }
+// Anything nothing else caught, including a rejected promise from a control.
+window.addEventListener('error',function(ev){ pageError(ev.error || ev.message); });
+window.addEventListener('unhandledrejection',function(ev){ pageError(ev.reason); });
 function post(url,body,beforeSend){
   // Preserve user control order, especially START followed by Stop or Back.
   var request=writeQueue.then(async function(){
@@ -570,10 +573,7 @@ function updateClearStatus(d){
   }
 }
 
-function render(d){
-  var advName = d.advertised_name || '-';
-
-  /* panel */
+function renderPanel(d,advName){
   el('profileName').textContent = d.profile || '-';
   setPill(el('statusPill'), pendingReboot ? 'rebooting' : d.status);
   el('advName').textContent = advName;
@@ -583,9 +583,10 @@ function render(d){
   el('advBtn').textContent = d.advertising ? 'Stop Advertising' : 'Start Advertising';
   el('advBtn').dataset.on = d.advertising ? '1' : '0';
   el('stopAfterSwitch').classList.toggle('on', !!d.stop_after_capture);
-
-  // A rotation runs after its request was acknowledged, so its failure can
-  // only arrive here. A failure from before this page loaded is not replayed.
+}
+// A rotation runs after its request was acknowledged, so its failure can
+// only arrive here. A failure from before this page loaded is not replayed.
+function reportIdentityFailure(d){
   var identity=d.identity_refresh;
   if(identity && typeof identity.operation_id==='number'){
     var failedOp=identity.state==='failed' ? identity.operation_id : 0;
@@ -593,7 +594,8 @@ function render(d){
       showError(new Error('The ESP32 could not change its Bluetooth identity and is still using its previous name and address. Try Refresh BLE Identity again.'));
     seenIdentityOp=failedOp || (seenIdentityOp===null ? 0 : seenIdentityOp);
   }
-
+}
+function renderHistory(d){
   var history=[];
   // The device sends history as a real JSON array, not a string.
   if(Array.isArray(d.history)) history=d.history;
@@ -627,6 +629,68 @@ function render(d){
       });
     }
   }
+}
+// Follows the capture this page started. Returns true once its key has been
+// accepted; the caller then moves the wizard on to the result step.
+function advanceCapture(d){
+  var attempt=captureAttempt;
+  if(awaitingCapture && attempt && attempt.operation_id!==null){
+    var start=d.capture_start;
+    if(d.boot_id!==attempt.boot_id){
+      captureFailed('Device rebooted. Go back a step and start pairing again.');
+    } else if(start && newer(start.operation_id,attempt.operation_id)){
+      captureFailed('Another capture request replaced this one. Go back a step to start again.');
+    } else if(start && start.operation_id===attempt.operation_id){
+      if(start.state==='ready' && start.boot_id===attempt.boot_id){
+        attempt.baseline=start.sequence;
+        var result=d.capture_result;
+        if(result && result.boot_id===attempt.boot_id && newer(result.sequence,attempt.baseline) &&
+           /^[0-9a-f]{32}$/i.test(result.irk || '')){
+          // Freeze the accepted key and MAC; later captures and failures belong
+          // to subsequent runs, even when the browser missed the status hold.
+          acceptedCapture={boot_id:result.boot_id,sequence:result.sequence,irk:result.irk,device_mac:result.device_mac};
+          cancelCapture(false); return true;
+        }
+      } else if(start.state==='cancelled' || start.state==='failed'){
+        captureFailed('Capture start was '+start.state+'. Go back a step and try again.');
+      }
+    }
+  }
+  return false;
+}
+function renderCaptureHint(d){
+  var hint=el('wizHint');
+  if(!awaitingCapture || !captureAttempt || captureAttempt.baseline===null){
+    hint.textContent=captureMessage;
+  } else if(d.status==='no_irk'){
+    hint.textContent='Your device paired but did not hand over an identity key. '+
+      'Forget this device in its Bluetooth settings, then go back a step and try again.';
+  } else if(d.status==='failed'){
+    hint.textContent='Pairing did not complete. Forget this device in its Bluetooth settings, '+
+      'then go back a step and try again.';
+  } else if(d.status==='pairing'||d.status==='capturing'){
+    hint.textContent='Your device is connected - finishing the key exchange. Do not touch anything.';
+  } else if(!d.advertising){
+    hint.textContent='Advertising is off. Go back a step and press "Next: Start Pairing".';
+  } else {
+    hint.textContent='Waiting for your device to connect. Keep this page open.';
+  }
+}
+function renderCaptureStep(d,advName){
+  setPill(el('wizPill'), pendingReboot ? 'rebooting' : d.status);
+  el('wizAdvName').textContent = advName;
+  // Android watches pair through the Heart Sensor profile only.
+  el('gearTip').classList.toggle('hide', d.profile !== 'Heart Sensor');
+  var ol=el('wizSteps'); ol.textContent='';
+  pairSteps().forEach(function(t){
+    var li=document.createElement('li'); li.textContent=t; ol.appendChild(li);
+  });
+}
+function render(d){
+  var advName = d.advertised_name || '-';
+  renderPanel(d,advName);
+  reportIdentityFailure(d);
+  renderHistory(d);
 
   /* wizard */
   if(wizStep===0) return;
@@ -635,58 +699,29 @@ function render(d){
     el('wizLabel').value = d.next_capture_label;
 
   if(wizStep===4){
-    setPill(el('wizPill'), pendingReboot ? 'rebooting' : d.status);
-    el('wizAdvName').textContent = advName;
-    // Android watches pair through the Heart Sensor profile only.
-    el('gearTip').classList.toggle('hide', d.profile !== 'Heart Sensor');
-    var ol=el('wizSteps'); ol.textContent='';
-    pairSteps().forEach(function(t){
-      var li=document.createElement('li'); li.textContent=t; ol.appendChild(li);
-    });
-    var hint=el('wizHint');
-    var attempt=captureAttempt;
-    if(awaitingCapture && attempt && attempt.operation_id!==null){
-      var start=d.capture_start;
-      if(d.boot_id!==attempt.boot_id){
-        captureFailed('Device rebooted. Go back a step and start pairing again.');
-      } else if(start && newer(start.operation_id,attempt.operation_id)){
-        captureFailed('Another capture request replaced this one. Go back a step to start again.');
-      } else if(start && start.operation_id===attempt.operation_id){
-        if(start.state==='ready' && start.boot_id===attempt.boot_id){
-          attempt.baseline=start.sequence;
-          var result=d.capture_result;
-          if(result && result.boot_id===attempt.boot_id && newer(result.sequence,attempt.baseline) &&
-             /^[0-9a-f]{32}$/i.test(result.irk || '')){
-            // Freeze the accepted key and MAC; later captures and failures belong
-            // to subsequent runs, even when the browser missed the status hold.
-            acceptedCapture={boot_id:result.boot_id,sequence:result.sequence,irk:result.irk,device_mac:result.device_mac};
-            cancelCapture(false); wizGo(5); return;
-          }
-        } else if(start.state==='cancelled' || start.state==='failed'){
-          captureFailed('Capture start was '+start.state+'. Go back a step and try again.');
-        }
-      }
-    }
-    if(!awaitingCapture || !captureAttempt || captureAttempt.baseline===null){
-      hint.textContent=captureMessage;
-    } else if(d.status==='no_irk'){
-      hint.textContent='Your device paired but did not hand over an identity key. '+
-        'Forget this device in its Bluetooth settings, then go back a step and try again.';
-    } else if(d.status==='failed'){
-      hint.textContent='Pairing did not complete. Forget this device in its Bluetooth settings, '+
-        'then go back a step and try again.';
-    } else if(d.status==='pairing'||d.status==='capturing'){
-      hint.textContent='Your device is connected - finishing the key exchange. Do not touch anything.';
-    } else if(!d.advertising){
-      hint.textContent='Advertising is off. Go back a step and press "Next: Start Pairing".';
-    } else {
-      hint.textContent='Waiting for your device to connect. Keep this page open.';
-    }
+    renderCaptureStep(d,advName);
+    // wizGo() draws the result step itself, so there is nothing left to do here.
+    if(advanceCapture(d)){ wizGo(5); return; }
+    renderCaptureHint(d);
   }
 
   if(wizStep===5 && acceptedCapture) el('wizIrk').textContent = acceptedCapture.irk;
 }
 
+// Settles a reboot this page asked for, from a status the device has just sent.
+function confirmPendingReboot(d){
+  if(!pendingReboot || !pendingReboot.confirming) return;
+  if(d.boot_id!==pendingReboot.boot_id){
+    if(pendingReboot.profile && d.profile!==pendingReboot.profile)
+      showError(new Error('The device restarted, but the selected profile was not applied. Please select the target device type again.'));
+    else if(pendingReboot.fromWizard) wizardProfileReady=true;
+    pendingReboot=null;
+  }else if(Date.now()-pendingReboot.started>=REBOOT_WARNING_MS){
+    var retry=pendingReboot.profile ? 'Please select the target device type again.' : 'Please try Reboot ESP32 again.';
+    pendingReboot=null;
+    showError(new Error('The device is reachable, but a reboot could not be confirmed. '+retry));
+  }
+}
 function refresh(){
   // Browser suspension and manual refreshes can overlap interval polls. Keep one
   // in flight and discard snapshots that predate a completed control request.
@@ -703,18 +738,7 @@ function refresh(){
         if(!pendingReboot) wizardProfileReady=false;
         seenIdentityOp=null;  // Operation numbers start again after a reboot.
       }
-      if(pendingReboot && pendingReboot.confirming){
-        if(d.boot_id!==pendingReboot.boot_id){
-          if(pendingReboot.profile && d.profile!==pendingReboot.profile)
-            showError(new Error('The device restarted, but the selected profile was not applied. Please select the target device type again.'));
-          else if(pendingReboot.fromWizard) wizardProfileReady=true;
-          pendingReboot=null;
-        }else if(Date.now()-pendingReboot.started>=REBOOT_WARNING_MS){
-          var retry=pendingReboot.profile ? 'Please select the target device type again.' : 'Please try Reboot ESP32 again.';
-          pendingReboot=null;
-          showError(new Error('The device is reachable, but a reboot could not be confirmed. '+retry));
-        }
-      }
+      confirmPendingReboot(d);
       failCount=0;
       lastData=d;
       // A good poll retires the previous poll's error, unless a control has

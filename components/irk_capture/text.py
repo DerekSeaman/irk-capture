@@ -6,6 +6,7 @@ import re
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import text
+from esphome.core import EsphomeError
 
 from . import CONF_BLE_NAME, CONF_IRK_CAPTURE_ID, IRKCaptureComponent, irk_capture_ns
 
@@ -22,12 +23,12 @@ def capture_label_max_len():
     try:
         header = path.read_text()
     except OSError as err:
-        raise cv.Invalid(f"irk_capture cannot read {path}: {err}") from err
+        raise EsphomeError(f"irk_capture cannot read {path}: {err}") from err
     match = re.search(r"\bCAPTURE_LABEL_MAX_LEN = (\d+);", header)
     if match is None:
         # Without this the build stops on "'NoneType' object has no attribute
         # 'group'", which says nothing about what to fix.
-        raise cv.Invalid(
+        raise EsphomeError(
             f"irk_capture: CAPTURE_LABEL_MAX_LEN is not defined as a number in {path}"
         )
     return int(match.group(1))

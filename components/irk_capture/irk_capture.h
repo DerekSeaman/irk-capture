@@ -205,6 +205,9 @@ class IRKCaptureLabelText : public text::Text, public Component {
 // connection must not change whether an older result came from a re-pair.
 enum class CaptureOrigin : uint8_t { UNKNOWN, FRESH, BONDED, REPAIR };
 
+// What a stored bond holds for a peer; see read_peer_irk_().
+enum class BondRead : uint8_t { NO_BOND, READ_ERROR, IRK, NO_IRK, INVALID_IRK };
+
 // Last successful genuine capture, retained after transient status and entity
 // updates. boot_id distinguishes a reboot from sequence rollover.
 struct CaptureResult {
@@ -637,14 +640,27 @@ class IRKCaptureComponent : public Component {
   std::string sanitize_ble_name(const std::string& name);
   std::string advertised_name_();                   // Caller holds state_mutex_
   void commit_generated_name_(const uint8_t* mac);  // Caller holds state_mutex_
-  bool request_mac_rotation_(bool refresh_name, const std::string* accepted_name = nullptr,
-                             uint32_t expected_host_generation = 0,
-                             uint32_t expected_rotation_generation = 0,
-                             uint32_t expected_name_generation = 0);
+  // A name accepted for a rotation, with the generations sampled when it was
+  // accepted. The rotation is refused if any of them has moved on since.
+  struct NameChange {
+    const std::string& name;
+    uint32_t host_generation;
+    uint32_t rotation_generation;
+    uint32_t name_generation;
+  };
+  bool request_mac_rotation_(bool refresh_name, const NameChange* name_change = nullptr);
+  // Both: caller holds state_mutex_.
+  bool rotation_current_locked_(uint32_t generation, bool require_idle_link = true) const;
+  void abort_rotation_locked_();
+  bool adv_start_current_locked_(uint32_t host_generation, uint32_t rotation_generation) const;
   void handle_advertising_failure_(int rc, uint32_t host_generation, const char* operation);
 
   // IRK validation and deduplication helpers
   bool is_valid_irk(const uint8_t irk[16]);
+  // Reads and classifies the peer's stored bond. `bond` is filled for every
+  // outcome except NO_BOND and READ_ERROR; rc_out receives the store's result.
+  BondRead read_peer_irk_(const ble_addr_t& peer_id, struct ble_store_value_sec& bond,
+                          int* rc_out = nullptr);
   void publish_no_irk_(const ble_addr_t& peer_id, uint32_t connection_generation,
                        bool pairing_completed, CaptureOrigin origin = CaptureOrigin::UNKNOWN);
   // Ends a link whose pairing completed without an IRK, if it is still the
@@ -656,6 +672,8 @@ class IRKCaptureComponent : public Component {
   // Shows Status "failed" for a pairing that ended without a result.
   void report_capture_failure_(uint32_t connection_generation);
   void report_host_stall_(uint32_t now);  // Main task only
+  // Shows Status "failed" when setup() gives up. Main task, setup() only.
+  void publish_setup_failure_();
   bool should_publish_irk(const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
                           uint32_t connection_generation, bool force_pairing_publish,
                           PublishDecision& out_decision);

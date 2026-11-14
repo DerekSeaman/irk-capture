@@ -85,9 +85,8 @@ static bool authorized(httpd_req_t* req) {
   const uint32_t now = millis();
   AuthThrottle& throttle = self->client_throttles().for_client(client_key(req), now);
   if (throttle.locked(now)) {
-    httpd_resp_set_status(req, "429 Too Many Requests");
-    httpd_resp_send(req, "Too many failed attempts, try again shortly", HTTPD_RESP_USE_STRLEN);
-    return false;
+    httpd_resp_set_hdr(req, "Retry-After", "30");  // AuthThrottle::LOCKOUT_MS
+    return send_error(req, "429 Too Many Requests", "Too many failed attempts, try again shortly");
   }
 
   size_t len = httpd_req_get_hdr_value_len(req, "Authorization");
@@ -133,8 +132,7 @@ static bool json_request(httpd_req_t* req) {
               is_json_content_type(value.c_str());
   }
   if (!is_json) {
-    httpd_resp_set_status(req, "415 Unsupported Media Type");
-    httpd_resp_send(req, "Content-Type must be application/json", HTTPD_RESP_USE_STRLEN);
+    send_error(req, "415 Unsupported Media Type", "Content-Type must be application/json");
   }
   return is_json;
 }
@@ -603,6 +601,9 @@ static esp_err_t handle_post_advertising(httpd_req_t* req) {
 static esp_err_t handle_post_capture_start(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
   if (!json_request(req)) return ESP_OK;
+  // Without this the request is accepted and the page is told only that the
+  // start "failed", with advice to retry something that needs a reboot.
+  if (usable_capture(req) == nullptr) return ESP_OK;
   const auto start = static_cast<IRKWizardComponent*>(req->user_ctx)->start_capture();
   httpd_resp_set_status(req, "202 Accepted");
   return send_json(req, "{\"operation_id\":" + std::to_string(start.operation_id) +
@@ -618,8 +619,7 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
   std::string profile;
   bool keyboard = false;
   if (!json_extract_string(body, "profile", profile) || !parse_profile_name(profile, keyboard)) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    httpd_resp_send(req, "profile must be \"Heart Sensor\" or \"Keyboard\"", HTTPD_RESP_USE_STRLEN);
+    send_error(req, "400 Bad Request", "profile must be Heart Sensor or Keyboard");
     return ESP_OK;
   }
   uint32_t boot_id = 0;
