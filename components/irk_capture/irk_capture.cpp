@@ -3819,8 +3819,8 @@ void IRKCaptureComponent::report_host_stall_(uint32_t now) {
   }
   ESP_LOGE(TAG,
            "Bluetooth host has not synchronised for over %" PRIu32
-           " s; nothing can pair. Reboot the device; if it repeats, check the build's "
-           "Bluetooth configuration.",
+           " s; nothing can pair. The device restarts itself if this continues; if it "
+           "repeats, check the build's Bluetooth configuration.",
            TimingConfig::HOST_SYNC_TIMEOUT_MS / 1000);
 
   // One bounded recovery attempt. Only when nothing has been captured, so the

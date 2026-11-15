@@ -69,7 +69,7 @@ When your Apple or Android device pairs with the ESP32:
 
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESP-IDF framework** (required - this component does NOT support Arduino framework)
-- **ESPHome** 2026.7 or newer - Tested with 2026.9.0
+- **ESPHome** 2026.7.4 or newer (the oldest version the build tests use) - Tested with 2026.10.2
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
 - **ESPHome Device Builder** (optional, but makes managing ESPHome devices in Home Assistant easier)
 
@@ -244,9 +244,19 @@ If advertising fails to start, the ESP32 keeps retrying on its own, quickly at f
 | `capturing` | Encrypted, reading the identity key from the bond store |
 | `captured` | A key was just captured (or the device was deliberately re-paired) |
 | `no_irk` | Pairing completed but the peer sent no identity key - see the IRK sensor |
-| `failed` | Pairing ended without a result, or Bluetooth did not start - see the device log |
+| `failed` | Pairing ended without a result, or Bluetooth did not start - see [Status shows failed](#status-shows-failed) |
 
-`captured`, `no_irk` and `failed` stay on screen for a few seconds so you don't miss them. A device you already captured that reconnects in the background won't replace the result you're looking at.
+`captured`, `no_irk` and `failed` stay on screen for a few seconds so you don't miss them. A device you already captured that reconnects in the background won't replace the result you're looking at. The exception is `failed` for Bluetooth that won't start: it stays until Bluetooth starts or the device restarts.
+
+### When the ESP32 restarts
+
+Some restarts happen on their own. A restart clears the session history and all pairings, and the ESP32 comes back with the default name and a new random MAC address.
+
+- **No Home Assistant connection for 15 minutes.** The ESP32 restarts if no Home Assistant or other ESPHome client is connected for 15 minutes (`api: reboot_timeout` in the base package). This matters if you use the wizard without Home Assistant, since the restart interrupts your session. To turn it off, add `reboot_timeout: 0s` under `api:` in your device YAML.
+- **Bluetooth never starts.** If Bluetooth hasn't started 5 minutes after boot and nothing has been captured, the ESP32 restarts to try again. It repeats while the problem persists. See [Status shows failed](#status-shows-failed).
+- **Connection that won't close.** If a connected device can't be disconnected after several attempts, the ESP32 restarts. This is rare.
+
+It also restarts when you change the **BLE Profile**, press **Restart Device**, or press **Reboot ESP32** in the wizard.
 
 ## Optional: Home Assistant Events and MQTT Publishing
 
@@ -331,7 +341,7 @@ packages:
     refresh: always
 ```
 
-Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock it out for 30 seconds. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
+Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock out that browser for 30 seconds; other devices can still log in. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
 
 The UI offers two workflows:
 
@@ -353,6 +363,8 @@ When pairing, look for the Bluetooth name shown in the wizard. It shows the name
 ## Tested Devices
 
 This ESPHome IRK capture component has been successfully tested with:
+
+- **ESP32 boards:** ESP32-C6 with ESPHome 2026.10.2
 
 - **Apple OS 26 and 27 family:**
   - iPhone 17 Pro, iPhone 18 Pro
@@ -431,6 +443,13 @@ Many Android watches aggressively filter BLE devices, and by default neither the
 
 Watches that require "reverse" pairing (i.e. the watch advertises as a device that needs to be paired with) will NOT work with this package. This package requires your watch pair TO the ESP32, not the other way around.
 
+### Status Shows Failed
+
+`failed` means one of two things. Check the device log to see which.
+
+- **A pairing ended without a result.** The log shows `ENC_CHANGE failed` or `IRK not found`. See [IRK Not Captured After Pairing](#irk-not-captured-after-pairing).
+- **Bluetooth didn't start.** After 30 seconds the log shows `Bluetooth host has not synchronised`. Status stays `failed` until Bluetooth starts. The ESP32 restarts by itself after 5 minutes if nothing has been captured. If the restarts continue, check the Bluetooth configuration in your build, and do a clean build.
+
 ### IRK Not Captured After Pairing
 
 Some devices, including some Garmin watches, use a fixed BLE address and do not provide an IRK. When a completed pairing stores a bond without an IRK, the Home Assistant IRK sensor shows **`Failed: IRK not used`**, and **Device BLE MAC** identifies that peer. This replaces the previous sensor value so it reflects the latest completed attempt; prior values remain in Home Assistant's recorded history. A later successful capture replaces the failure with the 32-character IRK, including when a previously captured device reconnects.
@@ -480,14 +499,14 @@ Below is a sample log showing a successful IRK capture:
 [05:43:14.733][D][irk_capture:726][nimble_host]: New IRK added to cache (total: 1/10)
 [05:43:14.738][I][irk_capture:560][nimble_host]:
 [05:43:14.738][I][irk_capture:563][nimble_host]: *** IRK CAPTURED *** (ENC_CHANGE)
-[05:43:14.738][I][irk_capture:869][nimble_host]: Identity Address: A1:B2:C3:D4:E5:F6
+[05:43:14.738][I][irk_capture:869][nimble_host]: Identity Address: A1:B2:C3:D4:E5:F6 (type=1)
 [05:43:14.741][I][irk_capture:870][nimble_host]: IRK: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
 [05:43:14.747][I][irk_capture:871][nimble_host]: Capture events this session: 1
 [05:43:14.832][S][text_sensor]: 'IRK' >> 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
 [05:43:14.832][S][text_sensor]: 'Device BLE MAC' >> 'A1:B2:C3:D4:E5:F6'
 [05:43:14.832][S][text_sensor]: 'Status' >> 'captured'
 [05:43:14.955][D][irk_capture:1646][nimble_host]: Subscription changed: handle=1 attr=8 notify=0 indicate=0 reason=2
-[05:43:14.959][I][irk_capture:1282][nimble_host]: Disconnect reason=534 (0x216)
+[05:43:14.959][I][irk_capture:1282][nimble_host]: Disconnect reason=534 (0x216): terminated by local host
 [05:43:15.064][D][irk_capture:3120][nimble_host]: Connection closed; state reset and pending operations advanced
 [05:43:15.064][I][irk_capture:3121][nimble_host]: Disconnected
 [05:43:15.064][I][irk_capture:1386][nimble_host]: Continuous mode: restarting advertising for next device

@@ -16,7 +16,7 @@ When **Refresh BLE Identity** can't change the name and address, the wizard now 
 
 ### Bluetooth that won't start is reported
 
-If the Bluetooth host hasn't synchronised after 30 seconds, the device logs an error and Status shows `failed`. Earlier, the device just sat there idle with no explanation. Reboot the device; if the problem keeps coming back, check the Bluetooth configuration in the build.
+If the Bluetooth host hasn't synchronised after 30 seconds, the device logs an error and Status shows `failed`. Earlier, the device just sat there idle with no explanation. If Bluetooth still hasn't started after 5 minutes and nothing has been captured, the device restarts itself and tries again. If the restarts continue, check the Bluetooth configuration in the build.
 
 ### Wizard login protects each device on its own network
 
