@@ -365,3 +365,92 @@ jobs:
 
       - name: Compile
         run: esphome compile "${RUNNER_TEMP}/irk-capture-ci.yaml"
+
+  # The compile job above builds a configuration written for CI. This one
+  # builds the two packages people actually install, so a misspelt option, an
+  # id the wizard package expects but the base package renamed, or an
+  # on_capture automation that no longer compiles fails here instead of in
+  # someone's build.
+  shipped-packages:
+    name: ESPHome Compile (shipped packages)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ESPHome
+        run: python -m pip install esphome
+
+      # Generated rather than committed, like the compile config above.
+      - name: Prepare the packages
+        run: |
+          cat > "${RUNNER_TEMP}/prepare_shipped.py" <<'EOF'
+          """Set up a build of the two shipped packages against this checkout."""
+          import base64
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          root, out = Path(sys.argv[1]), Path(sys.argv[2])
+          out.mkdir(parents=True, exist_ok=True)
+
+          # The packages fetch the components from GitHub. Build the ones in
+          # this checkout instead; nothing else about a package is changed.
+          git_source = re.compile(r"(?m)^( +)type: git\n\1url: .*\n\1ref: .*\n")
+          for name in ("irk-capture-base.yaml", "irk-capture-wizard.yaml"):
+              text = (root / "ESPHome Devices" / name).read_text()
+              text, count = git_source.subn(
+                  lambda m: f"{m[1]}type: local\n{m[1]}path: {root}/components\n", text
+              )
+              if count != 1:
+                  sys.exit(f"{name}: expected one git component source, found {count}")
+              (out / name).write_text(text)
+
+          (out / "secrets.yaml").write_text(
+              'wizard_username: "ci"\nwizard_password: "ci-password"\n'
+          )
+
+          # What an ESPHome Device Builder device YAML supplies, as the base
+          # package's header lists it. Nothing connects to this build, so the
+          # API key is random rather than a value kept in the repository.
+          key = base64.b64encode(os.urandom(32)).decode()
+          (out / "irk-capture-shipped.yaml").write_text(
+              f"""esphome:
+            name: irk-capture-shipped
+            friendly_name: IRK Capture Shipped
+          esp32:
+            board: esp32-c3-devkitm-1
+            variant: esp32c3
+          api:
+            encryption:
+              key: "{key}"
+          ota:
+            - platform: esphome
+              password: "ci-ota-password"
+          wifi:
+            ssid: "ci-ssid"
+            password: "ci-password"
+            ap:
+              ssid: "IRK CI fallback"
+              password: "ci-ap-password"
+          captive_portal:
+          packages:
+            device: !include irk-capture-base.yaml
+            wizard: !include irk-capture-wizard.yaml
+          """
+          )
+          EOF
+          python "${RUNNER_TEMP}/prepare_shipped.py" \
+            "${{ github.workspace }}" "${RUNNER_TEMP}/shipped"
+
+      - name: Validate
+        run: esphome config "${RUNNER_TEMP}/shipped/irk-capture-shipped.yaml"
+
+      - name: Compile
+        run: esphome compile "${RUNNER_TEMP}/shipped/irk-capture-shipped.yaml"
