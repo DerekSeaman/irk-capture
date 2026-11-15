@@ -846,7 +846,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
 
   log_spacer();
   log_banner(is_repair ? "REPAIR" : context_tag);
-  ESP_LOGI(TAG, "Identity Address: %s", addr_str.c_str());
+  ESP_LOGI(TAG, "Identity Address: %s (type=%u)", addr_str.c_str(), (unsigned) peer_id_addr.type);
   ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
   ESP_LOGI(TAG, "Capture events this session: %" PRIu32, current_events);
   ESP_LOGI(TAG, "Unique devices this session: %" PRIu32, current_unique);
@@ -1280,10 +1280,36 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   return 0;
 }
 
+// NimBLE reports a disconnect reason as the HCI code plus 0x200. Names the
+// reasons this component meets; anything else is shown by number only.
+static const char* disconnect_reason_str(int reason) {
+  if (reason < 0x200) return "";
+  switch (reason - 0x200) {
+    case 0x08:
+      return "connection timeout";
+    case 0x13:
+      return "remote user terminated";
+    case 0x16:
+      return "terminated by local host";
+    case 0x22:
+      return "LL response timeout";
+    case 0x3B:
+      return "unacceptable connection parameters";
+    case 0x3D:
+      return "MIC failure";
+    case 0x3E:
+      return "connection failed to establish";
+    default:
+      return "";
+  }
+}
+
 // ble_gap_terminate() returns EALREADY when a disconnect is already under way,
 // for example one started by a timeout or a MAC rotation. That is not a failure.
 static void log_terminate_result(int rc, const char* context) {
-  if (rc == BLE_HS_EALREADY) {
+  if (rc == 0) {
+    ESP_LOGD(TAG, "Disconnect %s requested", context);
+  } else if (rc == BLE_HS_EALREADY) {
     ESP_LOGD(TAG, "Disconnect %s already in progress", context);
   } else if (rc != 0) {
     ESP_LOGW(TAG, "ble_gap_terminate %s rc=%d", context, rc);
@@ -1307,7 +1333,9 @@ static void log_no_irk_for_peer(const ble_addr_t& peer_id) {
  * advertising off, or a restart is already scheduled after a hold-off.
  */
 int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
-  ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)", ev->disconnect.reason, ev->disconnect.reason);
+  const char* reason_text = disconnect_reason_str(ev->disconnect.reason);
+  ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)%s%s", ev->disconnect.reason, ev->disconnect.reason,
+           reason_text[0] != '\0' ? ": " : "", reason_text);
 
   // Use the connection descriptor embedded in the disconnect event directly
   // (ble_gap_conn_find may fail after disconnect since NimBLE removes the
@@ -2497,7 +2525,7 @@ void IRKCaptureComponent::start_advertising() {
     handle_advertising_failure_(rc, host_generation, operation);
   } else {
     if (recovered) ESP_LOGI(TAG, "Advertising recovered; normal operation resumed");
-    ESP_LOGD(TAG, "Advertising with profile: %s", profile_name);
+    ESP_LOGI(TAG, "Advertising with profile: %s", profile_name);
     publish_effective_mac();
   }
 }
@@ -2585,7 +2613,7 @@ void IRKCaptureComponent::stop_advertising() {
   if (still_active) {
     ESP_LOGW(TAG, "Advertising stop requested but NimBLE still reports it active");
   } else {
-    ESP_LOGD(TAG, "Advertising stopped");
+    ESP_LOGI(TAG, "Advertising stopped");
   }
 }
 

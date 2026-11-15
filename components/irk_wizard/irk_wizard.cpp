@@ -29,6 +29,7 @@ static esp_err_t send_json(httpd_req_t* req, const std::string& body);
 // the send returned so a handler can end with "return reply_error(...)".
 // message must not need JSON escaping.
 static esp_err_t reply_error(httpd_req_t* req, const char* status, const char* message) {
+  ESP_LOGW(TAG, "Request refused (%s): %s", status, message);
   httpd_resp_set_status(req, status);
   return send_json(req, std::string("{\"error\":\"") + message + "\"}");
 }
@@ -612,6 +613,7 @@ static esp_err_t handle_post_advertising(httpd_req_t* req) {
   if (!json_extract_bool(command.body, "on", on)) {
     return reply_error(req, "400 Bad Request", "on must be a boolean");
   }
+  ESP_LOGI(TAG, "Wizard: advertising %s", on ? "on" : "off");
   static_cast<IRKWizardComponent*>(req->user_ctx)->set_advertising(on);
   return send_ok(req);
 }
@@ -621,6 +623,7 @@ static esp_err_t handle_post_capture_start(httpd_req_t* req) {
   // that the start "failed", with advice to retry something that needs a reboot.
   Command command;
   if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
+  ESP_LOGI(TAG, "Wizard: capture start requested");
   const auto start = static_cast<IRKWizardComponent*>(req->user_ctx)->start_capture();
   httpd_resp_set_status(req, "202 Accepted");
   return send_json(req, "{\"operation_id\":" + std::to_string(start.operation_id) +
@@ -649,6 +652,8 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
   const auto requested =
       keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
   const bool reboot_required = self->irk_capture()->get_ble_profile() != requested;
+  ESP_LOGI(TAG, "Wizard: BLE profile %s requested%s", keyboard ? "Keyboard" : "Heart Sensor",
+           reboot_required ? "" : " (already active)");
   // Reply before dispatching the main-task save. Persistence can still fail, so
   // the browser confirms a new boot and the selected profile through status.
   const esp_err_t result =
@@ -669,6 +674,7 @@ static esp_err_t handle_post_label(httpd_req_t* req) {
     return reply_error(req, "400 Bad Request", "label must be a string");
   }
   const std::string saved_label = command.capture->set_next_capture_label(label);
+  ESP_LOGI(TAG, "Wizard: next capture label '%s'", saved_label.c_str());
   return send_json(req, "{\"ok\":true,\"label\":\"" + json_escape(saved_label) + "\"}");
 }
 
@@ -676,6 +682,7 @@ static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
   Command command;
   if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
   auto* capture = command.capture;
+  ESP_LOGI(TAG, "Wizard: forget all bonds requested");
   const auto result = capture->request_bond_clear();
   std::string json = bond_clear_json(result);
   json.pop_back();
@@ -693,6 +700,7 @@ static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
   if (!json_extract_bool(command.body, "enabled", enabled)) {
     return reply_error(req, "400 Bad Request", "enabled must be a boolean");
   }
+  ESP_LOGI(TAG, "Wizard: stop advertising after capture %s", enabled ? "on" : "off");
   command.capture->set_stop_after_capture(enabled);
   return send_ok(req);
 }
@@ -700,6 +708,7 @@ static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
 static esp_err_t handle_post_fresh_identity(httpd_req_t* req) {
   Command command;
   if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
+  ESP_LOGI(TAG, "Wizard: refresh BLE identity requested");
   static_cast<IRKWizardComponent*>(req->user_ctx)->fresh_identity();
   return send_ok(req);
 }
