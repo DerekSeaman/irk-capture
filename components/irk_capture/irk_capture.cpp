@@ -1126,13 +1126,13 @@ void IRKCaptureSwitch::write_state(bool state) {
 
 void IRKCaptureButton::press_action() {
   if (!parent_usable(parent_, "Refresh BLE Identity")) return;
-  ESP_LOGI(TAG, "Refreshing BLE identity...");
+  ESP_LOGI(TAG, "BLE identity refresh requested from Home Assistant");
   parent_->refresh_identity();
 }
 
 void IRKCaptureForgetBondsButton::press_action() {
   if (!parent_usable(parent_, "Forget All Bonds")) return;
-  ESP_LOGI(TAG, "Forget All Bonds pressed");
+  ESP_LOGI(TAG, "Forget All Bonds requested from Home Assistant");
   parent_->forget_all_bonds();
 }
 
@@ -4133,6 +4133,9 @@ void IRKCaptureComponent::handle_forget_bonds_() {
       if (can_clear) {
         stop_rc = ble_gap_adv_stop();
         const bool active = ble_gap_adv_active() != 0;
+        // Logged here: the stop is not visible in the requester's log, and it
+        // is the advertising change a bond clear makes.
+        ESP_LOGI(TAG, "Advertising stopped to clear bonds");
         MutexGuard lock(state_mutex_);
         if (!still_current()) return;
         advertising_ = active;
