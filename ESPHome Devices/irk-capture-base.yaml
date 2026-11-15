@@ -44,7 +44,9 @@ logger:
 
 api:
   # encryption.key comes from the device YAML.
-  reboot_timeout: 15min
+  # 0s: never restart for lack of a client. Without this, a device used through
+  # the wizard alone restarts every 15 minutes and loses its session.
+  reboot_timeout: 0s
 
 # ota: is owned entirely by the device YAML. Package `packages:` merges lists by
 # concatenation (not override), so defining an `ota:` entry here would duplicate

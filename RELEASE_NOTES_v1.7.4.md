@@ -44,6 +44,7 @@ Re-enabling advertising after the limit is reached used to push earlier devices 
 - **`max_captures` must be 64 or less.** Higher values now fail the build with a message.
 - **Wizard username and password must use printable ASCII.** Browsers encode other characters differently for the login, so such a login could never work. The build now says so.
 - **Check automations** that depend on Status values. Add `failed` where you need it.
+- **The ESP32 no longer restarts after 15 minutes without a Home Assistant connection.** The base package sets `api: reboot_timeout: 0s`.
 - **No other YAML changes are needed.**
 
 ## For developers
