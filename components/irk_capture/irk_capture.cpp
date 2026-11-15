@@ -1853,12 +1853,19 @@ void IRKCaptureComponent::setup() {
     }
   }
 
+  // Start the host wait before setup_ble(). The host can sync while setup_ble()
+  // is still running, and on_ble_host_synced() clears this value then. Setting
+  // it afterwards would leave a synced host marked as never synced, and Status
+  // would read "failed" 30 s later.
+  {
+    MutexGuard lock(state_mutex_);
+    host_wait_since_ = deadline_after(now_ms(), 0);  // Cleared when the host syncs.
+  }
   this->setup_ble();
   if (this->is_failed()) {
     publish_setup_failure_();
     return;
   }
-  host_wait_since_ = deadline_after(now_ms(), 0);  // Cleared when the host syncs.
 
   ble_npl_event_init(
       &bond_clear_event_,
