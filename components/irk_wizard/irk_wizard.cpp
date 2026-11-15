@@ -242,8 +242,7 @@ void IRKWizardComponent::set_profile(bool keyboard) {
   this->defer([this, keyboard]() {
     const auto requested =
         keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
-    ESP_LOGI(TAG, "Wizard: BLE profile %s requested",
-             keyboard ? "Keyboard" : "Heart Sensor");
+    ESP_LOGI(TAG, "Wizard: BLE profile %s requested", keyboard ? "Keyboard" : "Heart Sensor");
     if (irk_capture_) irk_capture_->set_ble_profile(requested);
     // A failed NVS save restores the old profile and does not reboot. Allow a
     // retry then; successful changes remain reserved until the new boot.
