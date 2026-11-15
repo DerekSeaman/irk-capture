@@ -229,6 +229,7 @@ void IRKWizardComponent::fresh_identity() {
   // BLE work off esp_http_server's task and lets this request answer first, so
   // the page gets its response instead of the connection dropping mid-reply.
   this->defer([this]() {
+    ESP_LOGI(TAG, "Wizard: refresh BLE identity requested");
     if (irk_capture_) irk_capture_->refresh_identity();
   });
 }
@@ -241,6 +242,8 @@ void IRKWizardComponent::set_profile(bool keyboard) {
   this->defer([this, keyboard]() {
     const auto requested =
         keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
+    ESP_LOGI(TAG, "Wizard: BLE profile %s requested",
+             keyboard ? "Keyboard" : "Heart Sensor");
     if (irk_capture_) irk_capture_->set_ble_profile(requested);
     // A failed NVS save restores the old profile and does not reboot. Allow a
     // retry then; successful changes remain reserved until the new boot.
@@ -263,6 +266,7 @@ void IRKWizardComponent::set_advertising(bool on) {
       capture_start_.state = CaptureStartState::CANCELLED;
   }
   this->defer([this, on]() {
+    ESP_LOGI(TAG, "Wizard: advertising %s", on ? "on" : "off");
     if (irk_capture_) irk_capture_->set_advertising_requested(on);
   });
 }
@@ -279,6 +283,7 @@ CaptureStart IRKWizardComponent::start_capture() {
     capture_start_ = request;
   }
   this->defer([this, id = request.operation_id]() {
+    ESP_LOGI(TAG, "Wizard: capture start requested");
     {
       MutexGuard lock(snapshot_mutex_);
       if (capture_start_.operation_id != id || capture_start_.state != CaptureStartState::PENDING)
@@ -613,7 +618,6 @@ static esp_err_t handle_post_advertising(httpd_req_t* req) {
   if (!json_extract_bool(command.body, "on", on)) {
     return reply_error(req, "400 Bad Request", "on must be a boolean");
   }
-  ESP_LOGI(TAG, "Wizard: advertising %s", on ? "on" : "off");
   static_cast<IRKWizardComponent*>(req->user_ctx)->set_advertising(on);
   return send_ok(req);
 }
@@ -623,7 +627,6 @@ static esp_err_t handle_post_capture_start(httpd_req_t* req) {
   // that the start "failed", with advice to retry something that needs a reboot.
   Command command;
   if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
-  ESP_LOGI(TAG, "Wizard: capture start requested");
   const auto start = static_cast<IRKWizardComponent*>(req->user_ctx)->start_capture();
   httpd_resp_set_status(req, "202 Accepted");
   return send_json(req, "{\"operation_id\":" + std::to_string(start.operation_id) +
@@ -652,8 +655,6 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
   const auto requested =
       keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
   const bool reboot_required = self->irk_capture()->get_ble_profile() != requested;
-  ESP_LOGI(TAG, "Wizard: BLE profile %s requested%s", keyboard ? "Keyboard" : "Heart Sensor",
-           reboot_required ? "" : " (already active)");
   // Reply before dispatching the main-task save. Persistence can still fail, so
   // the browser confirms a new boot and the selected profile through status.
   const esp_err_t result =
@@ -708,7 +709,6 @@ static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
 static esp_err_t handle_post_fresh_identity(httpd_req_t* req) {
   Command command;
   if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
-  ESP_LOGI(TAG, "Wizard: refresh BLE identity requested");
   static_cast<IRKWizardComponent*>(req->user_ctx)->fresh_identity();
   return send_ok(req);
 }
