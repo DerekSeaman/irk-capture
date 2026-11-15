@@ -252,7 +252,7 @@ If advertising fails to start, the ESP32 keeps retrying on its own, quickly at f
 
 Some restarts happen on their own. A restart clears the session history and all pairings, and the ESP32 comes back with the default name and a new random MAC address.
 
-- **No Home Assistant connection for 15 minutes.** The ESP32 restarts if no Home Assistant or other ESPHome client is connected for 15 minutes (`api: reboot_timeout` in the base package). This matters if you use the wizard without Home Assistant, since the restart interrupts your session. To turn it off, add `reboot_timeout: 0s` under `api:` in your device YAML.
+- **No Home Assistant connection for 15 minutes.** The ESP32 restarts if no Home Assistant or other ESPHome client is connected for 15 minutes (`api: reboot_timeout` in the base package). This matters if you use the wizard without Home Assistant, since the restart interrupts your session.
 - **Bluetooth never starts.** If Bluetooth hasn't started 5 minutes after boot and nothing has been captured, the ESP32 restarts to try again. It repeats while the problem persists. See [Status shows failed](#status-shows-failed).
 - **Connection that won't close.** If a connected device can't be disconnected after several attempts, the ESP32 restarts. This is rare.
 
