@@ -1,8 +1,12 @@
+from pathlib import Path
+import re
+
 from esphome import automation
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.const import CONF_ID, CONF_TRIGGER_ID
 from esphome.components import esp32
+from esphome.core import EsphomeError
 
 DEPENDENCIES = ["esp32"]
 AUTO_LOAD = ["text_sensor", "switch", "button", "text", "select"]
@@ -21,6 +25,29 @@ IRKCaptureComponent = irk_capture_ns.class_("IRKCaptureComponent", cg.Component)
 CaptureTrigger = automation.Trigger.template(cg.std_string, cg.std_string)
 
 
+def header_constant(header, name):
+    """Read a numeric or string constant from one of the component's C++ headers.
+
+    The firmware owns these values. Reading them keeps one definition instead of
+    a Python copy that drifts from what the device actually enforces.
+    """
+    path = Path(__file__).parent / header
+    try:
+        text = path.read_text()
+    except OSError as err:
+        raise EsphomeError(f"irk_capture cannot read {path}: {err}") from err
+    match = re.search(rf'\b{name}(?:\[\])? = (\d+|"[^"]*");', text)
+    if match is None:
+        raise EsphomeError(f"irk_capture: {name} is not defined in {path}")
+    value = match.group(1)
+    return value[1:-1] if value.startswith('"') else int(value)
+
+
+# Longest advertised name, and the two built-in names (identity_name.h).
+BLE_NAME_MAX_LEN = header_constant("identity_name.h", "BLE_NAME_MAX_LEN")
+DEFAULT_BLE_NAME = header_constant("identity_name.h", "DEFAULT_BLE_NAME")
+KEYBOARD_DEFAULT_NAME = header_constant("identity_name.h", "KEYBOARD_DEFAULT_NAME")
+
 # The characters sanitize_ble_name() keeps at runtime (irk_capture.cpp).
 BLE_NAME_ALLOWED_CHARS = (
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_"
@@ -31,14 +58,14 @@ def validate_ble_name(value):
     """Reject a BLE name the device would otherwise silently alter.
 
     The firmware removes unsupported characters, trims spaces and truncates to
-    12 bytes (Samsung S24/S25 compatibility). Failing here shows the user the
+    BLE_NAME_MAX_LEN bytes (Samsung S24/S25 compatibility). Failing here shows the user the
     name that will actually be advertised.
     """
     value = cv.string(value)
-    if len(value.encode("utf-8")) > 12:
+    if len(value.encode("utf-8")) > BLE_NAME_MAX_LEN:
         raise cv.Invalid(
             f"BLE name too long ({len(value.encode('utf-8'))} bytes). "
-            f"Maximum 12 bytes for Samsung S24/S25 compatibility with "
+            f"Maximum {BLE_NAME_MAX_LEN} bytes for Samsung S24/S25 compatibility with "
             f"single-UUID advertising. Shorten your name."
         )
     unsupported = sorted(set(value) - set(BLE_NAME_ALLOWED_CHARS))
@@ -83,10 +110,12 @@ CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(IRKCaptureComponent),
-            cv.Optional(CONF_BLE_NAME, default="IRK Capture"): validate_ble_name,
+            cv.Optional(CONF_BLE_NAME, default=DEFAULT_BLE_NAME): validate_ble_name,
             cv.Optional(CONF_START_ON_BOOT, default=True): cv.boolean,
             cv.Optional(CONF_CONTINUOUS_MODE, default=True): cv.boolean,
-            cv.Optional(CONF_MAX_CAPTURES, default=10): cv.int_range(min=0, max=255),
+            # 64 is far more than one session needs, and it bounds the memory
+            # the capture history and the wizard's status response can use.
+            cv.Optional(CONF_MAX_CAPTURES, default=10): cv.int_range(min=0, max=64),
             # Fires once per genuine capture or re-pair with the IRK and the
             # device's identity MAC; never for background reconnects.
             cv.Optional(CONF_ON_CAPTURE): automation.validate_automation(

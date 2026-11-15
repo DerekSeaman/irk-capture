@@ -4,6 +4,8 @@
 
 #include <cstring>
 
+#include <lwip/sockets.h>
+
 #include "esphome/components/irk_capture/mutex_guard.h"
 #include "esphome/components/network/util.h"
 #if defined(USE_WIFI) && defined(USE_WIFI_AP)
@@ -21,10 +23,56 @@ static const char* const TAG = "irk_wizard";
 // irk_capture's RAII guard, so every lock/unlock pair here is early-return-safe.
 using irk_capture::MutexGuard;
 
+static esp_err_t send_json(httpd_req_t* req, const std::string& body);
+
+// Answers with an HTTP error and a JSON {"error": message}, and returns what
+// the send returned so a handler can end with "return reply_error(...)".
+// message must not need JSON escaping.
+static esp_err_t reply_error(httpd_req_t* req, const char* status, const char* message) {
+  ESP_LOGW(TAG, "Request refused (%s): %s", status, message);
+  httpd_resp_set_status(req, status);
+  return send_json(req, std::string("{\"error\":\"") + message + "\"}");
+}
+
+// The same answer for a check that reports its own failure: always false, so
+// the check can end with "return send_error(...)".
+static bool send_error(httpd_req_t* req, const char* status, const char* message) {
+  reply_error(req, status, message);
+  return false;
+}
+
 static esp_err_t send_unauthorized(httpd_req_t* req) {
   httpd_resp_set_status(req, "401 Unauthorized");
   httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"IRK Capture\"");
   return httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
+}
+
+// Identifies the client by its address, for the per-client login throttle.
+// Returns 0, a key every unidentified client shares, if the address cannot be
+// read; that degrades to one shared throttle rather than to none.
+static uint32_t client_key(httpd_req_t* req) {
+  struct sockaddr_storage address {};
+  socklen_t length = sizeof(address);
+  if (getpeername(httpd_req_to_sockfd(req), (struct sockaddr*) &address, &length) != 0) return 0;
+  const uint8_t* bytes;
+  size_t count;
+  if (address.ss_family == AF_INET) {
+    bytes = (const uint8_t*) &((const struct sockaddr_in*) &address)->sin_addr;
+    count = 4;
+#if LWIP_IPV6
+    // lwIP only has IPv6 types when the build enables IPv6 (network:
+    // enable_ipv6). This also covers an IPv4 client on a dual-stack socket
+    // (::ffff:a.b.c.d).
+  } else if (address.ss_family == AF_INET6) {
+    bytes = (const uint8_t*) &((const struct sockaddr_in6*) &address)->sin6_addr;
+    count = 16;
+#endif
+  } else {
+    return 0;
+  }
+  uint32_t hash = 2166136261u;  // FNV-1a
+  for (size_t i = 0; i < count; i++) hash = (hash ^ bytes[i]) * 16777619u;
+  return hash != 0 ? hash : 1;
 }
 
 // Returns true when the request may proceed. On failure it has already sent
@@ -39,14 +87,15 @@ static bool authorized(httpd_req_t* req) {
     return false;
   }
 
-  // Requests are handled one at a time on httpd's task, so the throttle
-  // needs no locking.
-  AuthThrottle& throttle = self->auth_throttle();
+  // Requests are handled one at a time on httpd's task, so the throttles
+  // need no locking.
   const uint32_t now = millis();
+  AuthThrottle& throttle = self->client_throttles().for_client(client_key(req), now);
   if (throttle.locked(now)) {
-    httpd_resp_set_status(req, "429 Too Many Requests");
-    httpd_resp_send(req, "Too many failed attempts, try again shortly", HTTPD_RESP_USE_STRLEN);
-    return false;
+    // The header value must outlive this call; httpd keeps only the pointer.
+    static const std::string RETRY_AFTER = std::to_string(AuthThrottle::LOCKOUT_MS / 1000);
+    httpd_resp_set_hdr(req, "Retry-After", RETRY_AFTER.c_str());
+    return send_error(req, "429 Too Many Requests", "Too many failed attempts, try again shortly");
   }
 
   size_t len = httpd_req_get_hdr_value_len(req, "Authorization");
@@ -81,27 +130,91 @@ static bool authorized(httpd_req_t* req) {
 // forces a preflight, which this server never answers, so a hostile page
 // can't reach these handlers even though the browser sends LAN requests.
 static bool json_request(httpd_req_t* req) {
-  char buf[64];
-  if (httpd_req_get_hdr_value_str(req, "Content-Type", buf, sizeof(buf)) != ESP_OK ||
-      !is_json_content_type(buf)) {
-    httpd_resp_set_status(req, "415 Unsupported Media Type");
-    httpd_resp_send(req, "Content-Type must be application/json", HTTPD_RESP_USE_STRLEN);
-    return false;
+  // The buffer is sized from the header. A fixed 64 bytes rejected a valid
+  // JSON type as soon as its parameters ran past the end of the buffer.
+  static constexpr size_t MAX_CONTENT_TYPE = 256;
+  const size_t len = httpd_req_get_hdr_value_len(req, "Content-Type");
+  bool is_json = false;
+  if (len != 0 && len <= MAX_CONTENT_TYPE) {
+    std::string value(len + 1, '\0');
+    is_json = httpd_req_get_hdr_value_str(req, "Content-Type", &value[0], len + 1) == ESP_OK &&
+              is_json_content_type(value.c_str());
+  }
+  if (!is_json) {
+    send_error(req, "415 Unsupported Media Type", "Content-Type must be application/json");
+  }
+  return is_json;
+}
+
+// Reads the whole request body. As with authorized(), a failure has already
+// sent its response, so the handler must just return ESP_OK. Each failure gets
+// its own answer: reporting a missing or oversized body as a bad field value
+// sends whoever is debugging the request to the wrong place.
+static bool read_request_body(httpd_req_t* req, std::string& body) {
+  static constexpr size_t MAX_BODY = 512;
+  static constexpr int MAX_TIMEOUTS = 3;
+  if (req->content_len == 0) return send_error(req, "400 Bad Request", "Request body required");
+  if (req->content_len > MAX_BODY) {
+    return send_error(req, "413 Content Too Large", "Request body too large");
+  }
+  body.resize(req->content_len);
+  size_t received = 0;
+  int timeouts = 0;
+  while (received < req->content_len) {
+    const int r = httpd_req_recv(req, &body[received], req->content_len - received);
+    if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+      // A slow link is not a malformed request. Allow a few more receive
+      // windows, but not so many that one stalled client holds the server.
+      if (++timeouts >= MAX_TIMEOUTS) {
+        return send_error(req, "408 Request Timeout", "Timed out reading the request body");
+      }
+      continue;
+    }
+    if (r <= 0) {
+      // The connection closed or failed, so there is nobody left to answer.
+      ESP_LOGW(TAG, "Request body read failed (%d)", r);
+      body.clear();
+      return false;
+    }
+    received += (size_t) r;
   }
   return true;
 }
 
-static std::string read_request_body(httpd_req_t* req) {
-  if (req->content_len == 0 || req->content_len > 512) return "";
-  std::string body;
-  body.resize(req->content_len);
-  int received = 0;
-  while (received < (int) req->content_len) {
-    int r = httpd_req_recv(req, &body[received], req->content_len - received);
-    if (r <= 0) return "";
-    received += r;
+// The capture component, when it can act on a command. Otherwise this answers
+// 503 and returns nullptr. Saying ok for a command that nothing will carry out
+// leaves the page waiting for a change that cannot come.
+static irk_capture::IRKCaptureComponent* usable_capture(httpd_req_t* req) {
+  auto* capture = static_cast<IRKWizardComponent*>(req->user_ctx)->irk_capture();
+  if (capture == nullptr) {
+    send_error(req, "503 Service Unavailable", "Capture component unavailable");
+    return nullptr;
   }
-  return body;
+  if (capture->is_failed()) {
+    send_error(req, "503 Service Unavailable",
+               "Bluetooth capture failed to start; check the device log, then reboot");
+    return nullptr;
+  }
+  return capture;
+}
+
+// What a command needs before it can act. As with authorized(), a false return
+// from begin_command() means the response has already been sent, so the
+// handler must just return ESP_OK. The checks run in a fixed order: login,
+// content type, a usable capture component, then the body.
+struct Command {
+  std::string body;
+  irk_capture::IRKCaptureComponent* capture { nullptr };
+};
+enum : uint8_t { NEEDS_CAPTURE = 1, NEEDS_BODY = 2 };
+
+static bool begin_command(httpd_req_t* req, uint8_t needs, Command& command) {
+  if (!authorized(req) || !json_request(req)) return false;
+  if (needs & NEEDS_CAPTURE) {
+    command.capture = usable_capture(req);
+    if (command.capture == nullptr) return false;
+  }
+  return !(needs & NEEDS_BODY) || read_request_body(req, command.body);
 }
 
 //======================== Snapshot ========================
@@ -116,6 +229,7 @@ void IRKWizardComponent::fresh_identity() {
   // BLE work off esp_http_server's task and lets this request answer first, so
   // the page gets its response instead of the connection dropping mid-reply.
   this->defer([this]() {
+    ESP_LOGI(TAG, "Wizard: refresh BLE identity requested");
     if (irk_capture_) irk_capture_->refresh_identity();
   });
 }
@@ -128,6 +242,7 @@ void IRKWizardComponent::set_profile(bool keyboard) {
   this->defer([this, keyboard]() {
     const auto requested =
         keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
+    ESP_LOGI(TAG, "Wizard: BLE profile %s requested", keyboard ? "Keyboard" : "Heart Sensor");
     if (irk_capture_) irk_capture_->set_ble_profile(requested);
     // A failed NVS save restores the old profile and does not reboot. Allow a
     // retry then; successful changes remain reserved until the new boot.
@@ -150,6 +265,7 @@ void IRKWizardComponent::set_advertising(bool on) {
       capture_start_.state = CaptureStartState::CANCELLED;
   }
   this->defer([this, on]() {
+    ESP_LOGI(TAG, "Wizard: advertising %s", on ? "on" : "off");
     if (irk_capture_) irk_capture_->set_advertising_requested(on);
   });
 }
@@ -166,6 +282,7 @@ CaptureStart IRKWizardComponent::start_capture() {
     capture_start_ = request;
   }
   this->defer([this, id = request.operation_id]() {
+    ESP_LOGI(TAG, "Wizard: capture start requested");
     {
       MutexGuard lock(snapshot_mutex_);
       if (capture_start_.operation_id != id || capture_start_.state != CaptureStartState::PENDING)
@@ -199,8 +316,11 @@ void IRKWizardComponent::refresh_snapshot_() {
   WizardSnapshot next;
   next.status = status_sensor_ ? status_sensor_->state : "idle";
   // One lock on irk_capture's state for the whole snapshot.
-  const irk_capture::SessionState core = irk_capture_->get_session_state();
-  next.history_json = core.history_json;
+  irk_capture::SessionState core = irk_capture_->get_session_state();
+  // Shared, not copied. With a long history this is by far the largest value
+  // the wizard holds, and every status request used to copy it twice more.
+  if (core.history_json.empty()) core.history_json = "[]";
+  next.history_json = std::make_shared<const std::string>(std::move(core.history_json));
   next.irk = irk_sensor_ ? irk_sensor_->state : "";
   next.device_mac = device_mac_sensor_ ? device_mac_sensor_->state : "";
   next.effective_mac = effective_mac_sensor_ ? effective_mac_sensor_->state : "";
@@ -216,10 +336,10 @@ void IRKWizardComponent::refresh_snapshot_() {
   next.stop_after_capture = core.stop_after_capture;
   next.capture_result = core.capture_result;
   next.bond_clear = core.bond_clear;
-  if (next.history_json.empty()) next.history_json = "[]";
+  next.identity_refresh = core.identity_refresh;
 
   MutexGuard lock(snapshot_mutex_);
-  snapshot_ = next;
+  snapshot_ = std::move(next);
 }
 
 //======================== HTTP handlers ========================
@@ -243,7 +363,7 @@ static void set_security_headers(httpd_req_t* req) {
   httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
 }
 
-static esp_err_t send_json(httpd_req_t* req, const std::string& body) {
+static void set_json_headers(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
   set_security_headers(req);
   // /api/status carries the captured IRK and the peer's identity address, which
@@ -251,6 +371,10 @@ static esp_err_t send_json(httpd_req_t* req, const std::string& body) {
   // disk cache and out of any intermediary, rather than merely requiring
   // revalidation the way the page's no-cache does.
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+}
+
+static esp_err_t send_json(httpd_req_t* req, const std::string& body) {
+  set_json_headers(req);
   return httpd_resp_send(req, body.c_str(), body.size());
 }
 
@@ -264,35 +388,23 @@ static bool matching_boot_baseline(httpd_req_t* req, const std::string& body, ui
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   boot_id = self->irk_capture() ? self->irk_capture()->get_capture_result().boot_id : 0;
   if (boot_id == 0) {
-    httpd_resp_set_status(req, "503 Service Unavailable");
-    send_json(req, "{\"error\":\"Boot identity unavailable; retry shortly\"}");
-    return false;
+    // The server starts only after irk_capture's setup(), so a missing boot
+    // identity means the component is absent or never initialised. Neither
+    // clears on its own; telling the user to retry would be wrong.
+    return send_error(req, "503 Service Unavailable",
+                      "Capture component unavailable; check the device log");
   }
+  // Treat the browser's baseline as an opaque string of digits. The extractor
+  // accepts only a complete, quoted value that ends the member.
   std::string expected_boot_id;
-  size_t value_pos = 0;
-  // Treat the browser's baseline as an opaque string. Require a complete quoted
-  // token because the small shared extractor also accepts unfinished strings.
-  bool valid_baseline =
-      json_extract_string(body, "expected_boot_id", expected_boot_id) &&
-      !expected_boot_id.empty() && expected_boot_id.size() <= 10 &&
-      expected_boot_id.find_first_not_of("0123456789") == std::string::npos &&
-      json_find_value_start(body, "expected_boot_id", value_pos) &&
-      body.compare(value_pos, expected_boot_id.size() + 2, "\"" + expected_boot_id + "\"") == 0;
-  if (valid_baseline) {
-    value_pos += expected_boot_id.size() + 2;
-    value_pos = body.find_first_not_of(" \t\r\n", value_pos);
-    valid_baseline =
-        value_pos != std::string::npos && (body[value_pos] == ',' || body[value_pos] == '}');
-  }
+  const bool valid_baseline = json_extract_string(body, "expected_boot_id", expected_boot_id) &&
+                              !expected_boot_id.empty() && expected_boot_id.size() <= 10 &&
+                              expected_boot_id.find_first_not_of("0123456789") == std::string::npos;
   if (!valid_baseline) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    send_json(req, "{\"error\":\"expected_boot_id must be a quoted boot identity\"}");
-    return false;
+    return send_error(req, "400 Bad Request", "expected_boot_id must be a quoted boot identity");
   }
   if (expected_boot_id != std::to_string(boot_id)) {
-    httpd_resp_set_status(req, "409 Conflict");
-    send_json(req, "{\"error\":\"Device already restarted; refresh and try again\"}");
-    return false;
+    return send_error(req, "409 Conflict", "Device already restarted; refresh and try again");
   }
   return true;
 }
@@ -429,8 +541,13 @@ void IRKWizardComponent::dump_config() {
 
 static esp_err_t handle_index(httpd_req_t* req) {
   if (!authorized(req)) return ESP_OK;
-  httpd_resp_set_type(req, "text/html");
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
+  if (self->page_data() == nullptr || self->page_size() == 0) {
+    // An empty 200 renders as a blank page with nothing to explain it.
+    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "Wizard page missing from this build");
+  }
+  httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
   httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
   set_security_headers(req);
@@ -450,48 +567,65 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
                     : "Heart Sensor";
   }
 
-  std::string json = "{";
-  json += "\"boot_id\":" + std::to_string(s.capture_result.boot_id) + ",";
-  json += "\"status\":\"" + json_escape(s.status) + "\",";
-  json += "\"next_capture_label\":\"" + json_escape(s.next_capture_label) + "\",";
-  json += "\"advertised_name\":\"" + json_escape(s.advertised_name) + "\",";
-  json += "\"profile\":\"" + json_escape(s.profile) + "\",";
-  json += "\"advertising\":" + std::string(s.advertising ? "true" : "false") + ",";
-  json += "\"effective_mac\":\"" + json_escape(s.effective_mac) + "\",";
-  json += "\"device_mac\":\"" + json_escape(s.device_mac) + "\",";
-  json += "\"irk\":\"" + json_escape(s.irk) + "\",";
-  json += "\"stop_after_capture\":" + std::string(s.stop_after_capture ? "true" : "false") + ",";
-  json += "\"history\":" + (s.history_json.empty() ? std::string("[]") : s.history_json) + ",";
-  json += "\"capture_result\":{\"boot_id\":" + std::to_string(s.capture_result.boot_id) +
-          ",\"sequence\":" + std::to_string(s.capture_result.sequence) + ",\"irk\":\"" +
-          json_escape(s.capture_result.irk) + "\",\"device_mac\":\"" +
-          json_escape(s.capture_result.device_mac) + "\"},";
-  json += "\"capture_start\":{\"operation_id\":" + std::to_string(s.capture_start.operation_id) +
+  std::string head = "{";
+  head += "\"boot_id\":" + std::to_string(s.capture_result.boot_id) + ",";
+  head += "\"status\":\"" + json_escape(s.status) + "\",";
+  head += "\"next_capture_label\":\"" + json_escape(s.next_capture_label) + "\",";
+  head += "\"advertised_name\":\"" + json_escape(s.advertised_name) + "\",";
+  head += "\"profile\":\"" + json_escape(s.profile) + "\",";
+  head += "\"advertising\":" + std::string(s.advertising ? "true" : "false") + ",";
+  head += "\"effective_mac\":\"" + json_escape(s.effective_mac) + "\",";
+  head += "\"device_mac\":\"" + json_escape(s.device_mac) + "\",";
+  head += "\"irk\":\"" + json_escape(s.irk) + "\",";
+  head += "\"stop_after_capture\":" + std::string(s.stop_after_capture ? "true" : "false") + ",";
+  head += "\"history\":";
+  std::string tail =
+      ",\"capture_result\":{\"boot_id\":" + std::to_string(s.capture_result.boot_id) +
+      ",\"sequence\":" + std::to_string(s.capture_result.sequence) + ",\"irk\":\"" +
+      json_escape(s.capture_result.irk) + "\",\"device_mac\":\"" +
+      json_escape(s.capture_result.device_mac) + "\"},";
+  tail += "\"capture_start\":{\"operation_id\":" + std::to_string(s.capture_start.operation_id) +
           ",\"state\":\"" + capture_start_state_name(s.capture_start.state) +
           "\",\"boot_id\":" + std::to_string(s.capture_start.boot_id) +
           ",\"sequence\":" + std::to_string(s.capture_start.sequence) + "},";
-  json += "\"bond_clear\":" + bond_clear_json(s.bond_clear);
-  json += "}";
-  return send_json(req, json);
+  tail += "\"bond_clear\":" + bond_clear_json(s.bond_clear) + ",";
+  tail +=
+      "\"identity_refresh\":{\"operation_id\":" + std::to_string(s.identity_refresh.operation_id) +
+      ",\"state\":\"" + irk_capture::identity_refresh_state_name(s.identity_refresh.state) + "\"}";
+  tail += "}";
+
+  // Sent in pieces. The history can reach tens of kilobytes, and joining it
+  // to the rest would need a second buffer of that size for every request. A
+  // zero-length chunk ends the response, so no piece may be empty.
+  static const std::string EMPTY_HISTORY = "[]";
+  const std::string& history =
+      s.history_json && !s.history_json->empty() ? *s.history_json : EMPTY_HISTORY;
+  set_json_headers(req);
+  esp_err_t err = httpd_resp_send_chunk(req, head.c_str(), head.size());
+  if (err == ESP_OK) err = httpd_resp_send_chunk(req, history.c_str(), history.size());
+  if (err == ESP_OK) err = httpd_resp_send_chunk(req, tail.c_str(), tail.size());
+  if (err == ESP_OK) err = httpd_resp_send_chunk(req, nullptr, 0);
+  // A failed send returns an error so the server closes the connection; the
+  // browser must not take a truncated body for a complete one.
+  return err;
 }
 
 static esp_err_t handle_post_advertising(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
-  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  std::string body = read_request_body(req);
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return ESP_OK;
   bool on = false;
-  if (!json_extract_bool(body, "on", on)) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    return send_json(req, "{\"error\":\"on must be a boolean\"}");
+  if (!json_extract_bool(command.body, "on", on)) {
+    return reply_error(req, "400 Bad Request", "on must be a boolean");
   }
-  self->set_advertising(on);
+  static_cast<IRKWizardComponent*>(req->user_ctx)->set_advertising(on);
   return send_ok(req);
 }
 
 static esp_err_t handle_post_capture_start(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
+  // Without the capture check the request is accepted and the page is told only
+  // that the start "failed", with advice to retry something that needs a reboot.
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
   const auto start = static_cast<IRKWizardComponent*>(req->user_ctx)->start_capture();
   httpd_resp_set_status(req, "202 Accepted");
   return send_json(req, "{\"operation_id\":" + std::to_string(start.operation_id) +
@@ -499,23 +633,23 @@ static esp_err_t handle_post_capture_start(httpd_req_t* req) {
 }
 
 static esp_err_t handle_post_profile(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
+  // A failed capture component still accepts a profile change: switching
+  // profile and rebooting is the way out of a GATT table that will not register.
+  Command command;
+  if (!begin_command(req, NEEDS_BODY, command)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  std::string body = read_request_body(req);
+  const std::string& body = command.body;
   std::string profile;
   bool keyboard = false;
   if (!json_extract_string(body, "profile", profile) || !parse_profile_name(profile, keyboard)) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    httpd_resp_send(req, "profile must be \"Heart Sensor\" or \"Keyboard\"", HTTPD_RESP_USE_STRLEN);
+    send_error(req, "400 Bad Request", "profile must be Heart Sensor or Keyboard");
     return ESP_OK;
   }
   uint32_t boot_id = 0;
   if (!matching_boot_baseline(req, body, boot_id)) return ESP_OK;
   if (!self->try_begin_profile_change()) {
-    httpd_resp_set_status(req, "409 Conflict");
-    return send_json(req,
-                     "{\"error\":\"A profile change is already in progress; retry after reboot\"}");
+    return reply_error(req, "409 Conflict",
+                       "A profile change is already in progress; retry after reboot");
   }
   const auto requested =
       keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
@@ -533,35 +667,26 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
 }
 
 static esp_err_t handle_post_label(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
-  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  if (!self->irk_capture()) {
-    httpd_resp_set_status(req, "503 Service Unavailable");
-    return send_json(req, "{\"error\":\"Capture component unavailable\"}");
-  }
-  const std::string body = read_request_body(req);
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return ESP_OK;
   std::string label;
-  if (!json_extract_string(body, "label", label)) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    return send_json(req, "{\"error\":\"label must be a string\"}");
+  if (!json_extract_string(command.body, "label", label)) {
+    return reply_error(req, "400 Bad Request", "label must be a string");
   }
-  const std::string saved_label = self->irk_capture()->set_next_capture_label(label);
+  const std::string saved_label = command.capture->set_next_capture_label(label);
+  ESP_LOGI(TAG, "Wizard: next capture label '%s'", saved_label.c_str());
   return send_json(req, "{\"ok\":true,\"label\":\"" + json_escape(saved_label) + "\"}");
 }
 
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
-  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  if (!self->irk_capture()) {
-    httpd_resp_set_status(req, "503 Service Unavailable");
-    return send_json(req, "{\"error\":\"Capture component unavailable\"}");
-  }
-  const auto result = self->irk_capture()->request_bond_clear();
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
+  auto* capture = command.capture;
+  ESP_LOGI(TAG, "Wizard: forget all bonds requested");
+  const auto result = capture->request_bond_clear();
   std::string json = bond_clear_json(result);
   json.pop_back();
-  json += ",\"boot_id\":" + std::to_string(self->irk_capture()->get_capture_result().boot_id) + "}";
+  json += ",\"boot_id\":" + std::to_string(capture->get_capture_result().boot_id) + "}";
   if (result.state == irk_capture::BondClearState::PENDING) {
     httpd_resp_set_status(req, "202 Accepted");
   }
@@ -569,37 +694,31 @@ static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
 }
 
 static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
-  auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  if (!self->irk_capture()) {
-    httpd_resp_set_status(req, "503 Service Unavailable");
-    return send_json(req, "{\"error\":\"Capture component unavailable\"}");
-  }
-  std::string body = read_request_body(req);
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return ESP_OK;
   bool enabled = false;
-  if (!json_extract_bool(body, "enabled", enabled)) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    return send_json(req, "{\"error\":\"enabled must be a boolean\"}");
+  if (!json_extract_bool(command.body, "enabled", enabled)) {
+    return reply_error(req, "400 Bad Request", "enabled must be a boolean");
   }
-  self->irk_capture()->set_stop_after_capture(enabled);
+  ESP_LOGI(TAG, "Wizard: stop advertising after capture %s", enabled ? "on" : "off");
+  command.capture->set_stop_after_capture(enabled);
   return send_ok(req);
 }
 
 static esp_err_t handle_post_fresh_identity(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
   static_cast<IRKWizardComponent*>(req->user_ctx)->fresh_identity();
   return send_ok(req);
 }
 
 static esp_err_t handle_post_reboot(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
-  if (!json_request(req)) return ESP_OK;
+  // A reboot is how a failed component recovers, so it needs no usable one.
+  Command command;
+  if (!begin_command(req, NEEDS_BODY, command)) return ESP_OK;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
-  const std::string body = read_request_body(req);
   uint32_t boot_id = 0;
-  if (!matching_boot_baseline(req, body, boot_id)) return ESP_OK;
+  if (!matching_boot_baseline(req, command.body, boot_id)) return ESP_OK;
   ESP_LOGI(TAG, "Reboot requested from the wizard");
   // Read the core identity, not the periodic snapshot, and finish sending the
   // acknowledgment before starting the reboot delay. A lost response can still

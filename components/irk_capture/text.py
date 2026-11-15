@@ -6,8 +6,16 @@ import re
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import text
+from esphome.core import EsphomeError
 
-from . import CONF_BLE_NAME, CONF_IRK_CAPTURE_ID, IRKCaptureComponent, irk_capture_ns
+from . import (
+    BLE_NAME_MAX_LEN,
+    CONF_BLE_NAME,
+    CONF_IRK_CAPTURE_ID,
+    KEYBOARD_DEFAULT_NAME,
+    IRKCaptureComponent,
+    irk_capture_ns,
+)
 
 CONF_NEXT_CAPTURE_LABEL = "next_capture_label"
 
@@ -18,8 +26,19 @@ def capture_label_max_len():
     The firmware trims a label to that length, so the entity must offer the
     same limit. Reading it keeps one definition instead of a copy that drifts.
     """
-    header = (Path(__file__).parent / "irk_capture.h").read_text()
-    return int(re.search(r"\bCAPTURE_LABEL_MAX_LEN = (\d+);", header).group(1))
+    path = Path(__file__).parent / "irk_capture.h"
+    try:
+        header = path.read_text()
+    except OSError as err:
+        raise EsphomeError(f"irk_capture cannot read {path}: {err}") from err
+    match = re.search(r"\bCAPTURE_LABEL_MAX_LEN = (\d+);", header)
+    if match is None:
+        # Without this the build stops on "'NoneType' object has no attribute
+        # 'group'", which says nothing about what to fix.
+        raise EsphomeError(
+            f"irk_capture: CAPTURE_LABEL_MAX_LEN is not defined as a number in {path}"
+        )
+    return int(match.group(1))
 
 
 IRKCaptureText = irk_capture_ns.class_("IRKCaptureText", text.Text, cg.Component)
@@ -45,9 +64,12 @@ async def to_code(config):
     parent = await cg.get_variable(config[CONF_IRK_CAPTURE_ID])
 
     if CONF_BLE_NAME in config:
-        # 13 fits the Keyboard default ("Logitech K380"); the device trims any
-        # other name to 12. Without a limit Home Assistant accepts 255.
-        txt = await text.new_text(config[CONF_BLE_NAME], max_length=13)
+        # Long enough for the Keyboard default name; the device trims any other
+        # name to BLE_NAME_MAX_LEN. Without a limit Home Assistant accepts 255.
+        txt = await text.new_text(
+            config[CONF_BLE_NAME],
+            max_length=max(BLE_NAME_MAX_LEN, len(KEYBOARD_DEFAULT_NAME)),
+        )
         cg.add(parent.set_ble_name_text(txt))
 
     if CONF_NEXT_CAPTURE_LABEL in config:
