@@ -240,6 +240,58 @@ int chr_read_protected(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ct
 
 //======================== BLE setup/registry ========================
 
+// Store status callback: logs when the bond table is full, then applies
+// NimBLE's round-robin eviction. Eviction is otherwise silent, and a peer whose
+// bond vanished re-pairs in ways that are hard to explain from the log alone.
+// The bonded peers are listed before and after so the log names the evicted
+// peer whichever rule NimBLE used to pick it.
+static int log_and_evict_bond(struct ble_store_status_event* event, void* arg) {
+  if (event->event_code != BLE_STORE_EVENT_OVERFLOW) {
+    if (event->event_code == BLE_STORE_EVENT_FULL) {
+      ESP_LOGD(TAG, "Bond store full (obj_type=%d); oldest bond is evicted on the next write",
+               event->full.obj_type);
+    }
+    return ble_store_util_status_rr(event, arg);
+  }
+
+  constexpr int kMaxPeers = MYNEWT_VAL(BLE_STORE_MAX_BONDS);
+  ble_addr_t before[kMaxPeers];
+  ble_addr_t after[kMaxPeers];
+  int num_before = 0;
+  int num_after = 0;
+  const bool listed = ble_store_util_bonded_peers(before, &num_before, kMaxPeers) == 0;
+
+  const int rc = ble_store_util_status_rr(event, arg);
+
+  const ble_addr_t* evicted = nullptr;
+  if (listed && ble_store_util_bonded_peers(after, &num_after, kMaxPeers) == 0) {
+    for (int i = 0; i < num_before && evicted == nullptr; ++i) {
+      bool still_bonded = false;
+      for (int j = 0; j < num_after; ++j) {
+        if (addr_equal(before[i], after[j])) {
+          still_bonded = true;
+          break;
+        }
+      }
+      if (!still_bonded) evicted = &before[i];
+    }
+  }
+
+  if (rc != 0) {
+    ESP_LOGW(TAG, "Bond store overflow (obj_type=%d, %d/%d bonds); eviction failed rc=%d",
+             event->overflow.obj_type, num_before, kMaxPeers, rc);
+  } else if (evicted != nullptr) {
+    ESP_LOGI(TAG,
+             "Bond store overflow (obj_type=%d, %d/%d bonds); evicted oldest bond %s (type=%u)",
+             event->overflow.obj_type, num_before, kMaxPeers, addr_to_str(*evicted).c_str(),
+             (unsigned) evicted->type);
+  } else {
+    ESP_LOGI(TAG, "Bond store overflow (obj_type=%d, %d/%d bonds); evicted a bond",
+             event->overflow.obj_type, num_before, kMaxPeers);
+  }
+  return rc;
+}
+
 void IRKCaptureComponent::setup_ble() {
   // NVS holds the persisted BLE profile. Bonds are kept in RAM (see below).
   // ESPHome has already initialised NVS, so this normally just confirms it. If
@@ -316,13 +368,7 @@ void IRKCaptureComponent::setup_ble() {
   ble_hs_cfg.sync_cb = []() {
     ESP_LOGI(TAG, "NimBLE host synced");
     // Print SM config once early to reduce chances of log drops later
-    ESP_LOGI(TAG,
-             "SM config (on sync): bonding=%d mitm=%d sc=%d io_cap=%d "
-             "our_key_dist=0x%02X "
-             "their_key_dist=0x%02X",
-             (int) ble_hs_cfg.sm_bonding, (int) ble_hs_cfg.sm_mitm, (int) ble_hs_cfg.sm_sc,
-             (int) ble_hs_cfg.sm_io_cap, (unsigned) ble_hs_cfg.sm_our_key_dist,
-             (unsigned) ble_hs_cfg.sm_their_key_dist);
+    log_sm_config("SM config (on sync)");
 
     // Now that host is synced, set flag and start advertising if configured
     if (g_irk_instance) {
@@ -351,7 +397,7 @@ void IRKCaptureComponent::setup_ble() {
   // device in one session could never pair. Round-robin eviction is the right
   // policy here: a captured IRK is already published and held in irk_cache_,
   // so the bond itself is disposable once the capture completes.
-  ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+  ble_hs_cfg.store_status_cb = log_and_evict_bond;
 
   // Bonds are kept in RAM only: __init__.py disables CONFIG_BT_NIMBLE_NVS_PERSIST,
   // so no peer key outlives a reboot or a change of device ownership. Clearing

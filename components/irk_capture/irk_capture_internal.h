@@ -347,13 +347,77 @@ static inline bool addr_equal(const ble_addr_t& lhs, const ble_addr_t& rhs) {
 //   if (!g.acquired()) { ...; return; }     // bail on timeout
 using BleOpGuard = MutexGuard;
 
-static inline void log_sm_config() {
+// Security Manager IO capability names (Core spec Vol 3 Part H 3.5.1).
+static inline const char* io_cap_str(uint8_t io_cap) {
+  switch (io_cap) {
+    case BLE_HS_IO_DISPLAY_ONLY:
+      return "DisplayOnly";
+    case BLE_HS_IO_DISPLAY_YESNO:
+      return "DisplayYesNo";
+    case BLE_HS_IO_KEYBOARD_ONLY:
+      return "KeyboardOnly";
+    case BLE_HS_IO_NO_INPUT_OUTPUT:
+      return "NoInputNoOutput";
+    case BLE_HS_IO_KEYBOARD_DISPLAY:
+      return "KeyboardDisplay";
+    default:
+      return "unknown";
+  }
+}
+
+// Key distribution bits as "ENC|ID|SIGN|LINK"; "none" when no bit is set.
+// Writes into `buf`, which must hold at least 20 bytes, and returns it.
+static inline const char* key_dist_str(uint8_t dist, char* buf, size_t len) {
+  static const struct {
+    uint8_t bit;
+    const char* name;
+  } kBits[] = {
+    { BLE_SM_PAIR_KEY_DIST_ENC, "ENC" },
+    { BLE_SM_PAIR_KEY_DIST_ID, "ID" },
+    { BLE_SM_PAIR_KEY_DIST_SIGN, "SIGN" },
+    { BLE_SM_PAIR_KEY_DIST_LINK, "LINK" },
+  };
+  size_t pos = 0;
+  buf[0] = '\0';
+  for (const auto& b : kBits) {
+    if ((dist & b.bit) == 0) continue;
+    int n = snprintf(buf + pos, len - pos, "%s%s", pos ? "|" : "", b.name);
+    if (n < 0 || (size_t) n >= len - pos) break;
+    pos += (size_t) n;
+  }
+  if (pos == 0) snprintf(buf, len, "none");
+  return buf;
+}
+
+static inline void log_sm_config(const char* label = "SM config") {
+  char ours[20];
+  char theirs[20];
   ESP_LOGI(TAG,
-           "SM config: bonding=%d mitm=%d sc=%d io_cap=%d our_key_dist=0x%02X "
-           "their_key_dist=0x%02X",
-           (int) ble_hs_cfg.sm_bonding, (int) ble_hs_cfg.sm_mitm, (int) ble_hs_cfg.sm_sc,
-           (int) ble_hs_cfg.sm_io_cap, (unsigned) ble_hs_cfg.sm_our_key_dist,
-           (unsigned) ble_hs_cfg.sm_their_key_dist);
+           "%s: bonding=%d mitm=%d sc=%d io_cap=%d (%s) our_key_dist=0x%02X (%s) "
+           "their_key_dist=0x%02X (%s)",
+           label, (int) ble_hs_cfg.sm_bonding, (int) ble_hs_cfg.sm_mitm, (int) ble_hs_cfg.sm_sc,
+           (int) ble_hs_cfg.sm_io_cap, io_cap_str(ble_hs_cfg.sm_io_cap),
+           (unsigned) ble_hs_cfg.sm_our_key_dist,
+           key_dist_str(ble_hs_cfg.sm_our_key_dist, ours, sizeof(ours)),
+           (unsigned) ble_hs_cfg.sm_their_key_dist,
+           key_dist_str(ble_hs_cfg.sm_their_key_dist, theirs, sizeof(theirs)));
+}
+
+// Connection parameters with their units: the interval counts 1.25 ms steps
+// and the supervision timeout 10 ms steps; latency is a count of events.
+static inline void log_conn_params(const char* label, uint16_t itvl, uint16_t latency,
+                                   uint16_t supervision_timeout) {
+  const uint32_t itvl_centi_ms = (uint32_t) itvl * 125;
+  ESP_LOGD(TAG,
+           "%s: interval=%u (%" PRIu32 ".%02" PRIu32
+           " ms) latency=%u supervision_timeout=%u (%" PRIu32 " ms)",
+           label, itvl, itvl_centi_ms / 100, itvl_centi_ms % 100, latency, supervision_timeout,
+           (uint32_t) supervision_timeout * 10);
+}
+
+static inline void log_sec_state(const char* label, const struct ble_gap_conn_desc& d) {
+  ESP_LOGI(TAG, "%s: enc=%d bonded=%d auth=%d key_size=%u", label, d.sec_state.encrypted,
+           d.sec_state.bonded, d.sec_state.authenticated, d.sec_state.key_size);
 }
 
 static inline bool get_own_addr(uint8_t out_mac[6], uint8_t* out_type = nullptr) {

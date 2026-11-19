@@ -78,8 +78,7 @@ static void log_conn_desc(uint16_t conn_handle) {
   struct ble_gap_conn_desc d;
   if (ble_gap_conn_find(conn_handle, &d) == 0) {
     // Security state
-    ESP_LOGI(TAG, "sec: enc=%d bonded=%d auth=%d key_size=%u", d.sec_state.encrypted,
-             d.sec_state.bonded, d.sec_state.authenticated, d.sec_state.key_size);
+    log_sec_state("sec", d);
 
     // Addresses
     ESP_LOGI(TAG, "peer ota=%s type=%d", addr_to_str(d.peer_ota_addr).c_str(),
@@ -88,8 +87,7 @@ static void log_conn_desc(uint16_t conn_handle) {
 
     // Connection parameters (helpful for Android watch debugging)
     // supervision_timeout is the link supervision timeout per BLE spec
-    ESP_LOGD(TAG, "conn params: interval=%u latency=%u supervision_timeout=%u", d.conn_itvl,
-             d.conn_latency, d.supervision_timeout);
+    log_conn_params("conn params", d.conn_itvl, d.conn_latency, d.supervision_timeout);
 
     // Role and features
     ESP_LOGD(TAG, "role=%s our_ota=%s", d.role == BLE_GAP_ROLE_MASTER ? "master" : "slave",
@@ -166,6 +164,48 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   return 0;
 }
 
+static const char* subscribe_reason_str(uint8_t reason) {
+  switch (reason) {
+    case BLE_GAP_SUBSCRIBE_REASON_WRITE:
+      return "peer wrote CCCD";
+    case BLE_GAP_SUBSCRIBE_REASON_TERM:
+      return "connection ended";
+    case BLE_GAP_SUBSCRIBE_REASON_RESTORE:
+      return "restored from bond";
+    default:
+      return "unknown";
+  }
+}
+
+// Names the characteristic behind a subscription's value handle. Handles are
+// looked up on demand: they depend on the profile's GATT table and are only
+// final after ble_gatts_start(), and subscriptions are rare enough that the
+// lookups cost nothing that matters.
+static const char* gatt_attr_name(uint16_t attr_handle) {
+  static const ble_uuid16_t kSvcGatt = BLE_UUID16_INIT(0x1801);
+  static const ble_uuid16_t kChrServiceChanged = BLE_UUID16_INIT(0x2A05);
+  static const struct {
+    const ble_uuid_t* svc;
+    const ble_uuid_t* chr;
+    const char* name;
+  } kChrs[] = {
+    { &kSvcGatt.u, &kChrServiceChanged.u, "Service Changed" },
+    { &UUID_SVC_HR.u, &UUID_CHR_HR_MEAS.u, "Heart Rate Measurement" },
+    { &UUID_SVC_BAS.u, &UUID_CHR_BATT_LVL.u, "Battery Level" },
+    { &UUID_SVC_DEVINFO.u, &UUID_CHR_MANUF.u, "Manufacturer Name" },
+    { &UUID_SVC_DEVINFO.u, &UUID_CHR_MODEL.u, "Model Number" },
+    { &UUID_SVC_HID_BLE.u, &UUID_CHR_HID_PROTO.u, "HID Protocol Mode" },
+    { &UUID_SVC_PROT.u, &UUID_CHR_PROT.u, "Protected" },
+  };
+  for (const auto& c : kChrs) {
+    uint16_t val_handle = 0;
+    if (ble_gatts_find_chr(c.svc, c.chr, nullptr, &val_handle) == 0 && val_handle == attr_handle) {
+      return c.name;
+    }
+  }
+  return "unknown";
+}
+
 // NimBLE reports a disconnect reason as the HCI code plus 0x200. Names the
 // reasons this component meets; anything else is shown by number only.
 static const char* disconnect_reason_str(int reason) {
@@ -202,10 +242,6 @@ static const char* disconnect_reason_str(int reason) {
  * advertising off, or a restart is already scheduled after a hold-off.
  */
 int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
-  const char* reason_text = disconnect_reason_str(ev->disconnect.reason);
-  ESP_LOGI(TAG, "Disconnect reason=%d (0x%02x)%s%s", ev->disconnect.reason, ev->disconnect.reason,
-           reason_text[0] != '\0' ? ": " : "", reason_text);
-
   // Use the connection descriptor embedded in the disconnect event directly
   // (ble_gap_conn_find may fail after disconnect since NimBLE removes the
   // descriptor). The post-disconnect timer's peer is set by
@@ -215,10 +251,12 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   bool already_observed = false;
   bool pairing_completed = false;
   CaptureOrigin origin = CaptureOrigin::UNKNOWN;
+  uint32_t connected_since = 0;
   {
     MutexGuard lock(self->state_mutex_);
     if (self->connected_ && self->conn_handle_ == d.conn_handle) {
       connection_generation = self->connection_generation_;
+      connected_since = self->pairing_start_time_;
       pairing_completed = self->enc_ready_;
       origin = self->connection_origin_;
       const std::string peer_addr = addr_to_str(d.peer_id_addr);
@@ -231,6 +269,18 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       }
     }
   }
+  // Logged after the state read so it can say how long the link was up; a
+  // short link that never encrypted points at a different fault than a timeout.
+  const char* reason_text = disconnect_reason_str(ev->disconnect.reason);
+  if (connected_since != 0) {
+    ESP_LOGI(TAG, "Disconnect reason=%d (0x%02X)%s%s after %" PRIu32 " ms connected (encrypted=%d)",
+             ev->disconnect.reason, ev->disconnect.reason, reason_text[0] != '\0' ? ": " : "",
+             reason_text, elapsed_ms(now_ms(), connected_since), (int) pairing_completed);
+  } else {
+    ESP_LOGI(TAG, "Disconnect reason=%d (0x%02X)%s%s", ev->disconnect.reason, ev->disconnect.reason,
+             reason_text[0] != '\0' ? ": " : "", reason_text);
+  }
+
   if (!self->on_disconnect(d.conn_handle)) {
     ESP_LOGW(TAG, "Ignoring disconnect for non-active handle=%u", d.conn_handle);
     return 0;
@@ -326,15 +376,24 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
  * retry in retry_security_if_needed() is time-based.
  */
 int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
-  ESP_LOGI(TAG, "ENC_CHANGE status=%d (0x%02X)", ev->enc_change.status, ev->enc_change.status);
   uint32_t connection_generation = 0;
   CaptureOrigin origin = CaptureOrigin::UNKNOWN;
+  uint32_t connected_since = 0;
   {
     MutexGuard lock(self->state_mutex_);
     if (self->connected_ && self->conn_handle_ == ev->enc_change.conn_handle) {
       connection_generation = self->connection_generation_;
       origin = self->connection_origin_;
+      connected_since = self->pairing_start_time_;
     }
+  }
+  // Time from connect to the encryption result, for tuning the pairing
+  // timeouts against slow peers.
+  if (connected_since != 0) {
+    ESP_LOGI(TAG, "ENC_CHANGE status=%d (0x%02X) %" PRIu32 " ms after connect",
+             ev->enc_change.status, ev->enc_change.status, elapsed_ms(now_ms(), connected_since));
+  } else {
+    ESP_LOGI(TAG, "ENC_CHANGE status=%d (0x%02X)", ev->enc_change.status, ev->enc_change.status);
   }
 
   // Log encryption failure reasons for debugging (especially Android pairing).
@@ -371,6 +430,9 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     struct ble_gap_conn_desc d {};
     const int desc_rc = ble_gap_conn_find(ev->enc_change.conn_handle, &d);
     if (desc_rc == 0) {
+      // The connect-time sec line is always all zeros; this one shows what
+      // pairing actually produced.
+      log_sec_state("sec after pairing", d);
       struct ble_store_value_sec bond {};
       int rc = 0;
       const BondRead read = self->read_peer_irk_(d.peer_id_addr, bond, &rc);
@@ -509,6 +571,23 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
       return handle_gap_repeat_pairing(self, ev);
 
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+      // Peers that renegotiate the connection mid-pairing are a common source
+      // of supervision timeouts, so record the parameters they settled on.
+      if (ev->conn_update.status != 0) {
+        ESP_LOGW(TAG, "Connection update failed: handle=%u status=%d (0x%X)",
+                 ev->conn_update.conn_handle, ev->conn_update.status, ev->conn_update.status);
+        return 0;
+      }
+      struct ble_gap_conn_desc d {};
+      if (ble_gap_conn_find(ev->conn_update.conn_handle, &d) == 0) {
+        log_conn_params("Connection updated", d.conn_itvl, d.conn_latency, d.supervision_timeout);
+      } else {
+        ESP_LOGD(TAG, "Connection updated: handle=%u", ev->conn_update.conn_handle);
+      }
+      return 0;
+    }
+
     case BLE_GAP_EVENT_MTU:
       ESP_LOGI(TAG, "MTU updated: %u", ev->mtu.value);
       return 0;
@@ -563,10 +642,12 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 #ifdef BLE_GAP_EVENT_SUBSCRIBE
     case BLE_GAP_EVENT_SUBSCRIBE:
       ESP_LOGD(TAG,
-               "Subscription changed: handle=%u attr=%u notify=%u indicate=%u "
-               "reason=%u",
-               ev->subscribe.conn_handle, ev->subscribe.attr_handle, ev->subscribe.cur_notify,
-               ev->subscribe.cur_indicate, ev->subscribe.reason);
+               "Subscription changed: handle=%u attr=%u (%s) notify=%u indicate=%u "
+               "reason=%u (%s)",
+               ev->subscribe.conn_handle, ev->subscribe.attr_handle,
+               gatt_attr_name(ev->subscribe.attr_handle), ev->subscribe.cur_notify,
+               ev->subscribe.cur_indicate, ev->subscribe.reason,
+               subscribe_reason_str(ev->subscribe.reason));
       return 0;
 #endif
 
@@ -754,7 +835,9 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   // THREAD-SAFE: use the conn_handle parameter (already stored to conn_handle_
   // under mutex at the top of on_connect)
   int rc = ble_gap_security_initiate(conn_handle);
-  if (rc == BLE_HS_EALREADY) {
+  if (rc == 0) {
+    ESP_LOGD(TAG, "Security initiate: started");
+  } else if (rc == BLE_HS_EALREADY) {
     // A security procedure is already running on this link. NimBLE returns
     // this whichever side started it, so it says nothing about the peer; the
     // 2-second retry would only get EALREADY again.

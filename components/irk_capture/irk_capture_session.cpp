@@ -265,7 +265,6 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     // Retry security after configured delay
     if (!sec_retry_done_copy && (now - sec_init_time_copy) > TimingConfig::SEC_RETRY_DELAY_MS) {
       uint32_t elapsed = now - sec_init_time_copy;
-      ESP_LOGI(TAG, "Retrying security initiate after %" PRIu32 " ms", elapsed);
       // Set sec_retry_done_ under mutex BEFORE calling
       // ble_gap_security_initiate(). Writing it after the BLE call is a race: a
       // NimBLE callback could fire during the call and read sec_retry_done_ as
@@ -283,12 +282,16 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
       int rc = ble_gap_security_initiate(conn_handle_copy);
       // rc==0 (started) and EALREADY (a security procedure is already running,
       // started by either side) are benign; only a genuine error is a warning.
+      // Logged after the call: only rc says whether a retry really happened.
+      // EALREADY means pairing is still running, which is normal for slow peers.
       if (rc == 0) {
-        ESP_LOGD(TAG, "Retry security initiate: started");
+        ESP_LOGI(TAG, "Security not started after %" PRIu32 " ms; retried security initiate",
+                 elapsed);
       } else if (rc == BLE_HS_EALREADY) {
-        ESP_LOGD(TAG, "Retry security initiate: already in progress");
+        ESP_LOGD(TAG, "Security retry skipped after %" PRIu32 " ms: pairing already in progress",
+                 elapsed);
       } else {
-        ESP_LOGW(TAG, "Retry security initiate rc=%d", rc);
+        ESP_LOGW(TAG, "Security retry after %" PRIu32 " ms failed rc=%d", elapsed, rc);
       }
     }
   }
