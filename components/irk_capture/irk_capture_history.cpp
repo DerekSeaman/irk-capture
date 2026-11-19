@@ -185,10 +185,11 @@ static void log_publish_decision(const PublishDecision& decision, const std::str
       }
       break;
     case Reason::RATE_LIMITED:
-      // Intentionally verbose-only: routine suppression should not dominate
-      // debug logs.
-      ESP_LOGV(TAG, "Suppressing bonded reconnect IRK (published %" PRIu32 " ms ago)",
-               decision.since_published_ms);
+      // Debug level so every bonded reconnect explains itself: without this
+      // line a skipped republish leaves no trace, and the reconnect count in
+      // the next "Re-publishing" line appears to jump.
+      ESP_LOGD(TAG, "Bonded reconnect (%u/5): IRK published %" PRIu32 " ms ago; not republishing",
+               decision.reconnect_count, decision.since_published_ms);
       break;
     case Reason::RECONNECT:
       ESP_LOGI(TAG, "Re-publishing IRK after bonded reconnect (%u/5)", decision.reconnect_count);

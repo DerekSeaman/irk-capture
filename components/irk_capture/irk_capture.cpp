@@ -515,7 +515,10 @@ const char* IRKCaptureComponent::status_value_locked_(uint32_t now) {
   if (connected_ && enc_ready_) {
     // irk_gave_up_ also covers polling timeouts; it is not evidence of a
     // no-IRK outcome. Completed reconnects/timeouts are simply waiting to close.
-    return !current_result && !irk_gave_up_ ? "capturing" : "idle";
+    if (!current_result && !irk_gave_up_) return "capturing";
+    // A device that was already bonded reconnected and its key was read again.
+    // Saying so explains a connection that produced no new capture.
+    return connection_origin_ == CaptureOrigin::BONDED ? "reconnected" : "idle";
   }
   if (connected_) return "pairing";
   return advertising_ ? "advertising" : "idle";
