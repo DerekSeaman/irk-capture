@@ -48,7 +48,7 @@ BLE_NAME_MAX_LEN = header_constant("identity_name.h", "BLE_NAME_MAX_LEN")
 DEFAULT_BLE_NAME = header_constant("identity_name.h", "DEFAULT_BLE_NAME")
 KEYBOARD_DEFAULT_NAME = header_constant("identity_name.h", "KEYBOARD_DEFAULT_NAME")
 
-# The characters sanitize_ble_name() keeps at runtime (irk_capture.cpp).
+# The characters sanitize_ble_name() keeps at runtime (irk_capture_identity.cpp).
 BLE_NAME_ALLOWED_CHARS = (
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_"
 )

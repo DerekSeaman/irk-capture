@@ -17,7 +17,7 @@ h1{font-size:20px;margin:0 0 4px}
 .v{font-family:ui-monospace,monospace;font-size:13px;word-break:break-all;text-align:right}
 .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:5px 10px;border-radius:99px}
 .pill.idle{background:#2a3739;color:var(--ink2)}
-.pill.advertising{background:#28323a;color:var(--accent)}
+.pill.advertising,.pill.reconnected{background:#28323a;color:var(--accent)}
 .pill.pairing,.pill.capturing,.pill.rebooting{background:#3a2f1b;color:var(--amber)}
 .pill.captured,.pill.ready{background:#1c3626;color:var(--green)}
 .pill.no_irk,.pill.failed{background:#3a2320;color:var(--red)}
@@ -553,7 +553,7 @@ el('stopAfterSwitch').addEventListener('click',function(){
 });
 
 /* ---------- rendering ---------- */
-var KNOWN=['idle','advertising','pairing','capturing','captured','no_irk','failed','rebooting','ready'];
+var KNOWN=['idle','advertising','pairing','capturing','captured','no_irk','failed','rebooting','ready','reconnected'];
 function setPill(node,status){
   var label=status==='no_irk' ? 'No IRK' : (status==='rebooting' ? 'Rebooting…' : String(status || 'idle'));
   node.textContent=label.charAt(0).toUpperCase()+label.slice(1);
@@ -668,6 +668,9 @@ function renderCaptureHint(d){
   } else if(d.status==='failed'){
     hint.textContent='Pairing did not complete. Forget this device in its Bluetooth settings, '+
       'then go back a step and try again.';
+  } else if(d.status==='reconnected'){
+    hint.textContent='A device that already paired reconnected; its key was not captured again. '+
+      'Waiting for your device to connect.';
   } else if(d.status==='pairing'||d.status==='capturing'){
     hint.textContent='Your device is connected - finishing the key exchange. Do not touch anything.';
   } else if(!d.advertising){
