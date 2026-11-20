@@ -2,12 +2,30 @@
 // bookkeeping they call. All of it runs on the NimBLE task.
 
 #include "irk_capture_internal.h"
+#include "irk_capture_gatt.h"
 
 // ESP32-only implementation - requires Bluetooth hardware
 #ifdef USE_ESP32
 
 namespace esphome {
 namespace irk_capture {
+
+// Connection parameters with their units: the interval counts 1.25 ms steps
+// and the supervision timeout 10 ms steps; latency is a count of events.
+static inline void log_conn_params(const char* label, uint16_t itvl, uint16_t latency,
+                                   uint16_t supervision_timeout) {
+  const uint32_t itvl_centi_ms = (uint32_t) itvl * 125;
+  ESP_LOGD(TAG,
+           "%s: interval=%u (%" PRIu32 ".%02" PRIu32
+           " ms) latency=%u supervision_timeout=%u (%" PRIu32 " ms)",
+           label, itvl, itvl_centi_ms / 100, itvl_centi_ms % 100, latency, supervision_timeout,
+           (uint32_t) supervision_timeout * 10);
+}
+
+static inline void log_sec_state(const char* label, const struct ble_gap_conn_desc& d) {
+  ESP_LOGI(TAG, "%s: enc=%d bonded=%d auth=%d key_size=%u", label, d.sec_state.encrypted,
+           d.sec_state.bonded, d.sec_state.authenticated, d.sec_state.key_size);
+}
 
 // NimBLE does not report a bare SMP reason code in enc_change.status. It encodes
 // the failing side into the value: BLE_HS_SM_US_ERR(reason) == 0x400 + reason for

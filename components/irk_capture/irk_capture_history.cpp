@@ -9,6 +9,43 @@
 namespace esphome {
 namespace irk_capture {
 
+// Forgets every bonded peer, then clears whatever else the bond store holds.
+//
+// ble_store_clear() on its own deletes the stored records but leaves each
+// peer's IRK in the resolving list, so a "forgotten" phone's private address
+// still resolves to its identity until the next reboot. ble_gap_unpair()
+// removes the peer from both. Call it with advertising stopped and nothing
+// connected: ble_gap_unpair() refuses (EBUSY) while advertising and would
+// terminate a live link to the peer. Takes NimBLE's host lock, so hold neither
+// component mutex. Keep the first unpair error even if the final store clear
+// succeeds; otherwise retained resolving keys would be reported as gone.
+BondCleanupResult unpair_and_clear_bonds() {
+  constexpr int kMaxPeers = MYNEWT_VAL(BLE_STORE_MAX_BONDS);
+  ble_addr_t peers[kMaxPeers];
+  int num_peers = 0;
+  const int list_rc = ble_store_util_bonded_peers(peers, &num_peers, kMaxPeers);
+  BondCleanupResult result;
+  result.unpair_rc = list_rc;
+  if (list_rc != 0) {
+    ESP_LOGW(TAG, "Could not list bonded peers rc=%d; their keys may stay resolvable until reboot",
+             list_rc);
+    num_peers = 0;
+  }
+  for (int i = 0; i < num_peers; ++i) {
+    const int rc = ble_gap_unpair(&peers[i]);
+    if (rc != 0 && rc != BLE_HS_ENOENT) {
+      if (result.unpair_rc == 0) result.unpair_rc = rc;
+      ESP_LOGW(TAG, "Unpair %s failed rc=%d; its key may stay resolvable until reboot",
+               addr_to_str(peers[i]).c_str(), rc);
+    }
+  }
+  if (num_peers > 0) {
+    ESP_LOGD(TAG, "Unpaired %d bonded peer(s) before clearing the bond store", num_peers);
+  }
+  result.store_rc = ble_store_clear();
+  return result;
+}
+
 static void log_spacer() {
   ESP_LOGI(TAG, " ");
 }
@@ -396,7 +433,9 @@ BondClearResult IRKCaptureComponent::request_bond_clear() {
 void IRKCaptureComponent::notify_bond_clear_() {
   {
     MutexGuard lock(state_mutex_);
-    if (!bond_clear_task_ || !bond_clear_pending_) return;
+    if (!bond_clear_task_ ||
+        (!bond_clear_pending_ && pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE))
+      return;
   }
   // Task notifications do not wait for queue capacity. A reset racing this
   // notification is harmless: the worker rechecks the pending request.
@@ -406,8 +445,10 @@ void IRKCaptureComponent::notify_bond_clear_() {
 void IRKCaptureComponent::queue_bond_clear_() {
   {
     MutexGuard lock(state_mutex_);
-    if (!bond_clear_pending_ || !host_synced_ || host_generation_ != bond_clear_host_generation_)
-      return;
+    if (!host_synced_) return;
+    const bool clear_current =
+        bond_clear_pending_ && host_generation_ == bond_clear_host_generation_;
+    if (!clear_current && pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE) return;
   }
   // Worker task only, with neither component mutex held. This can block on
   // older SDKs. The event is just a wake-up, not ownership of a request: after
@@ -473,10 +514,15 @@ void IRKCaptureComponent::handle_forget_bonds_() {
 
   if (can_clear) {
     // Store work takes NimBLE's host lock; hold neither component mutex.
-    const int rc = ble_store_clear();
-    if (rc != 0) {
+    const BondCleanupResult cleanup = unpair_and_clear_bonds();
+    if (cleanup.store_rc != 0) {
+      // Stored bonds are in flash, so a restart would bring them back.
       state = BondClearState::FAILED;
       reason = "Bond storage could not be cleared; retry.";
+    } else if (cleanup.unpair_rc != 0) {
+      // The store is empty; only resolving-list keys remain, and boot clears them.
+      state = BondClearState::FAILED;
+      reason = "Some devices stay recognised until the ESP32 restarts.";
     } else {
       state = BondClearState::SUCCEEDED;
       reason.clear();

@@ -448,7 +448,7 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 
 `failed` means one of two things. Check the device log to see which.
 
-- **A pairing ended without a result.** The log shows `ENC_CHANGE failed` or `IRK not found`. See [IRK Not Captured After Pairing](#irk-not-captured-after-pairing).
+- **A pairing ended without a result.** The log shows `ENC_CHANGE failed`, `IRK not found`, or `Encryption timeout` / `Pairing timeout` when the device connected but never finished pairing. See [IRK Not Captured After Pairing](#irk-not-captured-after-pairing).
 - **Bluetooth didn't start.** After 30 seconds the log shows `Bluetooth host has not synchronised`. Status stays `failed` until Bluetooth starts. The ESP32 restarts by itself after 5 minutes if nothing has been captured. If the restarts continue, check the Bluetooth configuration in your build, and do a clean build.
 
 ### IRK Not Captured After Pairing

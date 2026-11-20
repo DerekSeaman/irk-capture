@@ -11,7 +11,7 @@
 namespace esphome {
 namespace irk_capture {
 
-static constexpr char VERSION[] = "1.7.5";
+static constexpr char VERSION[] = "1.7.6";
 
 //======================== Component lifecycle ========================
 
@@ -118,6 +118,7 @@ void IRKCaptureComponent::setup() {
       &bond_clear_event_,
       [](struct ble_npl_event* event) {
         auto* self = static_cast<IRKCaptureComponent*>(ble_npl_event_get_arg(event));
+        self->handle_pending_termination_();
         self->handle_forget_bonds_();
       },
       this);
@@ -136,7 +137,9 @@ void IRKCaptureComponent::setup() {
           },
           "irk_bond_clear", 2048, this, tskIDLE_PRIORITY + 1, &bond_clear_task_) != pdPASS) {
     bond_clear_task_ = nullptr;
-    ESP_LOGE(TAG, "Bond-clear worker allocation failed; stored-bond clearing is unavailable");
+    ESP_LOGE(TAG,
+             "BLE worker allocation failed; bond clearing unavailable, disconnects use timeout "
+             "recovery");
   }
 
   // on_ble_host_synced() applies the resolved intent when NimBLE becomes ready.

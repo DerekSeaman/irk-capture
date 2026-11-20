@@ -2,6 +2,7 @@
 // the capture-start request.
 
 #include "irk_capture_internal.h"
+#include "irk_capture_gatt.h"
 
 // ESP32-only implementation - requires Bluetooth hardware
 #ifdef USE_ESP32

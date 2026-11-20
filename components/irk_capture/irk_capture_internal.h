@@ -60,7 +60,8 @@ enc_change, etc.)
 2. ESPHome main task: Executes loop(), setup(), and UI callbacks (switch,
 button, text)
 3. Bond-clear worker: Enqueues NimBLE wake-ups; may wait for queue capacity,
-but never holds a component mutex while doing so or deletes bonds itself
+but never holds a component mutex while doing so or deletes bonds itself. The
+worker also queues generation-checked completion disconnects on the host task.
 4. esp_http_server task (only with irk_wizard): calls the thread-safe getters,
 set_next_capture_label(), set_stop_after_capture() and request_bond_clear().
 Everything else the wizard does is deferred to the main task.
@@ -198,20 +199,6 @@ struct TimingConfig {
       4000;  // How long the status sensor holds "captured" / "no_irk" / "failed"
 };
 
-// GATT service and characteristic UUIDs
-static constexpr uint16_t UUID_SVC_HEART_RATE = 0x180D;
-static constexpr uint16_t UUID_CHR_HEART_RATE_MEASUREMENT = 0x2A37;
-static constexpr uint16_t UUID_SVC_DEVICE_INFO = 0x180A;
-static constexpr uint16_t UUID_CHR_MANUFACTURER_NAME = 0x2A29;
-static constexpr uint16_t UUID_CHR_MODEL_NUMBER = 0x2A24;
-static constexpr uint16_t UUID_SVC_BATTERY = 0x180F;
-static constexpr uint16_t UUID_CHR_BATTERY_LEVEL = 0x2A19;
-static constexpr uint16_t UUID_SVC_HID = 0x1812;  // Human Interface Device (for Keyboard profile)
-static constexpr uint16_t UUID_CHR_HID_PROTOCOL_MODE = 0x2A4E;
-
-// BLE Appearance values
-static constexpr uint16_t APPEARANCE_HEART_RATE_SENSOR = 0x0340;
-
 //======================== IRK lifecycle (for readers) ========================
 /*
 Connect → Initiate security
@@ -237,28 +224,6 @@ Why this lifecycle: Maintains compatibility (immediate disconnect after capture)
 while adding robustness for timing variations across different BLE peer
 implementations.
 */
-
-//======================== UUIDs ========================
-
-static const ble_uuid16_t UUID_SVC_HR = BLE_UUID16_INIT(UUID_SVC_HEART_RATE);
-static const ble_uuid16_t UUID_CHR_HR_MEAS = BLE_UUID16_INIT(UUID_CHR_HEART_RATE_MEASUREMENT);
-
-static const ble_uuid16_t UUID_SVC_DEVINFO = BLE_UUID16_INIT(UUID_SVC_DEVICE_INFO);
-static const ble_uuid16_t UUID_CHR_MANUF = BLE_UUID16_INIT(UUID_CHR_MANUFACTURER_NAME);
-static const ble_uuid16_t UUID_CHR_MODEL = BLE_UUID16_INIT(UUID_CHR_MODEL_NUMBER);
-
-static const ble_uuid16_t UUID_SVC_BAS = BLE_UUID16_INIT(UUID_SVC_BATTERY);
-static const ble_uuid16_t UUID_CHR_BATT_LVL = BLE_UUID16_INIT(UUID_CHR_BATTERY_LEVEL);
-
-// HID service for Keyboard profile
-static const ble_uuid16_t UUID_SVC_HID_BLE = BLE_UUID16_INIT(UUID_SVC_HID);
-static const ble_uuid16_t UUID_CHR_HID_PROTO = BLE_UUID16_INIT(UUID_CHR_HID_PROTOCOL_MODE);
-
-// Optional protected service/characteristic to force pairing via READ_ENC
-static const ble_uuid128_t UUID_SVC_PROT = BLE_UUID128_INIT(
-    0x12, 0x34, 0x56, 0x78, 0x90, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x09, 0x87, 0x65, 0x43, 0x21);
-static const ble_uuid128_t UUID_CHR_PROT = BLE_UUID128_INIT(
-    0x21, 0x43, 0x65, 0x87, 0x09, 0xBA, 0xDC, 0xFE, 0xEF, 0xCD, 0xAB, 0x90, 0x78, 0x56, 0x34, 0x12);
 
 //======================== Forward decls ========================
 
@@ -347,78 +312,7 @@ static inline bool addr_equal(const ble_addr_t& lhs, const ble_addr_t& rhs) {
 //   if (!g.acquired()) { ...; return; }     // bail on timeout
 using BleOpGuard = MutexGuard;
 
-// Security Manager IO capability names (Core spec Vol 3 Part H 3.5.1).
-static inline const char* io_cap_str(uint8_t io_cap) {
-  switch (io_cap) {
-    case BLE_HS_IO_DISPLAY_ONLY:
-      return "DisplayOnly";
-    case BLE_HS_IO_DISPLAY_YESNO:
-      return "DisplayYesNo";
-    case BLE_HS_IO_KEYBOARD_ONLY:
-      return "KeyboardOnly";
-    case BLE_HS_IO_NO_INPUT_OUTPUT:
-      return "NoInputNoOutput";
-    case BLE_HS_IO_KEYBOARD_DISPLAY:
-      return "KeyboardDisplay";
-    default:
-      return "unknown";
-  }
-}
-
-// Key distribution bits as "ENC|ID|SIGN|LINK"; "none" when no bit is set.
-// Writes into `buf`, which must hold at least 20 bytes, and returns it.
-static inline const char* key_dist_str(uint8_t dist, char* buf, size_t len) {
-  static const struct {
-    uint8_t bit;
-    const char* name;
-  } kBits[] = {
-    { BLE_SM_PAIR_KEY_DIST_ENC, "ENC" },
-    { BLE_SM_PAIR_KEY_DIST_ID, "ID" },
-    { BLE_SM_PAIR_KEY_DIST_SIGN, "SIGN" },
-    { BLE_SM_PAIR_KEY_DIST_LINK, "LINK" },
-  };
-  size_t pos = 0;
-  buf[0] = '\0';
-  for (const auto& b : kBits) {
-    if ((dist & b.bit) == 0) continue;
-    int n = snprintf(buf + pos, len - pos, "%s%s", pos ? "|" : "", b.name);
-    if (n < 0 || (size_t) n >= len - pos) break;
-    pos += (size_t) n;
-  }
-  if (pos == 0) snprintf(buf, len, "none");
-  return buf;
-}
-
-static inline void log_sm_config(const char* label = "SM config") {
-  char ours[20];
-  char theirs[20];
-  ESP_LOGI(TAG,
-           "%s: bonding=%d mitm=%d sc=%d io_cap=%d (%s) our_key_dist=0x%02X (%s) "
-           "their_key_dist=0x%02X (%s)",
-           label, (int) ble_hs_cfg.sm_bonding, (int) ble_hs_cfg.sm_mitm, (int) ble_hs_cfg.sm_sc,
-           (int) ble_hs_cfg.sm_io_cap, io_cap_str(ble_hs_cfg.sm_io_cap),
-           (unsigned) ble_hs_cfg.sm_our_key_dist,
-           key_dist_str(ble_hs_cfg.sm_our_key_dist, ours, sizeof(ours)),
-           (unsigned) ble_hs_cfg.sm_their_key_dist,
-           key_dist_str(ble_hs_cfg.sm_their_key_dist, theirs, sizeof(theirs)));
-}
-
-// Connection parameters with their units: the interval counts 1.25 ms steps
-// and the supervision timeout 10 ms steps; latency is a count of events.
-static inline void log_conn_params(const char* label, uint16_t itvl, uint16_t latency,
-                                   uint16_t supervision_timeout) {
-  const uint32_t itvl_centi_ms = (uint32_t) itvl * 125;
-  ESP_LOGD(TAG,
-           "%s: interval=%u (%" PRIu32 ".%02" PRIu32
-           " ms) latency=%u supervision_timeout=%u (%" PRIu32 " ms)",
-           label, itvl, itvl_centi_ms / 100, itvl_centi_ms % 100, latency, supervision_timeout,
-           (uint32_t) supervision_timeout * 10);
-}
-
-static inline void log_sec_state(const char* label, const struct ble_gap_conn_desc& d) {
-  ESP_LOGI(TAG, "%s: enc=%d bonded=%d auth=%d key_size=%u", label, d.sec_state.encrypted,
-           d.sec_state.bonded, d.sec_state.authenticated, d.sec_state.key_size);
-}
+void log_sm_config(const char* label = "SM config");
 
 static inline bool get_own_addr(uint8_t out_mac[6], uint8_t* out_type = nullptr) {
   uint8_t own_addr_type = BLE_OWN_ADDR_PUBLIC;
@@ -455,6 +349,21 @@ static inline void log_terminate_result(int rc, const char* context) {
     ESP_LOGW(TAG, "ble_gap_terminate %s rc=%d", context, rc);
   }
 }
+
+// Outcome of unpair_and_clear_bonds(). The two failures need different advice:
+// stored bonds live in flash and survive a restart, so a store failure needs a
+// retry, while a failed unpair only leaves a resolving-list key that a restart
+// clears.
+struct BondCleanupResult {
+  int store_rc { 0 };   // ble_store_clear(); nonzero means stored bonds remain
+  int unpair_rc { 0 };  // First listing or unpair error; keys stay resolvable until restart
+  bool ok() const {
+    return store_rc == 0 && unpair_rc == 0;
+  }
+};
+
+// Clears stored bonds and resolving-list entries; reports each step's failure.
+BondCleanupResult unpair_and_clear_bonds();
 
 static inline void log_no_irk_for_peer(const ble_addr_t& peer_id) {
   ESP_LOGW(TAG, "Bond for %s has no usable IRK; key distribution may be incomplete or unsupported",

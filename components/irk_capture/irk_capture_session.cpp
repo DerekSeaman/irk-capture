@@ -219,7 +219,7 @@ void IRKCaptureComponent::run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPAC
     struct ble_gap_conn_desc cur {};
     if (handle != BLE_HS_CONN_HANDLE_NONE && ble_gap_conn_find(handle, &cur) == 0 &&
         addr_equal(cur.peer_id_addr, due.peer_id)) {
-      terminate_bounded_(handle, "after late IRK capture");
+      terminate_bounded_(handle, due.connection_generation, "after late IRK capture");
     }
   }
 }
@@ -300,6 +300,7 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
 void IRKCaptureComponent::reset_connection_state_() {
   // Caller holds state_mutex_. Keep the generation for delayed capture results;
   // on_connect() advances it before the next peer can become active.
+  pending_terminate_handle_ = BLE_HS_CONN_HANDLE_NONE;
   connected_ = false;
   conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
   connection_origin_ = CaptureOrigin::UNKNOWN;
@@ -362,6 +363,8 @@ bool IRKCaptureComponent::handle_connection_timeout_(uint32_t now) {
     generation = connection_generation_;
     reason = connection_timeout_.reason;
   }
+
+  report_capture_failure_(generation);
 
   // Only call while holding state_mutex_. Every unlocked stack operation can
   // dispatch a reset/disconnect callback and even allow the handle to be reused.
@@ -495,7 +498,7 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
       ESP_LOGD(TAG, "Poll capture completed for a connection that already closed; not terminating");
       return;
     }
-    terminate_bounded_(conn_handle_copy, "after poll IRK capture");
+    terminate_bounded_(conn_handle_copy, connection_generation_copy, "after poll IRK capture");
   } else {
     if (elapsed_ms(now, enc_time_copy) > TimingConfig::ENC_GIVE_UP_AFTER_MS) {
       ESP_LOGW(TAG, "IRK not found after %" PRIu32 " ms post-encryption",
@@ -571,22 +574,58 @@ void IRKCaptureComponent::close_after_no_irk_(uint16_t conn_handle, uint32_t con
       adv_restart_time_ = deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
     }
   }
-  terminate_bounded_(conn_handle, context);
+  terminate_bounded_(conn_handle, connection_generation, context);
 }
 
-void IRKCaptureComponent::terminate_bounded_(uint16_t conn_handle, const char* context) {
-  // These disconnects run from loop(). Waiting without limit for the BLE
-  // operation lock would stall the whole device if the NimBLE task were stuck
-  // holding it. If the lock is busy the link simply stays up, and the pairing
-  // timeout closes it with its own retries.
-  int rc;
+void IRKCaptureComponent::terminate_bounded_(uint16_t conn_handle, uint32_t generation,
+                                             const char* context) {
+  // Never wait on the host queue or terminate a bare handle from the main task.
+  // A disconnect/reconnect can reuse it while an operation waits for a lock.
   {
-    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
+    MutexGuard lock(state_mutex_);
+    if (!connected_ || conn_handle_ != conn_handle || connection_generation_ != generation) return;
+    pending_terminate_handle_ = conn_handle;
+    pending_terminate_generation_ = generation;
+    pending_terminate_context_ = context;
+  }
+  notify_bond_clear_();
+}
+
+void IRKCaptureComponent::handle_pending_termination_() {
+  // Only the NimBLE task runs this callback, serially with connect/disconnect.
+  // A busy control lock leaves the request pending for the next worker wake-up.
+  {
+    MutexGuard lock(state_mutex_);
+    if (pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE) return;
+  }
+  int rc;
+  const char* context;
+  {
+    BleOpGuard ble_lock(ble_op_mutex_, 0);
     if (!ble_lock.acquired()) {
-      ESP_LOGW(TAG, "Disconnect %s deferred: BLE operation lock busy", context);
+      // No retry: waiting here would stall the host task behind the main task.
+      const char* deferred;
+      {
+        MutexGuard lock(state_mutex_);
+        deferred = pending_terminate_context_;  // String literal; safe after unlock
+      }
+      ESP_LOGW(TAG,
+               "Disconnect %s deferred: BLE operation lock busy; the pairing timeout will close it",
+               deferred ? deferred : "");
       return;
     }
-    rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    uint16_t handle;
+    {
+      MutexGuard lock(state_mutex_);
+      handle = pending_terminate_handle_;
+      context = pending_terminate_context_;
+      const bool current = connected_ && handle != BLE_HS_CONN_HANDLE_NONE &&
+                           conn_handle_ == handle &&
+                           connection_generation_ == pending_terminate_generation_;
+      pending_terminate_handle_ = BLE_HS_CONN_HANDLE_NONE;
+      if (!current) return;
+    }
+    rc = ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
   }
   log_terminate_result(rc, context);
 }
@@ -597,7 +636,11 @@ void IRKCaptureComponent::report_capture_failure_(uint32_t connection_generation
   MutexGuard lock(state_mutex_);
   // Ignore links this component is not tracking, and never replace a result
   // this connection has already produced.
-  if (connection_generation == 0 || last_result_generation_ == connection_generation) return;
+  if (connection_generation == 0 || connection_generation != connection_generation_ ||
+      last_result_generation_ == connection_generation ||
+      (capture_status_ == CaptureStatus::FAILED && failed_generation_ == connection_generation))
+    return;
+  failed_generation_ = connection_generation;
   capture_status_ = CaptureStatus::FAILED;
   status_result_hold_until_ = deadline_after(now_ms(), TimingConfig::STATUS_RESULT_HOLD_MS);
 }
