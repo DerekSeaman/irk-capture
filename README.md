@@ -339,6 +339,8 @@ actions:
         Captured by: {{ device_attr(trigger.event.data.device_id, 'name_by_user') or device_attr(trigger.event.data.device_id, 'name') }}
 ```
 
+![Home Assistant notification showing a captured IRK, its address and the capturing ESP32](docs/IRK-notification.jpg)
+
 ## Optional: The Capture Wizard Package
 
 As an alternative interface, you can add an optional wizard package that uses a web page served by your ESP32 to guide you through capturing an IRK. The `irk-capture-wizard.yaml` package runs alongside the standard ESPHome web interface on a separate port (8080 by default). You can use it directly from your browser without Home Assistant, a dashboard, or an internet connection—even when connected to the ESP32's fallback Wi-Fi access point.
