@@ -48,11 +48,13 @@ static void log_banner(const char* context_tag) {
 //======================== IRK Deduplication ========================
 
 /**
- * @brief Checks if IRK should be published (deduplication + rate limiting)
+ * @brief Records one IRK observation and decides whether to publish it
+ * (deduplication + rate limiting)
  *
  * CRITICAL: Caller MUST hold state_mutex_ before calling this function.
- * This function modifies irk_cache_. It therefore does not log: it records
- * what it decided in out_decision, and the caller reports that with
+ * This function modifies irk_cache_: entries, reconnect counters, timestamps
+ * and visible history. It therefore does not log: it returns what it
+ * decided, and the caller reports that with
  * log_publish_decision() once the lock is released.
  *
  * MEMORY SAFETY: This function prevents duplicate entries in irk_cache_ by
@@ -68,16 +70,17 @@ static void log_banner(const char* context_tag) {
  * extraction paths from the same connection
  * @param force_pairing_publish True for an explicit pairing or REPEAT_PAIRING;
  * bypasses rate limiting
- * @param out_decision [out] The outcome and the details needed to log it
- * @return true if should publish, false if duplicate/rate-limited
+ * @return The outcome and the details needed to log it; publish is false for a
+ * duplicate path, stale connection, rate-limited or over-limit reconnect
  */
-bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const std::string& addr,
-                                             uint8_t addr_type, uint32_t connection_generation,
-                                             bool force_pairing_publish,
-                                             PublishDecision& out_decision) {
+PublishDecision IRKCaptureComponent::record_observation_locked_(const std::string& irk_hex,
+                                                                const std::string& addr,
+                                                                uint8_t addr_type,
+                                                                uint32_t connection_generation,
+                                                                bool force_pairing_publish) {
   // PRECONDITION: Caller holds state_mutex_
   using Reason = PublishDecision::Reason;
-  out_decision = {};
+  PublishDecision decision;
   // 64-bit: a 32-bit difference wraps after 49.7 days, which would make a
   // device last published that long ago look as if it had just been published.
   const uint64_t now = (uint64_t) (esp_timer_get_time() / 1000ULL);
@@ -90,15 +93,15 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
       // Count the connection once and silently coalesce the remaining paths.
       if (connection_generation != 0) {
         if (entry.last_observed_generation == connection_generation) {
-          out_decision.reason = Reason::DUPLICATE_PATH;
-          return false;
+          decision.reason = Reason::DUPLICATE_PATH;
+          return decision;
         }
         // A delayed timer from an older connection must not move the cache back
         // to an earlier generation or count as another reconnect.
         if (entry.last_observed_generation != 0 &&
             static_cast<int32_t>(connection_generation - entry.last_observed_generation) < 0) {
-          out_decision.reason = Reason::STALE_CONNECTION;
-          return false;
+          decision.reason = Reason::STALE_CONNECTION;
+          return decision;
         }
         entry.last_observed_generation = connection_generation;
       }
@@ -113,40 +116,40 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
         entry.reconnect_count = 0;
         entry.reconnect_limit_reported = false;
         entry.last_published_ms = now;
-        restore_capture_history_(entry, out_decision);
-        out_decision.reason = key_changed ? Reason::KEY_CHANGED : Reason::PAIRED_AGAIN;
-        out_decision.publish = true;
-        return true;
+        restore_capture_history_(entry, decision);
+        decision.reason = key_changed ? Reason::KEY_CHANGED : Reason::PAIRED_AGAIN;
+        decision.publish = true;
+        return decision;
       }
 
       if (entry.reconnect_count < std::numeric_limits<uint16_t>::max()) {
         entry.reconnect_count++;
       }
-      out_decision.reconnect_count = entry.reconnect_count;
+      decision.reconnect_count = entry.reconnect_count;
 
       // Count reconnecting connections, not the number of extraction paths.
       if (entry.reconnect_count > 5) {
-        out_decision.reason = Reason::RECONNECT_LIMIT;
-        out_decision.limit_just_reached = !entry.reconnect_limit_reported;
+        decision.reason = Reason::RECONNECT_LIMIT;
+        decision.limit_just_reached = !entry.reconnect_limit_reported;
         entry.reconnect_limit_reported = true;
-        out_decision.stop_adv = true;
-        return false;
+        decision.stop_adv = true;
+        return decision;
       }
 
       // Rate limit ordinary bonded reconnects per device.
       const uint64_t since_published = now - entry.last_published_ms;
-      out_decision.since_published_ms =
+      decision.since_published_ms =
           since_published > UINT32_MAX ? UINT32_MAX : (uint32_t) since_published;
       if (since_published < TimingConfig::MIN_REPUBLISH_INTERVAL_MS) {
-        out_decision.reason = Reason::RATE_LIMITED;
-        return false;
+        decision.reason = Reason::RATE_LIMITED;
+        return decision;
       }
 
       entry.last_published_ms = now;
-      restore_capture_history_(entry, out_decision);
-      out_decision.reason = Reason::RECONNECT;
-      out_decision.publish = true;
-      return true;
+      restore_capture_history_(entry, decision);
+      decision.reason = Reason::RECONNECT;
+      decision.publish = true;
+      return decision;
     }
   }
 
@@ -157,7 +160,7 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
     // Evict oldest (FIFO). Note: documented behavior; intentional to cap memory
     // and keep UX predictable.
     irk_cache_.erase(irk_cache_.begin());
-    out_decision.evicted_oldest = true;
+    decision.evicted_oldest = true;
   }
   IRKCacheEntry entry;
   entry.irk_hex = irk_hex;
@@ -168,14 +171,14 @@ bool IRKCaptureComponent::should_publish_irk(const std::string& irk_hex, const s
   entry.label = next_capture_label_;
   irk_cache_.push_back(std::move(entry));
   if (!next_capture_label_.empty()) {
-    out_decision.label = next_capture_label_;
+    decision.label = next_capture_label_;
     consume_capture_label_();  // Consume-once: next device starts unlabeled
   }
-  out_decision.reason = Reason::NEW_DEVICE;
-  out_decision.cache_size = irk_cache_.size();
-  out_decision.cache_limit = cache_limit;
-  out_decision.publish = true;
-  return true;
+  decision.reason = Reason::NEW_DEVICE;
+  decision.cache_size = irk_cache_.size();
+  decision.cache_limit = cache_limit;
+  decision.publish = true;
+  return decision;
 }
 
 void IRKCaptureComponent::restore_capture_history_(IRKCacheEntry& entry,
@@ -191,7 +194,7 @@ void IRKCaptureComponent::restore_capture_history_(IRKCacheEntry& entry,
   }
 }
 
-// Reports a should_publish_irk() decision. Runs after state_mutex_ is released:
+// Reports a record_observation_locked_() decision. Runs after state_mutex_ is released:
 // formatting and the UART must not stall the NimBLE task (see MutexGuard).
 static void log_publish_decision(const PublishDecision& decision, const std::string& addr) {
   using Reason = PublishDecision::Reason;
@@ -264,7 +267,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   const std::string addr_str = addr_to_str(peer_id_addr);
 
   // THREAD-SAFE: Check deduplication AND increment counter under mutex
-  // CRITICAL: should_publish_irk() assumes caller holds mutex (non-recursive
+  // CRITICAL: record_observation_locked_() assumes caller holds mutex (non-recursive
   // mutex!) All irk_cache_ operations, counter increments, and advertising
   // checks happen atomically
   uint32_t current_events = 0;
@@ -286,9 +289,9 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     // redundant. Cancel them before they can create log or counter noise.
     self->cancel_peer_timers_(peer_id_addr, connection_generation);
 
-    should_publish =
-        self->should_publish_irk(irk_hex, addr_str, peer_id_addr.type, connection_generation,
-                                 force_pairing_publish, decision);
+    decision = self->record_observation_locked_(irk_hex, addr_str, peer_id_addr.type,
+                                                connection_generation, force_pairing_publish);
+    should_publish = decision.publish;
     const bool is_new_device = decision.reason == PublishDecision::Reason::NEW_DEVICE;
     const bool key_changed = decision.reason == PublishDecision::Reason::KEY_CHANGED;
 

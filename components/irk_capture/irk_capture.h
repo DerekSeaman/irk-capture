@@ -220,7 +220,7 @@ struct CaptureResult {
   std::string device_mac;
 };
 
-// What should_publish_irk() decided and why. Filled in under state_mutex_ and
+// What record_observation_locked_() decided and why. Filled in under state_mutex_ and
 // logged by the caller once the lock is released.
 struct PublishDecision {
   enum class Reason : uint8_t {
@@ -705,9 +705,11 @@ class IRKCaptureComponent : public Component {
   void report_host_stall_(uint32_t now);  // Main task only
   // Shows Status "failed" when setup() gives up. Main task, setup() only.
   void publish_setup_failure_();
-  bool should_publish_irk(const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
-                          uint32_t connection_generation, bool force_pairing_publish,
-                          PublishDecision& out_decision);
+  // Caller holds state_mutex_. Updates the deduplication cache for one
+  // observation and returns whether (and why) to publish it.
+  PublishDecision record_observation_locked_(const std::string& irk_hex, const std::string& addr,
+                                             uint8_t addr_type, uint32_t connection_generation,
+                                             bool force_pairing_publish);
   // Caller holds state_mutex_.
   void restore_capture_history_(IRKCacheEntry& entry, PublishDecision& out_decision);
   static std::string format_history_json_(const std::vector<IRKCacheEntry>& cache);
