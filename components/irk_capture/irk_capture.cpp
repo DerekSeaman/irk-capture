@@ -470,7 +470,7 @@ std::string IRKCaptureComponent::get_next_capture_label() {
   return next_capture_label_;
 }
 
-std::string IRKCaptureComponent::set_next_capture_label(const std::string& value) {
+LabelUpdateResult IRKCaptureComponent::set_next_capture_label(const std::string& value) {
   // Labels aren't advertised over the air, so they get a longer budget than
   // the 12-byte BLE-name cap, and an apostrophe for names like "Dave's iPhone".
   // Everything kept is safe unescaped inside build_history_json()'s strings.
@@ -487,13 +487,15 @@ std::string IRKCaptureComponent::set_next_capture_label(const std::string& value
     // Only an empty value clears the label. Text with no supported characters
     // (an emoji, say) is refused instead of silently wiping the saved label.
     // Republish the kept label so a Home Assistant text entity snaps back.
+    LabelUpdateResult result;
     {
       MutexGuard lock(state_mutex_);
+      result.stored_label = next_capture_label_;
       pending_label_val_ = next_capture_label_;
       pending_label_pub_ = true;
     }
     ESP_LOGW(TAG, "Next capture label rejected: no supported characters");
-    return sanitized;
+    return result;
   }
   {
     MutexGuard lock(state_mutex_);
@@ -502,7 +504,7 @@ std::string IRKCaptureComponent::set_next_capture_label(const std::string& value
     pending_label_pub_ = true;
   }
   ESP_LOGD(TAG, "Next capture label set to '%s'", sanitized.c_str());
-  return sanitized;
+  return { true, sanitized };
 }
 
 SessionState IRKCaptureComponent::get_session_state() {

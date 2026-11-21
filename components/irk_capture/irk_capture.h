@@ -211,6 +211,13 @@ enum class CaptureOrigin : uint8_t { UNKNOWN, FRESH, BONDED, REPAIR };
 // What a stored bond holds for a peer; see read_peer_irk_().
 enum class BondRead : uint8_t { NO_BOND, READ_ERROR, IRK, NO_IRK, INVALID_IRK };
 
+// Outcome of set_next_capture_label(). stored_label is the label now held:
+// the sanitized value when accepted, the unchanged label when refused.
+struct LabelUpdateResult {
+  bool accepted { false };
+  std::string stored_label;
+};
+
 // Last successful genuine capture, retained after transient status and entity
 // updates. boot_id distinguishes a reboot from sequence rollover.
 struct CaptureResult {
@@ -398,9 +405,9 @@ class IRKCaptureComponent : public Component {
   static constexpr size_t CAPTURE_LABEL_MAX_LEN = 24;
   // Sanitizes, stores, and returns the label for the next device added to
   // visible history (consumed once). Keeps letters, digits, spaces, '-', '_'
-  // and apostrophes, up to CAPTURE_LABEL_MAX_LEN characters. A non-empty value
-  // with none of those is refused: the label is kept and "" is returned.
-  std::string set_next_capture_label(const std::string& value);
+  // and apostrophes, up to CAPTURE_LABEL_MAX_LEN characters. "" clears it. A
+  // non-empty value with none of those is refused and the label is kept.
+  LabelUpdateResult set_next_capture_label(const std::string& value);
   // Clears visible history, retaining deduplication/capture accounting. The
   // NimBLE task clears stored bonds only when no peer is connected.
   void forget_all_bonds();

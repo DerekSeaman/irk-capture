@@ -682,14 +682,13 @@ static esp_err_t handle_post_label(httpd_req_t* req) {
   if (!json_extract_string(command.body, "label", label)) {
     return reply_error(req, "400 Bad Request", "label must be a string");
   }
-  const std::string saved_label = command.capture->set_next_capture_label(label);
-  // Only "" clears the label; the core keeps it for text it cannot store.
-  if (saved_label.empty() && !label.empty()) {
+  const auto saved = command.capture->set_next_capture_label(label);
+  if (!saved.accepted) {
     return reply_error(req, "400 Bad Request",
                        "label needs letters, digits, spaces, hyphens, underscores or apostrophes");
   }
-  ESP_LOGI(TAG, "Wizard: next capture label '%s'", saved_label.c_str());
-  return send_json(req, "{\"ok\":true,\"label\":\"" + json_escape(saved_label) + "\"}");
+  ESP_LOGI(TAG, "Wizard: next capture label '%s'", saved.stored_label.c_str());
+  return send_json(req, "{\"ok\":true,\"label\":\"" + json_escape(saved.stored_label) + "\"}");
 }
 
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
