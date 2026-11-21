@@ -483,6 +483,18 @@ std::string IRKCaptureComponent::set_next_capture_label(const std::string& value
     }
     if (sanitized.length() >= CAPTURE_LABEL_MAX_LEN) break;
   }
+  if (sanitized.empty() && !value.empty()) {
+    // Only an empty value clears the label. Text with no supported characters
+    // (an emoji, say) is refused instead of silently wiping the saved label.
+    // Republish the kept label so a Home Assistant text entity snaps back.
+    {
+      MutexGuard lock(state_mutex_);
+      pending_label_val_ = next_capture_label_;
+      pending_label_pub_ = true;
+    }
+    ESP_LOGW(TAG, "Next capture label rejected: no supported characters");
+    return sanitized;
+  }
   {
     MutexGuard lock(state_mutex_);
     next_capture_label_ = sanitized;

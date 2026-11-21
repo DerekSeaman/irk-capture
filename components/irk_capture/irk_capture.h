@@ -398,7 +398,8 @@ class IRKCaptureComponent : public Component {
   static constexpr size_t CAPTURE_LABEL_MAX_LEN = 24;
   // Sanitizes, stores, and returns the label for the next device added to
   // visible history (consumed once). Keeps letters, digits, spaces, '-', '_'
-  // and apostrophes, up to CAPTURE_LABEL_MAX_LEN characters.
+  // and apostrophes, up to CAPTURE_LABEL_MAX_LEN characters. A non-empty value
+  // with none of those is refused: the label is kept and "" is returned.
   std::string set_next_capture_label(const std::string& value);
   // Clears visible history, retaining deduplication/capture accounting. The
   // NimBLE task clears stored bonds only when no peer is connected.
