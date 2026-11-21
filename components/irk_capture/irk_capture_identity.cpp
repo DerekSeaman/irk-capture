@@ -142,7 +142,13 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   if (!prepared) {
     // A failed initial stop must be retried here: ON intent is retained during
     // rotation, so the ordinary OFF retry in loop() does not own this stop.
-    stop_advertising();
+    // Skip it when the request's stop already worked, so the log shows one stop.
+    bool still_advertising;
+    {
+      MutexGuard lock(state_mutex_);
+      still_advertising = advertising_;
+    }
+    if (still_advertising || ble_gap_adv_active()) stop_advertising();
     bool stopped;
     bool abort = false;
     {
