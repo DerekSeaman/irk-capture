@@ -320,6 +320,25 @@ actions:
 
 If the event appears but no MQTT message does, open the automation's **Traces** to confirm it ran and see the payload it sent.
 
+## Home Assistant Notifications
+
+To get a Home Assistant notification each time an IRK is captured, use the `esphome.irk_captured` event. It fires once per capture, with the IRK and the device's BLE MAC, and never for reconnects or restarts. First allow the event, as described in [Enable the event](#enable-the-event). Then go to **Settings → Automations & scenes → Create automation → ⋮ → Edit in YAML**, replace the contents with the automation below, and select **Save**. Use the copy button at the top right of the code block.
+
+```yaml
+alias: IRK Captured Notification
+triggers:
+  - trigger: event
+    event_type: esphome.irk_captured
+actions:
+  - action: persistent_notification.create
+    data:
+      title: "🔑 IRK Captured!"
+      message: |
+        IRK: {{ trigger.event.data.irk }}
+        Address: {{ trigger.event.data.mac }}
+        Captured by: {{ device_attr(trigger.event.data.device_id, 'name_by_user') or device_attr(trigger.event.data.device_id, 'name') }}
+```
+
 ## Optional: The Capture Wizard Package
 
 As an alternative interface, you can add an optional wizard package that uses a web page served by your ESP32 to guide you through capturing an IRK. The `irk-capture-wizard.yaml` package runs alongside the standard ESPHome web interface on a separate port (8080 by default). You can use it directly from your browser without Home Assistant, a dashboard, or an internet connection—even when connected to the ESP32's fallback Wi-Fi access point.
