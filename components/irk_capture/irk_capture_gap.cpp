@@ -349,15 +349,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   bool restart_scheduled;
   {
     MutexGuard lock(self->state_mutex_);
-    // Stop if:
-    // 1. continuous_mode is false AND we've captured at least one IRK, OR
-    // 2. continuous_mode is true AND max_captures > 0 AND we've hit the limit
-    if (!self->continuous_mode_ && self->capture_events_ > 0) {
-      should_stop_adv = true;
-    } else if (self->continuous_mode_ && self->max_captures_ > 0 &&
-               self->unique_devices_ >= self->max_captures_) {
-      should_stop_adv = true;
-    }
+    should_stop_adv = self->capture_limit_reached_locked_();
     requested = self->advertising_requested_;
     restart_scheduled = self->adv_restart_time_ != 0;
   }

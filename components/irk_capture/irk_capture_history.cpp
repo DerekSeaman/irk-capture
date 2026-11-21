@@ -305,10 +305,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
 
       // max_captures limits unique devices. Re-pairing the same device remains
       // visible without consuming another slot.
-      if (!self->continuous_mode_ ||
-          (self->max_captures_ > 0 && self->unique_devices_ >= self->max_captures_)) {
-        max_reached = true;
-      }
+      max_reached = self->capture_limit_reached_locked_();
 
       // A genuine capture: a new device, changed key, or explicit (re)pairing. A bonded
       // reconnect republishing a key it already gave us is not one.

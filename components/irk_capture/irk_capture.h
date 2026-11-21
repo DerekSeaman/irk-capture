@@ -517,8 +517,15 @@ class IRKCaptureComponent : public Component {
   size_t cache_limit_() const {
     return max_captures_ > MIN_CACHE_ENTRIES ? max_captures_ : MIN_CACHE_ENTRIES;
   }
-  uint32_t capture_events_ { 0 };      // IRK publications this session
-  uint32_t unique_devices_ { 0 };      // New identity addresses this session
+  uint32_t capture_events_ { 0 };  // IRK publications this session
+  uint32_t unique_devices_ { 0 };  // New identity addresses this session
+  // Caller holds state_mutex_. True once this session's captures should end
+  // advertising: any capture in single mode, or max_captures unique devices
+  // in continuous mode (0 = unlimited). stop_after_capture_ is separate.
+  bool capture_limit_reached_locked_() const {
+    if (!continuous_mode_) return capture_events_ > 0;
+    return max_captures_ > 0 && unique_devices_ >= max_captures_;
+  }
   uint32_t pairing_start_time_ { 0 };  // Global pairing timeout
   CaptureResult capture_result_;
   IdentityRefreshResult identity_refresh_result_;
