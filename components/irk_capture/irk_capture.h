@@ -543,6 +543,19 @@ class IRKCaptureComponent : public Component {
   std::vector<CaptureEvent> pending_capture_events_;
   // Overflow preserves queued events and is reported by the main task.
   uint32_t pending_capture_event_drops_ { 0 };
+  // Everything one flush_pending_publishes_() delivers, taken in one lock.
+  struct PendingPublishBatch {
+    bool adv_pub { false }, adv_val { false };
+    bool irk_pub { false };
+    bool effmac_pub { false };
+    bool stop_after_pub { false }, stop_after_val { false };
+    bool label_pub { false };
+    bool name_pub { false };
+    std::string irk_hex, irk_addr, effmac, label_val, name_val;
+    const char* status { nullptr };  // Null when no Status sensor is configured
+    std::vector<CaptureEvent> capture_events;
+    uint32_t dropped_capture_events { 0 };
+  };
 
   // A worker queues wake-ups onto NimBLE's task without blocking the main task
   // on queue capacity. Bond deletion and completion disconnects stay serialized
@@ -759,6 +772,8 @@ class IRKCaptureComponent : public Component {
 
   // Deferred entity publishing (see pending_* fields). Staged from any context,
   // drained only on the ESPHome main task in loop().
+  // Takes every staged publish, clearing its pending_* flag, under one lock.
+  PendingPublishBatch take_pending_publishes_();
   void flush_pending_publishes_();
   // Reboots from the main loop. Safe to call from any task, including after
   // the component has been marked failed.

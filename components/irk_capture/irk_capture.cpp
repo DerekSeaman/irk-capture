@@ -372,55 +372,53 @@ void IRKCaptureComponent::request_reboot_() {
   App.scheduler.set_timeout(this, 0, []() { App.safe_reboot(); });
 }
 
+IRKCaptureComponent::PendingPublishBatch IRKCaptureComponent::take_pending_publishes_() {
+  PendingPublishBatch b;
+  MutexGuard lock(state_mutex_);
+  b.capture_events.swap(pending_capture_events_);
+  b.dropped_capture_events = pending_capture_event_drops_;
+  pending_capture_event_drops_ = 0;
+  b.adv_pub = pending_adv_pub_;
+  b.adv_val = advertising_requested_;
+  pending_adv_pub_ = false;
+  b.irk_pub = pending_irk_pub_;
+  pending_irk_pub_ = false;
+  b.irk_hex.swap(pending_irk_hex_);
+  b.irk_addr.swap(pending_irk_addr_);
+  b.effmac_pub = pending_effmac_pub_;
+  pending_effmac_pub_ = false;
+  b.effmac.swap(pending_effmac_);
+  b.stop_after_pub = pending_stop_after_capture_pub_;
+  b.stop_after_val = stop_after_capture_;
+  pending_stop_after_capture_pub_ = false;
+  b.label_pub = pending_label_pub_;
+  pending_label_pub_ = false;
+  b.label_val.swap(pending_label_val_);
+  b.name_pub = pending_ble_name_pub_;
+  pending_ble_name_pub_ = false;
+  if (b.name_pub) b.name_val = advertised_name_();
+  // A BLE callback may stage another result as soon as this lock is released.
+  // Its terminal Status must wait for the next drain alongside its IRK/MAC.
+  if (status_sensor_) b.status = status_value_locked_(now_ms());
+  return b;
+}
+
 void IRKCaptureComponent::flush_pending_publishes_() {
-  // Runs on the ESPHome main task. Copy staged values out under the mutex, then
+  // Runs on the ESPHome main task. Take staged values under the mutex, then
   // publish outside it (publish_state can be slow and must not hold the lock).
-  bool adv_pub, adv_val, irk_pub, effmac_pub;
-  bool stop_after_pub, stop_after_val, label_pub, name_pub;
-  std::string irk_hex, irk_addr, effmac, label_val, name_val;
-  const char* status = nullptr;
-  std::vector<CaptureEvent> capture_events;
-  uint32_t dropped_capture_events;
-  {
-    MutexGuard lock(state_mutex_);
-    capture_events.swap(pending_capture_events_);
-    dropped_capture_events = pending_capture_event_drops_;
-    pending_capture_event_drops_ = 0;
-    adv_pub = pending_adv_pub_;
-    adv_val = advertising_requested_;
-    pending_adv_pub_ = false;
-    irk_pub = pending_irk_pub_;
-    pending_irk_pub_ = false;
-    irk_hex.swap(pending_irk_hex_);
-    irk_addr.swap(pending_irk_addr_);
-    effmac_pub = pending_effmac_pub_;
-    pending_effmac_pub_ = false;
-    effmac.swap(pending_effmac_);
-    stop_after_pub = pending_stop_after_capture_pub_;
-    stop_after_val = stop_after_capture_;
-    pending_stop_after_capture_pub_ = false;
-    label_pub = pending_label_pub_;
-    pending_label_pub_ = false;
-    label_val.swap(pending_label_val_);
-    name_pub = pending_ble_name_pub_;
-    pending_ble_name_pub_ = false;
-    if (name_pub) name_val = advertised_name_();
-    // A BLE callback may stage another result as soon as this lock is released.
-    // Its terminal Status must wait for the next drain alongside its IRK/MAC.
-    if (status_sensor_) status = status_value_locked_(now_ms());
-  }
-  if (adv_pub && advertising_switch_) advertising_switch_->publish_state(adv_val);
-  if (effmac_pub && effective_mac_sensor_) effective_mac_sensor_->publish_state(effmac);
-  if (stop_after_pub && stop_after_capture_switch_)
-    stop_after_capture_switch_->publish_state(stop_after_val);
-  if (label_pub && next_capture_label_text_) next_capture_label_text_->publish_state(label_val);
+  const PendingPublishBatch b = take_pending_publishes_();
+  if (b.adv_pub && advertising_switch_) advertising_switch_->publish_state(b.adv_val);
+  if (b.effmac_pub && effective_mac_sensor_) effective_mac_sensor_->publish_state(b.effmac);
+  if (b.stop_after_pub && stop_after_capture_switch_)
+    stop_after_capture_switch_->publish_state(b.stop_after_val);
+  if (b.label_pub && next_capture_label_text_) next_capture_label_text_->publish_state(b.label_val);
   // Home Assistant would otherwise keep showing the name the device stopped
   // advertising the moment the identity was refreshed.
-  if (name_pub && ble_name_text_) ble_name_text_->publish_state(name_val);
+  if (b.name_pub && ble_name_text_) ble_name_text_->publish_state(b.name_val);
   // Drain this snapshot in order. A callback may stage more work, which stays
   // queued for the next flush rather than extending this batch indefinitely.
   // Each event's sensors and terminal Status are visible before its automation.
-  for (const auto& event : capture_events) {
+  for (const auto& event : b.capture_events) {
     if (irk_sensor_) irk_sensor_->publish_state(event.irk);
     if (address_sensor_) address_sensor_->publish_state(event.mac);
     if (status_sensor_ && last_status_value_ != "captured") {
@@ -431,24 +429,24 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   }
   // A newer no-IRK result or a capture whose event overflowed can differ from
   // the last queued event. Restore the matching latest snapshot after delivery.
-  const bool latest_already_published = !capture_events.empty() &&
-                                        capture_events.back().irk == irk_hex &&
-                                        capture_events.back().mac == irk_addr;
-  if (irk_pub && !latest_already_published) {
-    if (irk_sensor_) irk_sensor_->publish_state(irk_hex);
-    if (address_sensor_) address_sensor_->publish_state(irk_addr);
+  const bool latest_already_published = !b.capture_events.empty() &&
+                                        b.capture_events.back().irk == b.irk_hex &&
+                                        b.capture_events.back().mac == b.irk_addr;
+  if (b.irk_pub && !latest_already_published) {
+    if (irk_sensor_) irk_sensor_->publish_state(b.irk_hex);
+    if (address_sensor_) address_sensor_->publish_state(b.irk_addr);
   }
   // Publish last so Status observers can read the corresponding result values.
-  if (status != nullptr && last_status_value_ != status) {
-    last_status_value_ = status;
-    status_sensor_->publish_state(status);
+  if (b.status != nullptr && last_status_value_ != b.status) {
+    last_status_value_ = b.status;
+    status_sensor_->publish_state(b.status);
   }
-  if (dropped_capture_events != 0) {
+  if (b.dropped_capture_events != 0) {
     ESP_LOGE(TAG,
              "on_capture queue full: %" PRIu32
              " event(s) could not be delivered; "
              "check capture history for results",
-             dropped_capture_events);
+             b.dropped_capture_events);
   }
 }
 
