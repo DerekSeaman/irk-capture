@@ -372,6 +372,17 @@ void IRKCaptureComponent::request_reboot_() {
   App.scheduler.set_timeout(this, 0, []() { App.safe_reboot(); });
 }
 
+void IRKCaptureComponent::publish_result_entities_(const std::string& irk, const std::string& mac) {
+  if (irk_sensor_) irk_sensor_->publish_state(irk);
+  if (address_sensor_) address_sensor_->publish_state(mac);
+}
+
+void IRKCaptureComponent::publish_status_if_changed_(const char* status) {
+  if (status_sensor_ == nullptr || last_status_value_ == status) return;
+  last_status_value_ = status;
+  status_sensor_->publish_state(status);
+}
+
 IRKCaptureComponent::PendingPublishBatch IRKCaptureComponent::take_pending_publishes_() {
   PendingPublishBatch b;
   MutexGuard lock(state_mutex_);
@@ -419,12 +430,8 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   // queued for the next flush rather than extending this batch indefinitely.
   // Each event's sensors and terminal Status are visible before its automation.
   for (const auto& event : b.capture_events) {
-    if (irk_sensor_) irk_sensor_->publish_state(event.irk);
-    if (address_sensor_) address_sensor_->publish_state(event.mac);
-    if (status_sensor_ && last_status_value_ != "captured") {
-      last_status_value_ = "captured";
-      status_sensor_->publish_state("captured");
-    }
+    publish_result_entities_(event.irk, event.mac);
+    publish_status_if_changed_("captured");
     for (auto* trigger : capture_triggers_) trigger->trigger(event.irk, event.mac);
   }
   // A newer no-IRK result or a capture whose event overflowed can differ from
@@ -432,15 +439,9 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   const bool latest_already_published = !b.capture_events.empty() &&
                                         b.capture_events.back().irk == b.irk_hex &&
                                         b.capture_events.back().mac == b.irk_addr;
-  if (b.irk_pub && !latest_already_published) {
-    if (irk_sensor_) irk_sensor_->publish_state(b.irk_hex);
-    if (address_sensor_) address_sensor_->publish_state(b.irk_addr);
-  }
+  if (b.irk_pub && !latest_already_published) publish_result_entities_(b.irk_hex, b.irk_addr);
   // Publish last so Status observers can read the corresponding result values.
-  if (b.status != nullptr && last_status_value_ != b.status) {
-    last_status_value_ = b.status;
-    status_sensor_->publish_state(b.status);
-  }
+  if (b.status != nullptr) publish_status_if_changed_(b.status);
   if (b.dropped_capture_events != 0) {
     ESP_LOGE(TAG,
              "on_capture queue full: %" PRIu32

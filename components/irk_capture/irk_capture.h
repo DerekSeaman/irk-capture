@@ -774,6 +774,9 @@ class IRKCaptureComponent : public Component {
   // drained only on the ESPHome main task in loop().
   // Takes every staged publish, clearing its pending_* flag, under one lock.
   PendingPublishBatch take_pending_publishes_();
+  // Main task only. Write the IRK and MAC sensors, and Status when it changed.
+  void publish_result_entities_(const std::string& irk, const std::string& mac);
+  void publish_status_if_changed_(const char* status);
   void flush_pending_publishes_();
   // Reboots from the main loop. Safe to call from any task, including after
   // the component has been marked failed.
