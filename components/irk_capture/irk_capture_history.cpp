@@ -332,9 +332,11 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
             deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
       }
     }
-    // Guard stop_advertising() with is_advertising() to prevent
-    // double stop (spurious HA state updates). Only needed when advertising is
-    // actually running (e.g., called from timer paths like DISC_DELAYED).
+    // stop_advertising() checks GAP itself and stages no Home Assistant
+    // update, so the guard is not about double stops. It skips the BLE lock
+    // wait, and the deferred-stop retry and warning a lock timeout would arm,
+    // when the radio is already known to be off (as on a live link, or from
+    // delayed-read timers such as DISC_DELAYED).
     if (self->is_advertising()) {
       self->stop_advertising();
     }

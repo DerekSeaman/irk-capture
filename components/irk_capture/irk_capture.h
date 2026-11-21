@@ -650,7 +650,11 @@ class IRKCaptureComponent : public Component {
   //           adv_stop_retry_time_, host_wait_since_, host_wait_log_time_,
   //           irk_read_error_logged_, identity_refresh_result_
   // Not protected, because only the main task touches them: last_loop_,
-  // last_notify_, last_status_value_, capture_triggers_.
+  // last_notify_, last_status_value_.
+  // Not protected, because it never changes at runtime: capture_triggers_ is
+  // filled by generated setup code before NimBLE starts, then only read.
+  // publish_irk_to_sensors() checks it from BLE contexts; the triggers
+  // themselves fire only on the main task, in flush_pending_publishes_().
   SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Serializes BLE control operations that can be called from both NimBLE and

@@ -106,6 +106,32 @@ void IRKCaptureComponent::abort_rotation_locked_() {
   identity_refresh_result_.state = IdentityRefreshState::FAILED;
 }
 
+// MAC rotation, run from loop(). Every step is checked against the sampled
+// mac_rotation_generation_, so a reset or newer request ends this one.
+//
+//   State / phase                Leaves when                    Next
+//   -------------------------    ---------------------------    ---------------
+//   REQUESTED                    on_disconnect(), or no link    READY_TO_ROTATE
+//     (request_mac_rotation_)    when requested
+//   READY, link still open       logged once                    REQUESTED
+//   READY, !prepared:            stop fails                     retry in
+//     stop advertising             (retries_ < MAX)               ADV_RETRY_MS
+//                                stop fails (retries_ = MAX)    IDLE, FAILED
+//                                stop verified: clear bonds     READY, prepared
+//   READY, prepared:             set_rnd OK                     IDLE, SUCCEEDED
+//     wait SETTLE_DELAY_MS,                                       or PARTIAL
+//     then ble_hs_id_set_rnd()   set_rnd fails (retries_<MAX)   backoff retry
+//                                set_rnd fails (retries_=MAX)   IDLE, FAILED
+//   any                          host reset                     IDLE
+//                                newer request                  REQUESTED anew
+//
+// mac_rotation_retries_ counts the stop attempts, then is reset to 0 when
+// preparation commits and counts the address attempts. A busy BLE lock in the
+// address phase retries on the next loop without counting. Bonds are cleared
+// exactly once, before mac_rotation_prepared_ becomes true; a failed cleanup
+// still rotates but ends PARTIAL. An abort leaves the address unchanged. The
+// address phase restarts advertising when it ends (success or abort); a stop
+// abort does not, because the radio never stopped.
 void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   uint32_t generation;
   uint32_t ready_time;
