@@ -115,10 +115,9 @@ struct AuthThrottle {
 // out indefinitely with five bad requests every thirty seconds.
 //
 // The table is small on purpose. When it is full, the least recently seen
-// client that is not locked out gives up its slot. A locked-out client keeps
-// its slot until the lockout ends, so a guesser cannot clear its own lockout
-// by sending requests from more addresses; if every slot is locked, further
-// clients share one overflow throttle.
+// client with no recent failures gives up its slot. Failed attempts survive
+// address churn until the client has been idle for a full lockout interval.
+// When every slot has recent failures, new addresses share the overflow budget.
 struct ClientThrottles {
   static constexpr size_t SLOTS = 4;
 
@@ -143,6 +142,10 @@ struct ClientThrottles {
     if (target == nullptr) {
       for (auto& slot : slots) {
         if (slot.throttle.locked(now)) continue;
+        if (slot.throttle.failures != 0) {
+          if ((uint32_t) (now - slot.last_seen) < AuthThrottle::LOCKOUT_MS) continue;
+          slot.throttle.ok();
+        }
         // Wraparound-safe "seen longer ago".
         if (target == nullptr ||
             (uint32_t) (now - slot.last_seen) > (uint32_t) (now - target->last_seen)) {
@@ -278,59 +281,98 @@ inline bool json_read_string(const std::string& body, size_t& pos, std::string* 
   return false;  // No closing quote.
 }
 
-// Skips the value at pos: a string, a nested object or array, or a bare scalar.
-inline bool json_skip_value(const std::string& body, size_t& pos) {
-  if (pos >= body.size()) return false;
+// Validates and skips one complete JSON value. Bound nesting independently of
+// the HTTP body limit so malformed input cannot exhaust the server task stack.
+inline bool json_skip_value(const std::string& body, size_t& pos, unsigned depth = 0) {
+  if (pos >= body.size() || depth > 16) return false;
   if (body[pos] == '"') return json_read_string(body, pos, nullptr);
   if (body[pos] == '{' || body[pos] == '[') {
-    int depth = 0;
-    while (pos < body.size()) {
-      const char c = body[pos];
-      if (c == '"') {
+    const bool object = body[pos++] == '{';
+    const char closing = object ? '}' : ']';
+    json_skip_ws(body, pos);
+    if (pos < body.size() && body[pos] == closing) {
+      ++pos;
+      return true;
+    }
+    for (;;) {
+      if (object) {
         if (!json_read_string(body, pos, nullptr)) return false;
-        continue;
+        json_skip_ws(body, pos);
+        if (pos >= body.size() || body[pos++] != ':') return false;
+        json_skip_ws(body, pos);
       }
-      pos++;
-      if (c == '{' || c == '[') {
-        depth++;
-      } else if ((c == '}' || c == ']') && --depth == 0) {
+      if (!json_skip_value(body, pos, depth + 1)) return false;
+      json_skip_ws(body, pos);
+      if (pos >= body.size()) return false;
+      if (body[pos] == closing) {
+        ++pos;
         return true;
       }
+      if (body[pos++] != ',') return false;
+      json_skip_ws(body, pos);
     }
-    return false;
   }
-  const size_t start = pos;
-  while (pos < body.size() && body[pos] != ',' && body[pos] != '}' && body[pos] != ' ' &&
-         body[pos] != '\t' && body[pos] != '\r' && body[pos] != '\n') {
-    pos++;
+  for (const char* literal : { "true", "false", "null" }) {
+    const size_t size = std::char_traits<char>::length(literal);
+    if (body.compare(pos, size, literal) == 0) {
+      pos += size;
+      return true;
+    }
   }
-  return pos > start;
+  // JSON number: optional sign, integer, optional fraction and exponent.
+  if (body[pos] == '-') ++pos;
+  if (pos >= body.size()) return false;
+  if (body[pos] == '0')
+    ++pos;
+  else {
+    if (body[pos] < '1' || body[pos] > '9') return false;
+    do {
+      ++pos;
+    } while (pos < body.size() && body[pos] >= '0' && body[pos] <= '9');
+  }
+  if (pos < body.size() && body[pos] == '.') {
+    const size_t first = ++pos;
+    while (pos < body.size() && body[pos] >= '0' && body[pos] <= '9') ++pos;
+    if (pos == first) return false;
+  }
+  if (pos < body.size() && (body[pos] == 'e' || body[pos] == 'E')) {
+    ++pos;
+    if (pos < body.size() && (body[pos] == '+' || body[pos] == '-')) ++pos;
+    const size_t first = pos;
+    while (pos < body.size() && body[pos] >= '0' && body[pos] <= '9') ++pos;
+    if (pos == first) return false;
+  }
+  return true;
 }
 
-// Finds the top-level member named key and sets pos to the start of its value.
-// The first member with that name wins.
+// Validate the entire object before returning a command member. A valid prefix
+// must never execute a truncated document. Duplicate command keys are ambiguous.
 inline bool json_find_value_start(const std::string& body, const char* key, size_t& pos) {
-  size_t at = 0;
-  json_skip_ws(body, at);
-  if (at >= body.size() || body[at] != '{') return false;
-  at++;
+  size_t end = 0;
+  json_skip_ws(body, end);
+  if (end >= body.size() || body[end] != '{') return false;
+  size_t at = end + 1;
+  if (!json_skip_value(body, end)) return false;
+  json_skip_ws(body, end);
+  if (end != body.size()) return false;
+  bool found = false;
   for (;;) {
     json_skip_ws(body, at);
+    if (body[at] == '}') return found;
     std::string name;
-    if (!json_read_string(body, at, &name)) return false;  // Also the closing brace.
+    if (!json_read_string(body, at, &name)) return false;
     json_skip_ws(body, at);
-    if (at >= body.size() || body[at] != ':') return false;
-    at++;
+    ++at;  // Colon, already validated above.
     json_skip_ws(body, at);
-    if (at >= body.size()) return false;
     if (name == key) {
+      if (found) return false;
+      found = true;
       pos = at;
-      return true;
     }
     if (!json_skip_value(body, at)) return false;
     json_skip_ws(body, at);
-    if (at >= body.size() || body[at] != ',') return false;
-    at++;
+    if (body[at] == '}') return found;
+    ++at;  // Comma, already validated above.
   }
 }
 

@@ -53,32 +53,50 @@ def validate_credential(value):
     return value
 
 
+def validate_auth_config(config):
+    """Match the runtime Authorization header budget before compiling firmware."""
+    username = config[CONF_USERNAME]
+    password = config[CONF_PASSWORD]
+    if ":" in username:
+        raise cv.Invalid("Wizard username cannot contain ':' (HTTP Basic separator).")
+    encoded_length = 6 + 4 * ((len(username) + 1 + len(password) + 2) // 3)
+    if encoded_length > 256:
+        raise cv.Invalid(
+            "Wizard credentials produce an Authorization header longer than 256 bytes. "
+            "Username and password together must be at most 185 ASCII characters."
+        )
+    return config
+
+
 irk_wizard_ns = cg.esphome_ns.namespace("irk_wizard")
 IRKWizardComponent = irk_wizard_ns.class_("IRKWizardComponent", cg.Component)
 
-CONFIG_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(): cv.declare_id(IRKWizardComponent),
-        cv.GenerateID(CONF_PAGE_DATA_ID): cv.declare_id(cg.uint8),
-        cv.Required(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
-        # The four text sensors the wizard displays. These must already be
-        # defined elsewhere in the device YAML (see irk-capture-base.yaml) -
-        # this component only reads their published state, it doesn't create
-        # them, so the same values stay visible in Home Assistant too.
-        cv.Required(CONF_STATUS_ID): cv.use_id(text_sensor.TextSensor),
-        cv.Required(CONF_IRK_ID): cv.use_id(text_sensor.TextSensor),
-        cv.Required(CONF_DEVICE_MAC_ID): cv.use_id(text_sensor.TextSensor),
-        cv.Required(CONF_EFFECTIVE_MAC_ID): cv.use_id(text_sensor.TextSensor),
-        # The server's internal control socket uses 32768 + port, which must
-        # also fit in 16 bits.
-        cv.Optional(CONF_PORT, default=8080): cv.int_range(min=1, max=32767),
-        # HTTP Basic auth, required. A captured IRK permanently deanonymizes
-        # a phone's rotating BLE address, and an open device on the LAN is
-        # reachable by anything else on it, including a page in a browser.
-        cv.Required(CONF_USERNAME): validate_credential,
-        cv.Required(CONF_PASSWORD): validate_credential,
-    }
-).extend(cv.COMPONENT_SCHEMA)
+CONFIG_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(IRKWizardComponent),
+            cv.GenerateID(CONF_PAGE_DATA_ID): cv.declare_id(cg.uint8),
+            cv.Required(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
+            # The four text sensors the wizard displays. These must already be
+            # defined elsewhere in the device YAML (see irk-capture-base.yaml) -
+            # this component only reads their published state, it doesn't create
+            # them, so the same values stay visible in Home Assistant too.
+            cv.Required(CONF_STATUS_ID): cv.use_id(text_sensor.TextSensor),
+            cv.Required(CONF_IRK_ID): cv.use_id(text_sensor.TextSensor),
+            cv.Required(CONF_DEVICE_MAC_ID): cv.use_id(text_sensor.TextSensor),
+            cv.Required(CONF_EFFECTIVE_MAC_ID): cv.use_id(text_sensor.TextSensor),
+            # The server's internal control socket uses 32768 + port, which must
+            # also fit in 16 bits.
+            cv.Optional(CONF_PORT, default=8080): cv.int_range(min=1, max=32767),
+            # HTTP Basic auth, required. A captured IRK permanently deanonymizes
+            # a phone's rotating BLE address, and an open device on the LAN is
+            # reachable by anything else on it, including a page in a browser.
+            cv.Required(CONF_USERNAME): validate_credential,
+            cv.Required(CONF_PASSWORD): validate_credential,
+        }
+    ).extend(cv.COMPONENT_SCHEMA),
+    validate_auth_config,
+)
 
 
 async def to_code(config):

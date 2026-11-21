@@ -2,6 +2,7 @@
 // the capture-start request.
 
 #include "irk_capture_internal.h"
+#include "irk_capture_gatt.h"
 
 // ESP32-only implementation - requires Bluetooth hardware
 #ifdef USE_ESP32
@@ -146,8 +147,15 @@ void IRKCaptureComponent::start_advertising() {
       if (stop_rc != 0 && stop_rc != BLE_HS_EALREADY && stop_rc != BLE_HS_EINVAL) {
         ESP_LOGD(TAG, "ble_gap_adv_stop before start rc=%d", stop_rc);
       }
-      operation = "GAP name update";
-      rc = ble_svc_gap_device_name_set(name_copy.c_str());
+      if (ble_gap_adv_active()) {
+        // A failed stop can leave the previous advertisement running. Do not
+        // rewrite its payload or treat a subsequent start error as radio OFF.
+        operation = "stop before restart";
+        rc = stop_rc != 0 ? stop_rc : BLE_HS_EBUSY;
+      } else {
+        operation = "GAP name update";
+        rc = ble_svc_gap_device_name_set(name_copy.c_str());
+      }
     }
 
     if (rc == 0) {
@@ -181,13 +189,14 @@ void IRKCaptureComponent::start_advertising() {
       rc = ble_gap_adv_start(own_addr_type, nullptr, BLE_HS_FOREVER, &advp,
                              IRKCaptureComponent::gap_event_handler, this);
     }
+    const bool actual_advertising = ble_gap_adv_active() != 0;
     bool stale_rotation;
     {
       MutexGuard lock(state_mutex_);
       if (host_generation != host_generation_ || !host_synced_) return;
       stale_rotation = rotation_generation != mac_rotation_generation_;
       if (!stale_rotation) {
-        advertising_ = (rc == 0);
+        advertising_ = actual_advertising;
         if (rc == 0) {
           recovered = advertising_start_attempts_ != 0;
           advertising_start_attempts_ = 0;
@@ -201,11 +210,16 @@ void IRKCaptureComponent::start_advertising() {
       // A newer rotation can observe advertising_ before this start finishes.
       // Stop the obsolete start while still owning the BLE-operation lock;
       // otherwise it could leave the controller active throughout rotation.
-      if (rc == 0) {
+      if (actual_advertising) {
         const int stale_stop_rc = ble_gap_adv_stop();
         if (stale_stop_rc != 0 && stale_stop_rc != BLE_HS_EALREADY) {
           ESP_LOGW(TAG, "Stopping a superseded advertising start failed rc=%d", stale_stop_rc);
         }
+      }
+      const bool still_active = ble_gap_adv_active() != 0;
+      {
+        MutexGuard lock(state_mutex_);
+        if (host_generation == host_generation_ && host_synced_) advertising_ = still_active;
       }
       return;
     }
@@ -259,9 +273,10 @@ void IRKCaptureComponent::handle_advertising_failure_(int rc, uint32_t host_gene
   }
 }
 
-void IRKCaptureComponent::stop_advertising() {
+bool IRKCaptureComponent::stop_advertising() {
   int rc;
   bool still_active;
+  bool was_active = false;
   bool lock_timeout = false;
   {
     BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
@@ -273,15 +288,17 @@ void IRKCaptureComponent::stop_advertising() {
         MutexGuard lock(state_mutex_);
         host_generation = host_generation_;
       }
-      rc = ble_gap_adv_stop();
+      was_active = ble_gap_adv_active() != 0;
+      rc = was_active ? ble_gap_adv_stop() : BLE_HS_EALREADY;
       still_active = ble_gap_adv_active() != 0;
       // Keep BLE control serialized through the state commit. Releasing the
       // BLE lock first permits a newer start to finish before this stale stop
       // writes false, making subsequent OFF requests skip the live radio.
       MutexGuard lock(state_mutex_);
-      if (host_generation != host_generation_) return;
+      if (host_generation != host_generation_) return false;
       advertising_ = still_active;
-      adv_stop_retry_time_ = 0;
+      adv_stop_retry_time_ =
+          still_active ? deadline_after(now_ms(), TimingConfig::ADV_RETRY_MS) : 0;
     }
   }
   if (lock_timeout) {
@@ -296,7 +313,7 @@ void IRKCaptureComponent::stop_advertising() {
                "Advertising stop deferred: BLE operation lock busy; retrying every %" PRIu32 " ms",
                TimingConfig::ADV_RETRY_MS);
     }
-    return;
+    return false;
   }
   if (rc != 0 && rc != BLE_HS_EALREADY && rc != BLE_HS_EINVAL) {
     ESP_LOGW(TAG, "ble_gap_adv_stop rc=%d", rc);
@@ -304,9 +321,10 @@ void IRKCaptureComponent::stop_advertising() {
 
   if (still_active) {
     ESP_LOGW(TAG, "Advertising stop requested but NimBLE still reports it active");
-  } else {
+  } else if (was_active) {
     ESP_LOGI(TAG, "Advertising stopped");
   }
+  return !still_active;
 }
 
 void IRKCaptureComponent::set_advertising_requested(bool requested) {
@@ -331,7 +349,9 @@ void IRKCaptureComponent::set_advertising_requested(bool requested) {
   }
 
   if (!requested) {
-    if (actual) stop_advertising();
+    // OFF verifies GAP state even if a previous failure left the cache stale.
+    // A lock timeout arms a retry independently of the cached advertising flag.
+    if (actual || host_synced_) stop_advertising();
   } else if (!connected) {
     start_advertising();
   }

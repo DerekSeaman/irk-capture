@@ -11,7 +11,7 @@
 namespace esphome {
 namespace irk_capture {
 
-static constexpr char VERSION[] = "1.7.5";
+static constexpr char VERSION[] = "1.7.6";
 
 //======================== Component lifecycle ========================
 
@@ -118,6 +118,7 @@ void IRKCaptureComponent::setup() {
       &bond_clear_event_,
       [](struct ble_npl_event* event) {
         auto* self = static_cast<IRKCaptureComponent*>(ble_npl_event_get_arg(event));
+        self->handle_pending_termination_();
         self->handle_forget_bonds_();
       },
       this);
@@ -136,7 +137,9 @@ void IRKCaptureComponent::setup() {
           },
           "irk_bond_clear", 2048, this, tskIDLE_PRIORITY + 1, &bond_clear_task_) != pdPASS) {
     bond_clear_task_ = nullptr;
-    ESP_LOGE(TAG, "Bond-clear worker allocation failed; stored-bond clearing is unavailable");
+    ESP_LOGE(TAG,
+             "BLE worker allocation failed; bond clearing unavailable, disconnects use timeout "
+             "recovery");
   }
 
   // on_ble_host_synced() applies the resolved intent when NimBLE becomes ready.
@@ -234,11 +237,12 @@ void IRKCaptureComponent::loop() {
     // After a lock timeout, wait for the retry deadline instead of blocking
     // and logging on every tick.
     should_stop_unwanted_adv =
-        advertising_ && !advertising_requested_ &&
+        (advertising_ || adv_stop_retry_time_ != 0) && !advertising_requested_ &&
         (adv_stop_retry_time_ == 0 || deadline_reached(now, adv_stop_retry_time_));
-    if (advertising_requested_ && !advertising_ && !connected_ &&
-        mac_rotation_state_ == MacRotationState::IDLE && adv_restart_time_ != 0 &&
-        deadline_reached(now, adv_restart_time_)) {
+    // A failed restart may have left the old advertisement active. Its retry
+    // must still run so start_advertising() can stop and replace that payload.
+    if (advertising_requested_ && !connected_ && mac_rotation_state_ == MacRotationState::IDLE &&
+        adv_restart_time_ != 0 && deadline_reached(now, adv_restart_time_)) {
       adv_restart_time_ = 0;
       should_restart_adv = true;
     }
@@ -315,6 +319,15 @@ void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex,
       capture_result_.irk = irk_hex;
       capture_result_.device_mac = addr_str;
       capture_result_generation_ = connection_generation;
+      if (!capture_triggers_.empty()) {
+        if (pending_capture_events_.size() < CAPTURE_EVENT_CAPACITY) {
+          pending_capture_events_.push_back({ irk_hex, addr_str });
+        } else if (pending_capture_event_drops_ != UINT32_MAX) {
+          // Never overwrite an event already awaiting delivery. Keep the latest
+          // result/history available and report this exceptional loss on loop().
+          ++pending_capture_event_drops_;
+        }
+      }
     }
     capture_status_ = CaptureStatus::CAPTURED;
     status_result_hold_until_ = deadline_after(now_ms(), TimingConfig::STATUS_RESULT_HOLD_MS);
@@ -366,18 +379,13 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   bool stop_after_pub, stop_after_val, label_pub, name_pub;
   std::string irk_hex, irk_addr, effmac, label_val, name_val;
   const char* status = nullptr;
-  bool capture_fire = false;
-  std::string capture_irk, capture_mac;
+  std::vector<CaptureEvent> capture_events;
+  uint32_t dropped_capture_events;
   {
     MutexGuard lock(state_mutex_);
-    if (capture_result_.sequence != fired_capture_sequence_) {
-      fired_capture_sequence_ = capture_result_.sequence;
-      capture_fire = !capture_triggers_.empty();
-      if (capture_fire) {
-        capture_irk = capture_result_.irk;
-        capture_mac = capture_result_.device_mac;
-      }
-    }
+    capture_events.swap(pending_capture_events_);
+    dropped_capture_events = pending_capture_event_drops_;
+    pending_capture_event_drops_ = 0;
     adv_pub = pending_adv_pub_;
     adv_val = advertising_requested_;
     pending_adv_pub_ = false;
@@ -402,10 +410,6 @@ void IRKCaptureComponent::flush_pending_publishes_() {
     if (status_sensor_) status = status_value_locked_(now_ms());
   }
   if (adv_pub && advertising_switch_) advertising_switch_->publish_state(adv_val);
-  if (irk_pub) {
-    if (irk_sensor_) irk_sensor_->publish_state(irk_hex);
-    if (address_sensor_) address_sensor_->publish_state(irk_addr);
-  }
   if (effmac_pub && effective_mac_sensor_) effective_mac_sensor_->publish_state(effmac);
   if (stop_after_pub && stop_after_capture_switch_)
     stop_after_capture_switch_->publish_state(stop_after_val);
@@ -413,14 +417,38 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   // Home Assistant would otherwise keep showing the name the device stopped
   // advertising the moment the identity was refreshed.
   if (name_pub && ble_name_text_) ble_name_text_->publish_state(name_val);
+  // Drain this snapshot in order. A callback may stage more work, which stays
+  // queued for the next flush rather than extending this batch indefinitely.
+  // Each event's sensors and terminal Status are visible before its automation.
+  for (const auto& event : capture_events) {
+    if (irk_sensor_) irk_sensor_->publish_state(event.irk);
+    if (address_sensor_) address_sensor_->publish_state(event.mac);
+    if (status_sensor_ && last_status_value_ != "captured") {
+      last_status_value_ = "captured";
+      status_sensor_->publish_state("captured");
+    }
+    for (auto* trigger : capture_triggers_) trigger->trigger(event.irk, event.mac);
+  }
+  // A newer no-IRK result or a capture whose event overflowed can differ from
+  // the last queued event. Restore the matching latest snapshot after delivery.
+  const bool latest_already_published = !capture_events.empty() &&
+                                        capture_events.back().irk == irk_hex &&
+                                        capture_events.back().mac == irk_addr;
+  if (irk_pub && !latest_already_published) {
+    if (irk_sensor_) irk_sensor_->publish_state(irk_hex);
+    if (address_sensor_) address_sensor_->publish_state(irk_addr);
+  }
   // Publish last so Status observers can read the corresponding result values.
   if (status != nullptr && last_status_value_ != status) {
     last_status_value_ = status;
     status_sensor_->publish_state(status);
   }
-  // After the sensors, so automations that read them see this capture.
-  if (capture_fire) {
-    for (auto* trigger : capture_triggers_) trigger->trigger(capture_irk, capture_mac);
+  if (dropped_capture_events != 0) {
+    ESP_LOGE(TAG,
+             "on_capture queue full: %" PRIu32
+             " event(s) could not be delivered; "
+             "check capture history for results",
+             dropped_capture_events);
   }
 }
 

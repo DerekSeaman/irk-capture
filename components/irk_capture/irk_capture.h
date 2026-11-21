@@ -71,7 +71,7 @@ struct BondClearResult {
 // Outcome of the latest address rotation (Refresh BLE Identity, or the one a
 // name change triggers). A rotation runs after its request has returned, so
 // this is the only way a caller learns whether it took effect.
-enum class IdentityRefreshState : uint8_t { IDLE, PENDING, SUCCEEDED, FAILED };
+enum class IdentityRefreshState : uint8_t { IDLE, PENDING, SUCCEEDED, FAILED, PARTIAL };
 
 // The name a state has in the wizard's JSON; part of its HTTP contract.
 inline const char* identity_refresh_state_name(IdentityRefreshState state) {
@@ -82,6 +82,8 @@ inline const char* identity_refresh_state_name(IdentityRefreshState state) {
       return "succeeded";
     case IdentityRefreshState::FAILED:
       return "failed";
+    case IdentityRefreshState::PARTIAL:
+      return "partial";
     case IdentityRefreshState::IDLE:
       break;
   }
@@ -91,6 +93,7 @@ inline const char* identity_refresh_state_name(IdentityRefreshState state) {
 struct IdentityRefreshResult {
   uint32_t operation_id { 0 };
   IdentityRefreshState state { IdentityRefreshState::IDLE };
+  std::string cleanup_reason;
 };
 
 // BLE advertising profile options
@@ -356,7 +359,8 @@ class IRKCaptureComponent : public Component {
   bool update_ble_name(const std::string& name);
   std::string get_ble_name();
   void start_advertising();
-  void stop_advertising();
+  // True only after verifying that GAP advertising is inactive under the BLE lock.
+  bool stop_advertising();
   void set_advertising_requested(bool requested);
   CaptureResult get_capture_result();
   // Main-task wizard action: claim a baseline and request advertising in the
@@ -480,6 +484,8 @@ class IRKCaptureComponent : public Component {
   uint8_t mac_rotation_retries_ { 0 };      // Retry counter for MAC rotation
   uint32_t mac_rotation_ready_time_ { 0 };  // Earliest next attempt (settle delay or retry backoff)
   uint32_t mac_rotation_generation_ { 0 };  // Invalidates work after reset or a new request
+  bool mac_rotation_prepared_ { false };    // Advertising stopped and bond cleanup attempted
+  bool mac_rotation_cleanup_failed_ { false };
 
   // IRK capture tracking with deduplication and rate limiting
   struct IRKCacheEntry {
@@ -508,20 +514,37 @@ class IRKCaptureComponent : public Component {
   uint32_t pairing_start_time_ { 0 };  // Global pairing timeout
   CaptureResult capture_result_;
   IdentityRefreshResult identity_refresh_result_;
+  uint32_t failed_generation_ { 0 };          // Coalesces failure reporting per connection
   uint32_t capture_result_generation_ { 0 };  // Coalesces accepted successful results
-  // on_capture fires once per capture_result_.sequence; main task only.
+  // Triggers are registered before setup and invoked only on the main task.
   std::vector<Trigger<std::string, std::string>*> capture_triggers_;
-  uint32_t fired_capture_sequence_ { 0 };
+  // Keep event delivery separate from the latest displayed result. A delayed
+  // main loop must not collapse several accepted captures into one callback.
+  struct CaptureEvent {
+    std::string irk;
+    std::string mac;
+  };
+  static constexpr size_t CAPTURE_EVENT_CAPACITY = 32;
+  std::vector<CaptureEvent> pending_capture_events_;
+  // Overflow preserves queued events and is reported by the main task.
+  uint32_t pending_capture_event_drops_ { 0 };
 
   // A worker queues wake-ups onto NimBLE's task without blocking the main task
-  // on queue capacity. Bond deletion stays serialized with pairing callbacks.
+  // on queue capacity. Bond deletion and completion disconnects stay serialized
+  // with pairing callbacks.
   // The worker/event live for the component's lifetime; only pending state is
-  // cancelled on host reset. Pending work gates advertising and MAC rotation.
+  // cancelled on host reset. Pending bond clearing gates advertising and MAC rotation.
   struct ble_npl_event bond_clear_event_ {};
   TaskHandle_t bond_clear_task_ { nullptr };  // Initialized once in setup()
   bool bond_clear_pending_ { false };
   uint32_t bond_clear_host_generation_ { 0 };
   BondClearResult bond_clear_result_;
+  // Completion disconnects execute on the host task, where handle reuse cannot
+  // interleave with the generation check. The same worker queues their wake-up.
+  uint16_t pending_terminate_handle_ { BLE_HS_CONN_HANDLE_NONE };
+  uint32_t pending_terminate_generation_ { 0 };
+  const char* pending_terminate_context_ { nullptr };  // String literal only
+  bool pending_terminate_busy_logged_ { false };
 
   // Wizard-facing session state (see README). The entity pointers are set
   // once before setup(); the rest is protected by state_mutex_ unless noted.
@@ -611,9 +634,11 @@ class IRKCaptureComponent : public Component {
   //           manufacturer_name_,
   //           mac_rotation_state_, pending_mac_,
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
+  //           mac_rotation_prepared_, mac_rotation_cleanup_failed_, failed_generation_,
   //           adv_restart_time_, capture_events_,
   //           unique_devices_, irk_cache_ (deduplication state),
   //           capture_result_, capture_result_generation_,
+  //           pending_capture_events_, pending_capture_event_drops_,
   //           bond_clear_pending_, bond_clear_host_generation_, bond_clear_result_,
   //           connection_generation_, connection_origin_,
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
@@ -624,7 +649,7 @@ class IRKCaptureComponent : public Component {
   //           adv_stop_retry_time_, host_wait_since_, host_wait_log_time_,
   //           irk_read_error_logged_, identity_refresh_result_
   // Not protected, because only the main task touches them: last_loop_,
-  // last_notify_, last_status_value_, fired_capture_sequence_, capture_triggers_.
+  // last_notify_, last_status_value_, capture_triggers_.
   SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Serializes BLE control operations that can be called from both NimBLE and
@@ -667,8 +692,9 @@ class IRKCaptureComponent : public Component {
   // connection the result was read for. Safe from the NimBLE and main tasks.
   void close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
                            const char* context);
-  // Disconnects with a bounded wait for ble_op_mutex_; see the definition.
-  void terminate_bounded_(uint16_t conn_handle, const char* context);
+  // Queues a generation-checked disconnect on the host task without waiting.
+  void terminate_bounded_(uint16_t conn_handle, uint32_t generation, const char* context);
+  void handle_pending_termination_();  // NimBLE event task only
   // Shows Status "failed" for a pairing that ended without a result.
   void report_capture_failure_(uint32_t connection_generation);
   void report_host_stall_(uint32_t now);  // Main task only
@@ -680,7 +706,7 @@ class IRKCaptureComponent : public Component {
   // Caller holds state_mutex_.
   void restore_capture_history_(IRKCacheEntry& entry, PublishDecision& out_decision);
   static std::string format_history_json_(const std::vector<IRKCacheEntry>& cache);
-  void notify_bond_clear_();    // Nonblocking worker wake-up
+  void notify_bond_clear_();    // Nonblocking maintenance worker wake-up
   void queue_bond_clear_();     // Worker task only
   void handle_forget_bonds_();  // NimBLE event-queue callback only
 

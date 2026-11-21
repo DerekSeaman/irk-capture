@@ -2,6 +2,7 @@
 // heart-rate notifications, and reporting of a host that never synchronises.
 
 #include "irk_capture_internal.h"
+#include "irk_capture_gatt.h"
 
 // ESP32-only implementation - requires Bluetooth hardware
 #ifdef USE_ESP32
@@ -13,6 +14,62 @@ extern "C" void ble_store_config_init(void);
 
 namespace esphome {
 namespace irk_capture {
+
+// Security Manager IO capability names (Core spec Vol 3 Part H 3.5.1).
+static inline const char* io_cap_str(uint8_t io_cap) {
+  switch (io_cap) {
+    case BLE_HS_IO_DISPLAY_ONLY:
+      return "DisplayOnly";
+    case BLE_HS_IO_DISPLAY_YESNO:
+      return "DisplayYesNo";
+    case BLE_HS_IO_KEYBOARD_ONLY:
+      return "KeyboardOnly";
+    case BLE_HS_IO_NO_INPUT_OUTPUT:
+      return "NoInputNoOutput";
+    case BLE_HS_IO_KEYBOARD_DISPLAY:
+      return "KeyboardDisplay";
+    default:
+      return "unknown";
+  }
+}
+
+// Key distribution bits as "ENC|ID|SIGN|LINK"; "none" when no bit is set.
+// Writes into `buf`, which must hold at least 20 bytes, and returns it.
+static inline const char* key_dist_str(uint8_t dist, char* buf, size_t len) {
+  static const struct {
+    uint8_t bit;
+    const char* name;
+  } kBits[] = {
+    { BLE_SM_PAIR_KEY_DIST_ENC, "ENC" },
+    { BLE_SM_PAIR_KEY_DIST_ID, "ID" },
+    { BLE_SM_PAIR_KEY_DIST_SIGN, "SIGN" },
+    { BLE_SM_PAIR_KEY_DIST_LINK, "LINK" },
+  };
+  size_t pos = 0;
+  buf[0] = '\0';
+  for (const auto& b : kBits) {
+    if ((dist & b.bit) == 0) continue;
+    int n = snprintf(buf + pos, len - pos, "%s%s", pos ? "|" : "", b.name);
+    if (n < 0 || (size_t) n >= len - pos) break;
+    pos += (size_t) n;
+  }
+  if (pos == 0) snprintf(buf, len, "none");
+  return buf;
+}
+
+void log_sm_config(const char* label) {
+  char ours[20];
+  char theirs[20];
+  ESP_LOGI(TAG,
+           "%s: bonding=%d mitm=%d sc=%d io_cap=%d (%s) our_key_dist=0x%02X (%s) "
+           "their_key_dist=0x%02X (%s)",
+           label, (int) ble_hs_cfg.sm_bonding, (int) ble_hs_cfg.sm_mitm, (int) ble_hs_cfg.sm_sc,
+           (int) ble_hs_cfg.sm_io_cap, io_cap_str(ble_hs_cfg.sm_io_cap),
+           (unsigned) ble_hs_cfg.sm_our_key_dist,
+           key_dist_str(ble_hs_cfg.sm_our_key_dist, ours, sizeof(ours)),
+           (unsigned) ble_hs_cfg.sm_their_key_dist,
+           key_dist_str(ble_hs_cfg.sm_their_key_dist, theirs, sizeof(theirs)));
+}
 
 // Global instance pointer for NimBLE callbacks that don't accept user args
 static IRKCaptureComponent* g_irk_instance = nullptr;

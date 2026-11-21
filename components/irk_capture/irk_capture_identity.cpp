@@ -134,7 +134,33 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   }
   if (ready_time != 0 && !deadline_reached(now, ready_time)) return;
 
-  if (ready_time == 0 && retries == 0) {
+  bool prepared;
+  {
+    MutexGuard lock(state_mutex_);
+    prepared = mac_rotation_prepared_;
+  }
+  if (!prepared) {
+    // A failed initial stop must be retried here: ON intent is retained during
+    // rotation, so the ordinary OFF retry in loop() does not own this stop.
+    // Verification still takes the BLE lock when the cache says OFF. The stop
+    // helper avoids another stop/log when GAP is already inactive.
+    const bool stopped = stop_advertising();
+    bool abort = false;
+    {
+      MutexGuard lock(state_mutex_);
+      if (!rotation_current_locked_(generation)) return;
+      if (!stopped) {
+        abort = ++mac_rotation_retries_ >= TimingConfig::MAC_ROTATION_MAX_RETRIES;
+        if (abort)
+          abort_rotation_locked_();
+        else
+          mac_rotation_ready_time_ = deadline_after(now_ms(), TimingConfig::ADV_RETRY_MS);
+      }
+    }
+    if (!stopped) {
+      if (abort) ESP_LOGE(TAG, "MAC rotation aborted: advertising could not stop");
+      return;
+    }
     {
       MutexGuard lock(state_mutex_);
       if (!rotation_current_locked_(generation)) return;
@@ -145,18 +171,20 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
     log_mac("Previous");
     ESP_LOGI(TAG, "Clearing bonds and waiting %" PRIu32 " ms before MAC rotation",
              TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS);
-    int clear_rc = ble_store_clear();
-    if (clear_rc != 0) {
-      // The rotation still goes ahead: a new address is useful on its own. Old
-      // pairings staying behind must not pass as a clean refresh, though.
-      ESP_LOGE(TAG,
-               "Stored pairings could not be cleared before MAC rotation rc=%d; "
-               "press Forget All Bonds after the rotation completes",
-               clear_rc);
+    const BondCleanupResult cleanup = clear_bonds_and_resolving_list();
+    // The rotation still goes ahead: a new address is useful on its own. Old
+    // pairings staying behind must not pass as a clean refresh, though.
+    if (!cleanup.ok()) {
+      ESP_LOGE(TAG, "Identity cleanup incomplete (store rc=%d, resolving rc=%d): %s",
+               cleanup.store_rc, cleanup.resolving_rc, cleanup.reason());
     }
     {
       MutexGuard lock(state_mutex_);
       if (!rotation_current_locked_(generation)) return;
+      mac_rotation_prepared_ = true;
+      mac_rotation_cleanup_failed_ = !cleanup.ok();
+      identity_refresh_result_.cleanup_reason = cleanup.reason();
+      mac_rotation_retries_ = 0;
       mac_rotation_ready_time_ =
           deadline_after(now_ms(), TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS);
     }
@@ -197,7 +225,9 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
       mac_rotation_state_ = MacRotationState::IDLE;
       mac_rotation_retries_ = 0;
       mac_rotation_ready_time_ = 0;
-      identity_refresh_result_.state = IdentityRefreshState::SUCCEEDED;
+      identity_refresh_result_.state = mac_rotation_cleanup_failed_
+                                           ? IdentityRefreshState::PARTIAL
+                                           : IdentityRefreshState::SUCCEEDED;
       commit_generated_name_(mac);
     } else {
       retries = ++mac_rotation_retries_;
@@ -265,6 +295,7 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     // Set rotation state and commit pre-generated MAC to shared buffer
     if (++identity_refresh_result_.operation_id == 0) ++identity_refresh_result_.operation_id;
     identity_refresh_result_.state = IdentityRefreshState::PENDING;
+    identity_refresh_result_.cleanup_reason.clear();
     mac_rotation_generation_++;
     rotation_generation = mac_rotation_generation_;
     // Naming intent belongs to this rotation generation. In particular, a
@@ -282,6 +313,8 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     }
     mac_rotation_state_ = MacRotationState::REQUESTED;
     mac_rotation_ready_time_ = 0;
+    mac_rotation_prepared_ = false;
+    mac_rotation_cleanup_failed_ = false;
     mac_rotation_retries_ = 0;  // Reset retry counter for new rotation attempt
     std::memcpy(pending_mac_, temp_mac, sizeof(pending_mac_));
 

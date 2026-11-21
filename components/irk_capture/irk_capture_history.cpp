@@ -6,8 +6,37 @@
 // ESP32-only implementation - requires Bluetooth hardware
 #ifdef USE_ESP32
 
+// NimBLE exports these functions but declares them in ble_hs_pvcy_priv.h,
+// outside ESP-IDF's public include path. Keep this SDK boundary here and cover
+// its linkage in the firmware build matrix. Reapplying a non-null local IRK
+// clears the entire resolving list (including orphaned entries) on both the
+// controller and host privacy implementations, and returns the operation error.
+extern "C" int ble_hs_pvcy_our_irk(const uint8_t** out_irk);
+extern "C" int ble_hs_pvcy_set_our_irk(const uint8_t* irk);
+
 namespace esphome {
 namespace irk_capture {
+
+// Call with advertising stopped, no connection and neither component mutex.
+// ble_gap_unpair() can swallow a resolving-list error on ESP-IDF, so its return
+// code cannot prove cleanup. Always reset the full list, even with an empty
+// store: an earlier failed cleanup may have removed the only record of a peer.
+BondCleanupResult clear_bonds_and_resolving_list() {
+  BondCleanupResult result;
+  const uint8_t* current_irk = nullptr;
+  result.resolving_rc = ble_hs_pvcy_our_irk(&current_irk);
+  if (result.resolving_rc == 0) {
+    if (current_irk == nullptr) {
+      result.resolving_rc = BLE_HS_EINVAL;
+    } else {
+      uint8_t local_irk[16];
+      std::memcpy(local_irk, current_irk, sizeof(local_irk));
+      result.resolving_rc = ble_hs_pvcy_set_our_irk(local_irk);
+    }
+  }
+  result.store_rc = ble_store_clear();
+  return result;
+}
 
 static void log_spacer() {
   ESP_LOGI(TAG, " ");
@@ -396,7 +425,9 @@ BondClearResult IRKCaptureComponent::request_bond_clear() {
 void IRKCaptureComponent::notify_bond_clear_() {
   {
     MutexGuard lock(state_mutex_);
-    if (!bond_clear_task_ || !bond_clear_pending_) return;
+    if (!bond_clear_task_ ||
+        (!bond_clear_pending_ && pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE))
+      return;
   }
   // Task notifications do not wait for queue capacity. A reset racing this
   // notification is harmless: the worker rechecks the pending request.
@@ -406,8 +437,10 @@ void IRKCaptureComponent::notify_bond_clear_() {
 void IRKCaptureComponent::queue_bond_clear_() {
   {
     MutexGuard lock(state_mutex_);
-    if (!bond_clear_pending_ || !host_synced_ || host_generation_ != bond_clear_host_generation_)
-      return;
+    if (!host_synced_) return;
+    const bool clear_current =
+        bond_clear_pending_ && host_generation_ == bond_clear_host_generation_;
+    if (!clear_current && pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE) return;
   }
   // Worker task only, with neither component mutex held. This can block on
   // older SDKs. The event is just a wake-up, not ownership of a request: after
@@ -473,14 +506,9 @@ void IRKCaptureComponent::handle_forget_bonds_() {
 
   if (can_clear) {
     // Store work takes NimBLE's host lock; hold neither component mutex.
-    const int rc = ble_store_clear();
-    if (rc != 0) {
-      state = BondClearState::FAILED;
-      reason = "Bond storage could not be cleared; retry.";
-    } else {
-      state = BondClearState::SUCCEEDED;
-      reason.clear();
-    }
+    const BondCleanupResult cleanup = clear_bonds_and_resolving_list();
+    state = cleanup.ok() ? BondClearState::SUCCEEDED : BondClearState::FAILED;
+    reason = cleanup.reason();
   }
   {
     MutexGuard lock(state_mutex_);

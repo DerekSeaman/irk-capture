@@ -342,7 +342,7 @@ packages:
     refresh: always
 ```
 
-Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock out that browser for 30 seconds; other devices can still log in. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
+Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock out that client address for 30 seconds. The device tracks four addresses separately; when all four have recent failures, new addresses share an overflow limit and a legitimate new client may also be temporarily locked out. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
 
 The UI offers two workflows:
 
@@ -448,7 +448,7 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 
 `failed` means one of two things. Check the device log to see which.
 
-- **A pairing ended without a result.** The log shows `ENC_CHANGE failed` or `IRK not found`. See [IRK Not Captured After Pairing](#irk-not-captured-after-pairing).
+- **A pairing ended without a result.** The log shows `ENC_CHANGE failed`, `IRK not found`, or `Encryption timeout` / `Pairing timeout` when the device connected but never finished pairing. See [IRK Not Captured After Pairing](#irk-not-captured-after-pairing).
 - **Bluetooth didn't start.** After 30 seconds the log shows `Bluetooth host has not synchronised`. Status stays `failed` until Bluetooth starts. The ESP32 restarts by itself after 5 minutes if nothing has been captured. If the restarts continue, check the Bluetooth configuration in your build, and do a clean build.
 
 ### IRK Not Captured After Pairing
