@@ -437,9 +437,9 @@ class IRKCaptureComponent : public Component {
   // profile. Until then, and again after any reboot, Keyboard advertises as
   // "Logitech K380".
   bool keyboard_name_custom_ { false };
-  std::string manufacturer_name_ { "ESPresense" };  // BLE Device Info manufacturer
-  bool continuous_mode_ { true };                   // Keep advertising after captures
-  uint8_t max_captures_ { 10 };                     // Max unique devices (0=unlimited)
+  std::string manufacturer_name_ { "ESP32" };  // BLE Device Info manufacturer
+  bool continuous_mode_ { true };              // Keep advertising after captures
+  uint8_t max_captures_ { 10 };                // Max unique devices (0=unlimited)
   text_sensor::TextSensor* irk_sensor_ { nullptr };
   text_sensor::TextSensor* address_sensor_ { nullptr };
   text_sensor::TextSensor* effective_mac_sensor_ { nullptr };

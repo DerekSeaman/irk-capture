@@ -1,10 +1,11 @@
 # Release Notes v1.7.7
 
-IRK Capture v1.7.7 is a small maintenance release. A capture label you type with no usable characters no longer wipes the label you already set, and the wizard can no longer be held up by a client that sends a request very slowly. The rest is internal tidying with no change in behavior.
+IRK Capture v1.7.7 is a small maintenance release. A capture label you type with no usable characters no longer wipes the label you already set, and the wizard can no longer be held up by a client that sends a request very slowly. The ESP32 now reports its manufacturer as "ESP32" instead of "ESPresense". The rest is internal tidying with no change in behavior.
 
 ## What's new for you
 
 - **An unusable label no longer clears your label.** Capture labels keep letters, digits, spaces, hyphens, underscores and apostrophes. A label made only of other characters, such as an emoji or punctuation, used to be stripped to nothing and silently erase the label you had already saved. Now it is refused and your saved label stays. In the wizard you see an error saying which characters are allowed. In Home Assistant, the Next Capture Label entity switches back to the saved label. Clearing the field on purpose still removes the label.
+- **The manufacturer name is now "ESP32".** Phones can read a manufacturer name from a Bluetooth accessory after pairing. IRK Capture reported "ESPresense", left over from the project it grew out of. It now reports "ESP32" in every profile. Capturing works exactly as before, because pairing never uses this name. A phone that already paired may keep showing the old name until it pairs again.
 
 There are no new entities, options or Status values.
 
@@ -21,6 +22,7 @@ There are no new entities, options or Status values.
 ## For developers
 
 - `set_next_capture_label()` returns `LabelUpdateResult { accepted, stored_label }`. A non-empty value that sanitizes to empty is refused: the stored label is unchanged, returned as `stored_label`, and republished so the text entity reverts. `/api/label` answers 400 when `accepted` is false.
+- The Device Information Manufacturer Name characteristic (`manufacturer_name_`, and the fallback in `chr_read_devinfo`) is now `"ESP32"` instead of `"ESPresense"`. Model Number still mirrors the advertised name.
 - `read_request_body()` in `irk_wizard.cpp` has an overall deadline (`MAX_BODY_READ_MS`, 10 s) in addition to its three receive timeouts. One receive call can still be in progress when the deadline passes, so the worst case is about 15 s.
 - `should_publish_irk()` is now `record_observation_locked_()` and returns its `PublishDecision` directly instead of a `bool` plus an out parameter.
 - `capture_limit_reached_locked_()` holds the single-capture and `max_captures` rule that the capture path and the disconnect handler both use. `stop_after_capture_` is still checked separately.
