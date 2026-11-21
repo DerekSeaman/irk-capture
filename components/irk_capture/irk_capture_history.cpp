@@ -6,41 +6,33 @@
 // ESP32-only implementation - requires Bluetooth hardware
 #ifdef USE_ESP32
 
+// NimBLE exports these functions but declares them in ble_hs_pvcy_priv.h,
+// outside ESP-IDF's public include path. Keep this SDK boundary here and cover
+// its linkage in the firmware build matrix. Reapplying a non-null local IRK
+// clears the entire resolving list (including orphaned entries) on both the
+// controller and host privacy implementations, and returns the operation error.
+extern "C" int ble_hs_pvcy_our_irk(const uint8_t** out_irk);
+extern "C" int ble_hs_pvcy_set_our_irk(const uint8_t* irk);
+
 namespace esphome {
 namespace irk_capture {
 
-// Forgets every bonded peer, then clears whatever else the bond store holds.
-//
-// ble_store_clear() on its own deletes the stored records but leaves each
-// peer's IRK in the resolving list, so a "forgotten" phone's private address
-// still resolves to its identity until the next reboot. ble_gap_unpair()
-// removes the peer from both. Call it with advertising stopped and nothing
-// connected: ble_gap_unpair() refuses (EBUSY) while advertising and would
-// terminate a live link to the peer. Takes NimBLE's host lock, so hold neither
-// component mutex. Keep the first unpair error even if the final store clear
-// succeeds; otherwise retained resolving keys would be reported as gone.
-BondCleanupResult unpair_and_clear_bonds() {
-  constexpr int kMaxPeers = MYNEWT_VAL(BLE_STORE_MAX_BONDS);
-  ble_addr_t peers[kMaxPeers];
-  int num_peers = 0;
-  const int list_rc = ble_store_util_bonded_peers(peers, &num_peers, kMaxPeers);
+// Call with advertising stopped, no connection and neither component mutex.
+// ble_gap_unpair() can swallow a resolving-list error on ESP-IDF, so its return
+// code cannot prove cleanup. Always reset the full list, even with an empty
+// store: an earlier failed cleanup may have removed the only record of a peer.
+BondCleanupResult clear_bonds_and_resolving_list() {
   BondCleanupResult result;
-  result.unpair_rc = list_rc;
-  if (list_rc != 0) {
-    ESP_LOGW(TAG, "Could not list bonded peers rc=%d; their keys may stay resolvable until reboot",
-             list_rc);
-    num_peers = 0;
-  }
-  for (int i = 0; i < num_peers; ++i) {
-    const int rc = ble_gap_unpair(&peers[i]);
-    if (rc != 0 && rc != BLE_HS_ENOENT) {
-      if (result.unpair_rc == 0) result.unpair_rc = rc;
-      ESP_LOGW(TAG, "Unpair %s failed rc=%d; its key may stay resolvable until reboot",
-               addr_to_str(peers[i]).c_str(), rc);
+  const uint8_t* current_irk = nullptr;
+  result.resolving_rc = ble_hs_pvcy_our_irk(&current_irk);
+  if (result.resolving_rc == 0) {
+    if (current_irk == nullptr) {
+      result.resolving_rc = BLE_HS_EINVAL;
+    } else {
+      uint8_t local_irk[16];
+      std::memcpy(local_irk, current_irk, sizeof(local_irk));
+      result.resolving_rc = ble_hs_pvcy_set_our_irk(local_irk);
     }
-  }
-  if (num_peers > 0) {
-    ESP_LOGD(TAG, "Unpaired %d bonded peer(s) before clearing the bond store", num_peers);
   }
   result.store_rc = ble_store_clear();
   return result;
@@ -514,19 +506,9 @@ void IRKCaptureComponent::handle_forget_bonds_() {
 
   if (can_clear) {
     // Store work takes NimBLE's host lock; hold neither component mutex.
-    const BondCleanupResult cleanup = unpair_and_clear_bonds();
-    if (cleanup.store_rc != 0) {
-      // Stored bonds are in flash, so a restart would bring them back.
-      state = BondClearState::FAILED;
-      reason = "Bond storage could not be cleared; retry.";
-    } else if (cleanup.unpair_rc != 0) {
-      // The store is empty; only resolving-list keys remain, and boot clears them.
-      state = BondClearState::FAILED;
-      reason = "Some devices stay recognised until the ESP32 restarts.";
-    } else {
-      state = BondClearState::SUCCEEDED;
-      reason.clear();
-    }
+    const BondCleanupResult cleanup = clear_bonds_and_resolving_list();
+    state = cleanup.ok() ? BondClearState::SUCCEEDED : BondClearState::FAILED;
+    reason = cleanup.reason();
   }
   {
     MutexGuard lock(state_mutex_);

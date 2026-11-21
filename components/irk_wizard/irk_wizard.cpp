@@ -591,7 +591,8 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   tail += "\"bond_clear\":" + bond_clear_json(s.bond_clear) + ",";
   tail +=
       "\"identity_refresh\":{\"operation_id\":" + std::to_string(s.identity_refresh.operation_id) +
-      ",\"state\":\"" + irk_capture::identity_refresh_state_name(s.identity_refresh.state) + "\"}";
+      ",\"state\":\"" + irk_capture::identity_refresh_state_name(s.identity_refresh.state) +
+      "\",\"cleanup_reason\":\"" + json_escape(s.identity_refresh.cleanup_reason) + "\"}";
   tail += "}";
 
   // Sent in pieces. The history can reach tens of kilobytes, and joining it

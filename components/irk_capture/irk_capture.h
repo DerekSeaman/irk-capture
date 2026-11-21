@@ -93,6 +93,7 @@ inline const char* identity_refresh_state_name(IdentityRefreshState state) {
 struct IdentityRefreshResult {
   uint32_t operation_id { 0 };
   IdentityRefreshState state { IdentityRefreshState::IDLE };
+  std::string cleanup_reason;
 };
 
 // BLE advertising profile options
@@ -533,6 +534,7 @@ class IRKCaptureComponent : public Component {
   uint16_t pending_terminate_handle_ { BLE_HS_CONN_HANDLE_NONE };
   uint32_t pending_terminate_generation_ { 0 };
   const char* pending_terminate_context_ { nullptr };  // String literal only
+  bool pending_terminate_busy_logged_ { false };
 
   // Wizard-facing session state (see README). The entity pointers are set
   // once before setup(); the rest is protected by state_mutex_ unless noted.
@@ -679,7 +681,7 @@ class IRKCaptureComponent : public Component {
   // connection the result was read for. Safe from the NimBLE and main tasks.
   void close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
                            const char* context);
-  // Disconnects with a bounded wait for ble_op_mutex_; see the definition.
+  // Queues a generation-checked disconnect on the host task without waiting.
   void terminate_bounded_(uint16_t conn_handle, uint32_t generation, const char* context);
   void handle_pending_termination_();  // NimBLE event task only
   // Shows Status "failed" for a pairing that ended without a result.

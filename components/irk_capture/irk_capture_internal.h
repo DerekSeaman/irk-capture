@@ -350,20 +350,28 @@ static inline void log_terminate_result(int rc, const char* context) {
   }
 }
 
-// Outcome of unpair_and_clear_bonds(). The two failures need different advice:
-// stored bonds live in flash and survive a restart, so a store failure needs a
-// retry, while a failed unpair only leaves a resolving-list key that a restart
-// clears.
+// Independent outcomes: an empty store does not prove resolving keys are gone.
 struct BondCleanupResult {
-  int store_rc { 0 };   // ble_store_clear(); nonzero means stored bonds remain
-  int unpair_rc { 0 };  // First listing or unpair error; keys stay resolvable until restart
+  int store_rc { 0 };
+  int resolving_rc { 0 };
   bool ok() const {
-    return store_rc == 0 && unpair_rc == 0;
+    return store_rc == 0 && resolving_rc == 0;
+  }
+  const char* reason() const {
+    if (store_rc != 0 && resolving_rc != 0)
+      return "Bond storage and identity keys could not be cleared. "
+             "Press Forget All Bonds to retry; "
+             "restart the ESP32 if identity-key cleanup keeps failing.";
+    if (store_rc != 0) return "Bond storage could not be cleared; press Forget All Bonds to retry.";
+    if (resolving_rc != 0)
+      return "Identity keys could not be cleared. Press Forget All Bonds to retry; "
+             "restart the ESP32 if identity-key cleanup keeps failing.";
+    return "";
   }
 };
 
 // Clears stored bonds and resolving-list entries; reports each step's failure.
-BondCleanupResult unpair_and_clear_bonds();
+BondCleanupResult clear_bonds_and_resolving_list();
 
 static inline void log_no_irk_for_peer(const ble_addr_t& peer_id) {
   ESP_LOGW(TAG, "Bond for %s has no usable IRK; key distribution may be incomplete or unsupported",

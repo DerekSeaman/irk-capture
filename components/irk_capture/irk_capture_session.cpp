@@ -301,6 +301,7 @@ void IRKCaptureComponent::reset_connection_state_() {
   // Caller holds state_mutex_. Keep the generation for delayed capture results;
   // on_connect() advances it before the next peer can become active.
   pending_terminate_handle_ = BLE_HS_CONN_HANDLE_NONE;
+  pending_terminate_busy_logged_ = false;
   connected_ = false;
   conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
   connection_origin_ = CaptureOrigin::UNKNOWN;
@@ -584,6 +585,8 @@ void IRKCaptureComponent::terminate_bounded_(uint16_t conn_handle, uint32_t gene
   {
     MutexGuard lock(state_mutex_);
     if (!connected_ || conn_handle_ != conn_handle || connection_generation_ != generation) return;
+    if (pending_terminate_handle_ != conn_handle || pending_terminate_generation_ != generation)
+      pending_terminate_busy_logged_ = false;
     pending_terminate_handle_ = conn_handle;
     pending_terminate_generation_ = generation;
     pending_terminate_context_ = context;
@@ -603,15 +606,19 @@ void IRKCaptureComponent::handle_pending_termination_() {
   {
     BleOpGuard ble_lock(ble_op_mutex_, 0);
     if (!ble_lock.acquired()) {
-      // No retry: waiting here would stall the host task behind the main task.
+      // loop() wakes the worker again. Log once per request, not every 50 ms.
       const char* deferred;
       {
         MutexGuard lock(state_mutex_);
+        if (pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE || pending_terminate_busy_logged_)
+          return;
+        pending_terminate_busy_logged_ = true;
         deferred = pending_terminate_context_;  // String literal; safe after unlock
       }
-      ESP_LOGW(TAG,
-               "Disconnect %s deferred: BLE operation lock busy; the pairing timeout will close it",
-               deferred ? deferred : "");
+      ESP_LOGW(
+          TAG,
+          "Disconnect %s deferred: BLE operation lock busy; will retry on the next worker wake-up",
+          deferred ? deferred : "");
       return;
     }
     uint16_t handle;

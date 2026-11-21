@@ -171,26 +171,19 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
     log_mac("Previous");
     ESP_LOGI(TAG, "Clearing bonds and waiting %" PRIu32 " ms before MAC rotation",
              TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS);
-    const BondCleanupResult cleanup = unpair_and_clear_bonds();
+    const BondCleanupResult cleanup = clear_bonds_and_resolving_list();
     // The rotation still goes ahead: a new address is useful on its own. Old
     // pairings staying behind must not pass as a clean refresh, though.
-    if (cleanup.store_rc != 0) {
-      // Stored bonds are in flash, so a restart would bring them back.
-      ESP_LOGE(TAG,
-               "Stored pairings could not be cleared before MAC rotation rc=%d; "
-               "press Forget All Bonds after the rotation completes",
-               cleanup.store_rc);
-    } else if (cleanup.unpair_rc != 0) {
-      ESP_LOGE(TAG,
-               "Some identity keys could not be removed before MAC rotation rc=%d; "
-               "restart the device to clear them",
-               cleanup.unpair_rc);
+    if (!cleanup.ok()) {
+      ESP_LOGE(TAG, "Identity cleanup incomplete (store rc=%d, resolving rc=%d): %s",
+               cleanup.store_rc, cleanup.resolving_rc, cleanup.reason());
     }
     {
       MutexGuard lock(state_mutex_);
       if (!rotation_current_locked_(generation)) return;
       mac_rotation_prepared_ = true;
       mac_rotation_cleanup_failed_ = !cleanup.ok();
+      identity_refresh_result_.cleanup_reason = cleanup.reason();
       mac_rotation_retries_ = 0;
       mac_rotation_ready_time_ =
           deadline_after(now_ms(), TimingConfig::MAC_ROTATION_SETTLE_DELAY_MS);
@@ -302,6 +295,7 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     // Set rotation state and commit pre-generated MAC to shared buffer
     if (++identity_refresh_result_.operation_id == 0) ++identity_refresh_result_.operation_id;
     identity_refresh_result_.state = IdentityRefreshState::PENDING;
+    identity_refresh_result_.cleanup_reason.clear();
     mac_rotation_generation_++;
     rotation_generation = mac_rotation_generation_;
     // Naming intent belongs to this rotation generation. In particular, a

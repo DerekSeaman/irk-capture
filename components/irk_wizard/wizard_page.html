@@ -592,7 +592,7 @@ function reportIdentityFailure(d){
     var failedOp=(identity.state==='failed' || identity.state==='partial') ? identity.operation_id : 0;
     if(seenIdentityOp!==null && failedOp && failedOp!==seenIdentityOp)
       showError(new Error(identity.state==='partial'
-        ? 'The Bluetooth address changed, but some pairing information could not be removed. Press Forget All Bonds, then restart the ESP32 if it reports devices still recognised.'
+        ? 'The Bluetooth address changed. ' + (identity.cleanup_reason || 'Pairing cleanup was incomplete. Press Forget All Bonds to retry; restart the ESP32 if identity-key cleanup keeps failing.')
         : 'The ESP32 could not change its Bluetooth address. Check the displayed name and address, then try Refresh BLE Identity again.'));
     seenIdentityOp=failedOp || (seenIdentityOp===null ? 0 : seenIdentityOp);
   }
