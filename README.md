@@ -342,7 +342,7 @@ packages:
     refresh: always
 ```
 
-Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock out that browser for 30 seconds; other devices can still log in. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
+Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock out that client address for 30 seconds. The device tracks four addresses separately; when all four have recent failures, new addresses share an overflow limit and a legitimate new client may also be temporarily locked out. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
 
 The UI offers two workflows:
 

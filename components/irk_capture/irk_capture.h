@@ -359,7 +359,8 @@ class IRKCaptureComponent : public Component {
   bool update_ble_name(const std::string& name);
   std::string get_ble_name();
   void start_advertising();
-  void stop_advertising();
+  // True only after verifying that GAP advertising is inactive under the BLE lock.
+  bool stop_advertising();
   void set_advertising_requested(bool requested);
   CaptureResult get_capture_result();
   // Main-task wizard action: claim a baseline and request advertising in the
@@ -515,9 +516,18 @@ class IRKCaptureComponent : public Component {
   IdentityRefreshResult identity_refresh_result_;
   uint32_t failed_generation_ { 0 };          // Coalesces failure reporting per connection
   uint32_t capture_result_generation_ { 0 };  // Coalesces accepted successful results
-  // on_capture fires once per capture_result_.sequence; main task only.
+  // Triggers are registered before setup and invoked only on the main task.
   std::vector<Trigger<std::string, std::string>*> capture_triggers_;
-  uint32_t fired_capture_sequence_ { 0 };
+  // Keep event delivery separate from the latest displayed result. A delayed
+  // main loop must not collapse several accepted captures into one callback.
+  struct CaptureEvent {
+    std::string irk;
+    std::string mac;
+  };
+  static constexpr size_t CAPTURE_EVENT_CAPACITY = 32;
+  std::vector<CaptureEvent> pending_capture_events_;
+  // Overflow preserves queued events and is reported by the main task.
+  uint32_t pending_capture_event_drops_ { 0 };
 
   // A worker queues wake-ups onto NimBLE's task without blocking the main task
   // on queue capacity. Bond deletion and completion disconnects stay serialized
@@ -628,6 +638,7 @@ class IRKCaptureComponent : public Component {
   //           adv_restart_time_, capture_events_,
   //           unique_devices_, irk_cache_ (deduplication state),
   //           capture_result_, capture_result_generation_,
+  //           pending_capture_events_, pending_capture_event_drops_,
   //           bond_clear_pending_, bond_clear_host_generation_, bond_clear_result_,
   //           connection_generation_, connection_origin_,
   //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
@@ -638,7 +649,7 @@ class IRKCaptureComponent : public Component {
   //           adv_stop_retry_time_, host_wait_since_, host_wait_log_time_,
   //           irk_read_error_logged_, identity_refresh_result_
   // Not protected, because only the main task touches them: last_loop_,
-  // last_notify_, last_status_value_, fired_capture_sequence_, capture_triggers_.
+  // last_notify_, last_status_value_, capture_triggers_.
   SemaphoreHandle_t state_mutex_ { nullptr };
 
   // Serializes BLE control operations that can be called from both NimBLE and

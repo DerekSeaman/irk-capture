@@ -142,19 +142,13 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   if (!prepared) {
     // A failed initial stop must be retried here: ON intent is retained during
     // rotation, so the ordinary OFF retry in loop() does not own this stop.
-    // Skip it when the request's stop already worked, so the log shows one stop.
-    bool still_advertising;
-    {
-      MutexGuard lock(state_mutex_);
-      still_advertising = advertising_;
-    }
-    if (still_advertising || ble_gap_adv_active()) stop_advertising();
-    bool stopped;
+    // Verification still takes the BLE lock when the cache says OFF. The stop
+    // helper avoids another stop/log when GAP is already inactive.
+    const bool stopped = stop_advertising();
     bool abort = false;
     {
       MutexGuard lock(state_mutex_);
       if (!rotation_current_locked_(generation)) return;
-      stopped = !advertising_;
       if (!stopped) {
         abort = ++mac_rotation_retries_ >= TimingConfig::MAC_ROTATION_MAX_RETRIES;
         if (abort)
