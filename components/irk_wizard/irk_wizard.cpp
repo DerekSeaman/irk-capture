@@ -153,6 +153,10 @@ static bool json_request(httpd_req_t* req) {
 static bool read_request_body(httpd_req_t* req, std::string& body) {
   static constexpr size_t MAX_BODY = 512;
   static constexpr int MAX_TIMEOUTS = 3;
+  // The timeout count alone can't stop a client that sends a byte just before
+  // each receive window closes; that would hold the server for many minutes.
+  // A deadline caps the whole read, whatever progress the body makes.
+  static constexpr uint32_t MAX_BODY_READ_MS = 10000;
   if (req->content_len == 0) return send_error(req, "400 Bad Request", "Request body required");
   if (req->content_len > MAX_BODY) {
     return send_error(req, "413 Content Too Large", "Request body too large");
@@ -160,7 +164,11 @@ static bool read_request_body(httpd_req_t* req, std::string& body) {
   body.resize(req->content_len);
   size_t received = 0;
   int timeouts = 0;
+  const uint32_t started = millis();
   while (received < req->content_len) {
+    if (millis() - started >= MAX_BODY_READ_MS) {
+      return send_error(req, "408 Request Timeout", "Timed out reading the request body");
+    }
     const int r = httpd_req_recv(req, &body[received], req->content_len - received);
     if (r == HTTPD_SOCK_ERR_TIMEOUT) {
       // A slow link is not a malformed request. Allow a few more receive
