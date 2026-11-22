@@ -27,6 +27,8 @@
 #include <nimble/nimble_port_freertos.h>
 #include <services/gap/ble_svc_gap.h>
 #include <services/gatt/ble_svc_gatt.h>
+
+#include "rpa_check.h"
 #else
 #error \
     "IRK Capture component requires ESP32 platform with Bluetooth support (ESP32/ESP32-C3/ESP32-S3/ESP32-C6)"
@@ -225,6 +227,7 @@ struct CaptureResult {
   uint32_t sequence { 0 };
   std::string irk;
   std::string device_mac;
+  IrkCheck verification { IrkCheck::UNCHECKED };
 };
 
 // What record_observation_locked_() decided and why. Filled in under state_mutex_ and
@@ -273,7 +276,8 @@ int handle_gap_repeat_pairing(class IRKCaptureComponent* self, struct ble_gap_ev
 void publish_and_log_irk(class IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                          const std::string& irk_hex, const char* context_tag,
                          uint32_t connection_generation,
-                         CaptureOrigin origin = CaptureOrigin::UNKNOWN);
+                         CaptureOrigin origin = CaptureOrigin::UNKNOWN,
+                         IrkCheck check = IrkCheck::UNCHECKED);
 
 // Main component
 class IRKCaptureComponent : public Component {
@@ -285,7 +289,8 @@ class IRKCaptureComponent : public Component {
   float get_setup_priority() const override {
     return -200.0f;
   }
-  void add_on_capture_trigger(Trigger<std::string, std::string>* trigger) {
+  // Arguments: IRK, identity MAC, and irk_check_name() of the address check.
+  void add_on_capture_trigger(Trigger<std::string, std::string, std::string>* trigger) {
     capture_triggers_.push_back(trigger);
   }
 
@@ -297,7 +302,8 @@ class IRKCaptureComponent : public Component {
   friend int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                                   const std::string& irk_hex, const char* context_tag,
-                                  uint32_t connection_generation, CaptureOrigin origin);
+                                  uint32_t connection_generation, CaptureOrigin origin,
+                                  IrkCheck check);
 
   // The Device Information read callback copies names under state_mutex_.
   friend int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle,
@@ -391,7 +397,7 @@ class IRKCaptureComponent : public Component {
   // Sensor publishing helper
   void publish_irk_to_sensors(const std::string& irk_hex, const std::string& addr_str,
                               uint32_t connection_generation = 0, bool capture_event = false,
-                              bool stop_after_result = false);
+                              bool stop_after_result = false, IrkCheck check = IrkCheck::UNCHECKED);
   void publish_effective_mac();
 
   // New in 1.7.0: wizard-facing runtime controls (see README "Home Assistant
@@ -506,6 +512,8 @@ class IRKCaptureComponent : public Component {
     bool reconnect_limit_reported { false };
     std::string label;         // Optional user label for the visible history entry
     bool in_history { true };  // History can be cleared without losing deduplication
+    // Best address check seen for this key; see record_observation_locked_().
+    IrkCheck verification { IrkCheck::UNCHECKED };
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
   // Most entries irk_cache_ holds before the oldest is evicted. The floor is
@@ -532,12 +540,13 @@ class IRKCaptureComponent : public Component {
   uint32_t failed_generation_ { 0 };          // Coalesces failure reporting per connection
   uint32_t capture_result_generation_ { 0 };  // Coalesces accepted successful results
   // Triggers are registered before setup and invoked only on the main task.
-  std::vector<Trigger<std::string, std::string>*> capture_triggers_;
+  std::vector<Trigger<std::string, std::string, std::string>*> capture_triggers_;
   // Keep event delivery separate from the latest displayed result. A delayed
   // main loop must not collapse several accepted captures into one callback.
   struct CaptureEvent {
     std::string irk;
     std::string mac;
+    IrkCheck verification { IrkCheck::UNCHECKED };
   };
   static constexpr size_t CAPTURE_EVENT_CAPACITY = 32;
   std::vector<CaptureEvent> pending_capture_events_;
@@ -637,6 +646,9 @@ class IRKCaptureComponent : public Component {
     uint32_t connection_generation { 0 };
     bool pairing_completed { false };
     CaptureOrigin origin { CaptureOrigin::UNKNOWN };
+    // The address the peer connected from, for checking the IRK this timer finds.
+    bool has_connection_addr { false };
+    ble_addr_t connection_addr {};
   };
   std::array<PeerTimer, PEER_TIMER_CAPACITY> post_disc_timers_ {};
   std::array<PeerTimer, PEER_TIMER_CAPACITY> late_enc_timers_ {};
@@ -690,8 +702,10 @@ class IRKCaptureComponent : public Component {
   SemaphoreHandle_t ble_op_mutex_ { nullptr };
 
   // Internal helpers
+  // connection_addr_out, when given, receives the address the peer connected from.
   bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out,
-                   uint32_t connection_generation, CaptureOrigin origin = CaptureOrigin::UNKNOWN);
+                   uint32_t connection_generation, CaptureOrigin origin = CaptureOrigin::UNKNOWN,
+                   ble_addr_t* connection_addr_out = nullptr);
   void setup_ble();
   bool register_gatt_services();
   std::string sanitize_ble_name(const std::string& name);
@@ -718,8 +732,10 @@ class IRKCaptureComponent : public Component {
   // outcome except NO_BOND and READ_ERROR; rc_out receives the store's result.
   BondRead read_peer_irk_(const ble_addr_t& peer_id, struct ble_store_value_sec& bond,
                           int* rc_out = nullptr);
+  // connection_addr is the address the peer connected from, or null if unknown.
   void publish_no_irk_(const ble_addr_t& peer_id, uint32_t connection_generation,
-                       bool pairing_completed, CaptureOrigin origin = CaptureOrigin::UNKNOWN);
+                       bool pairing_completed, CaptureOrigin origin = CaptureOrigin::UNKNOWN,
+                       const ble_addr_t* connection_addr = nullptr);
   // Ends a link whose pairing completed without an IRK, if it is still the
   // connection the result was read for. Safe from the NimBLE and main tasks.
   void close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
@@ -736,7 +752,8 @@ class IRKCaptureComponent : public Component {
   // observation and returns whether (and why) to publish it.
   PublishDecision record_observation_locked_(const std::string& irk_hex, const std::string& addr,
                                              uint8_t addr_type, uint32_t connection_generation,
-                                             bool force_pairing_publish);
+                                             bool force_pairing_publish,
+                                             IrkCheck check = IrkCheck::UNCHECKED);
   // Caller holds state_mutex_.
   void restore_capture_history_(IRKCacheEntry& entry, PublishDecision& out_decision);
   static std::string format_history_json_(const std::vector<IRKCacheEntry>& cache);
@@ -748,12 +765,15 @@ class IRKCaptureComponent : public Component {
   bool enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers,
                            const ble_addr_t& peer_id, uint32_t connection_generation,
                            uint32_t delay_ms, bool pairing_completed = false,
-                           CaptureOrigin origin = CaptureOrigin::UNKNOWN);
+                           CaptureOrigin origin = CaptureOrigin::UNKNOWN,
+                           const ble_addr_t* connection_addr = nullptr);
   void schedule_post_disconnect_check(const ble_addr_t& peer_id, uint32_t connection_generation,
                                       bool pairing_completed = false,
-                                      CaptureOrigin origin = CaptureOrigin::UNKNOWN);
+                                      CaptureOrigin origin = CaptureOrigin::UNKNOWN,
+                                      const ble_addr_t* connection_addr = nullptr);
   void schedule_late_enc_check(const ble_addr_t& peer_id, uint32_t connection_generation,
-                               CaptureOrigin origin = CaptureOrigin::UNKNOWN);
+                               CaptureOrigin origin = CaptureOrigin::UNKNOWN,
+                               const ble_addr_t* connection_addr = nullptr);
   void run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers, uint32_t now,
                        const char* context_tag);
   void cancel_peer_timers_(const ble_addr_t& peer_id,

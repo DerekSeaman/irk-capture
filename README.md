@@ -267,6 +267,7 @@ Each capture fires an `esphome.irk_captured` event in Home Assistant. You can us
 | :--- | :--- |
 | `irk` | The captured IRK |
 | `mac` | The captured device's BLE MAC |
+| `verification` | `verified`, `unverified` or `mismatch`. See [Checking a captured IRK](#checking-a-captured-irk) |
 | `device_id` | The Home Assistant device ID of the ESP32 that captured it |
 
 The event is built into the base package, so no ESPHome YAML changes are needed. It's only needed if you want to automate on captures.
@@ -306,6 +307,7 @@ actions:
       topic: irk_capture/captured
       payload: >-
         {{ {"irk": trigger.event.data.irk, "mac": trigger.event.data.mac,
+            "verification": trigger.event.data.verification,
             "device_id": trigger.event.data.device_id} | to_json }}
 ```
 
@@ -336,6 +338,7 @@ actions:
       message: |
         IRK: {{ trigger.event.data.irk }}
         Address: {{ trigger.event.data.mac }}
+        Check: {{ trigger.event.data.verification }}
         Captured by: {{ device_attr(trigger.event.data.device_id, 'name_by_user') or device_attr(trigger.event.data.device_id, 'name') }}
 ```
 
@@ -472,11 +475,21 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 - **A pairing ended without a result.** The log shows `ENC_CHANGE failed`, `IRK not found`, or `Encryption timeout` / `Pairing timeout` when the device connected but never finished pairing. See [IRK Not Captured After Pairing](#irk-not-captured-after-pairing).
 - **Bluetooth didn't start.** After 30 seconds the log shows `Bluetooth host has not synchronised`. Status stays `failed` until Bluetooth starts. The ESP32 restarts by itself after 5 minutes if nothing has been captured. If the restarts continue, check the Bluetooth configuration in your build, and do a clean build.
 
+### Checking a captured IRK
+
+After each capture, the ESP32 checks the IRK against the address the device connected from. Phones and watches that use BLE privacy connect from a resolvable private address, which is generated from their IRK. If the captured IRK generates that address, the key is proven correct. The result appears in the log as an `IRK check:` line, in the wizard's result step and history, and as the `verification` field of the `esphome.irk_captured` event:
+
+- **`verified`**: The IRK generates the address the device connected from, so it is the right key.
+- **`unverified`**: The device connected from a fixed address, or the check could not run. This is normal for devices that do not use a private address and does not mean the key is wrong.
+- **`mismatch`**: The device connected from a private address this IRK does not generate. This should not happen. Forget the ESP32 in the device's Bluetooth settings and capture it again.
+
 ### IRK Not Captured After Pairing
 
 Some devices, including some Garmin watches, use a fixed BLE address and do not provide an IRK. When a completed pairing stores a bond without an IRK, the Home Assistant IRK sensor shows **`Failed: IRK not used`**, and **Device BLE MAC** identifies that peer. This replaces the previous sensor value so it reflects the latest completed attempt; prior values remain in Home Assistant's recorded history. A later successful capture replaces the failure with the 32-character IRK, including when a previously captured device reconnects.
 
 Missing bond records, incomplete pairing, and invalid key bytes are not reported as "IRK not used." A public identity address alone does not establish whether a device uses BLE privacy.
+
+The log also says which kind of address the device connected from. A device on a fixed public or static address can be tracked by its MAC instead. A device on a private address changes its MAC over time, so the MAC cannot stand in for the missing IRK.
 
 - After pairing, **forget/unpair the BLE device** from your device's Bluetooth settings
 - Turn Bluetooth OFF on your device

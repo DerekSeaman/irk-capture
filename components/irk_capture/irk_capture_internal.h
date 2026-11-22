@@ -230,7 +230,7 @@ implementations.
 // Defined in irk_capture_history.cpp.
 void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                          const std::string& irk_hex, const char* context_tag,
-                         uint32_t connection_generation, CaptureOrigin origin);
+                         uint32_t connection_generation, CaptureOrigin origin, IrkCheck check);
 
 // Defined in irk_capture_identity.cpp.
 bool persist_ble_profile(BLEProfile profile);

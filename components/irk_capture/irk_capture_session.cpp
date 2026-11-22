@@ -7,8 +7,27 @@
 // ESP32-only implementation - requires Bluetooth hardware
 #ifdef USE_ESP32
 
+#include <mbedtls/aes.h>
+
 namespace esphome {
 namespace irk_capture {
+
+//======================== IRK address check ========================
+
+bool aes128_encrypt_be(const uint8_t key[16], const uint8_t plaintext[16], uint8_t out[16]) {
+  // Runs on the NimBLE task for one block per capture; ESP-IDF's mbedTLS uses
+  // the AES hardware where the chip has it.
+  mbedtls_aes_context ctx;
+  mbedtls_aes_init(&ctx);
+  int rc = mbedtls_aes_setkey_enc(&ctx, key, 128);
+  if (rc == 0) rc = mbedtls_aes_crypt_ecb(&ctx, MBEDTLS_AES_ENCRYPT, plaintext, out);
+  mbedtls_aes_free(&ctx);
+  if (rc != 0) {
+    ESP_LOGW(TAG, "AES for the IRK address check failed rc=%d; IRK left unverified", rc);
+    return false;
+  }
+  return true;
+}
 
 //======================== IRK Validation ========================
 
@@ -48,7 +67,7 @@ BondRead IRKCaptureComponent::read_peer_irk_(const ble_addr_t& peer_id,
 
 bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
                                       ble_addr_t& peer_id_out, uint32_t connection_generation,
-                                      CaptureOrigin origin) {
+                                      CaptureOrigin origin, ble_addr_t* connection_addr_out) {
   struct ble_store_value_sec bond {};
   struct ble_gap_conn_desc desc {};
 
@@ -89,7 +108,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 
   if (read == BondRead::NO_IRK) {
     // This read is called only by polling after successful encryption.
-    publish_no_irk_(desc.peer_id_addr, connection_generation, true, origin);
+    publish_no_irk_(desc.peer_id_addr, connection_generation, true, origin, &desc.peer_ota_addr);
     close_after_no_irk_(conn_handle, connection_generation, "after poll no-IRK result");
     return false;
   }
@@ -103,6 +122,7 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
   // address
   std::memcpy(irk_out, bond.irk, 16);
   peer_id_out = desc.peer_id_addr;
+  if (connection_addr_out != nullptr) *connection_addr_out = desc.peer_ota_addr;
   return true;
 }
 
@@ -111,7 +131,8 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
 bool IRKCaptureComponent::enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPACITY>& timers,
                                               const ble_addr_t& peer_id,
                                               uint32_t connection_generation, uint32_t delay_ms,
-                                              bool pairing_completed, CaptureOrigin origin) {
+                                              bool pairing_completed, CaptureOrigin origin,
+                                              const ble_addr_t* connection_addr) {
   const uint32_t due_ms = deadline_after(now_ms(), delay_ms);  // Zero marks an unused slot.
   MutexGuard lock(state_mutex_);
   PeerTimer* available = nullptr;
@@ -131,6 +152,11 @@ bool IRKCaptureComponent::enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_C
           (origin == CaptureOrigin::FRESH && timer.origin == CaptureOrigin::BONDED)) {
         timer.origin = origin;
       }
+      // One connection has one address: keep it once known.
+      if (connection_addr != nullptr && !timer.has_connection_addr) {
+        timer.has_connection_addr = true;
+        timer.connection_addr = *connection_addr;
+      }
       return false;
     }
     if (!oldest || static_cast<int32_t>(timer.due_ms - oldest->due_ms) < 0) {
@@ -140,25 +166,34 @@ bool IRKCaptureComponent::enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_C
   // Losing the oldest fallback read is preferable to rebooting and clearing
   // every bond and capture in the current session. Prefer a free slot first.
   PeerTimer* target = available ? available : oldest;
-  *target = { due_ms, peer_id, connection_generation, pairing_completed, origin };
+  *target = { due_ms,
+              peer_id,
+              connection_generation,
+              pairing_completed,
+              origin,
+              connection_addr != nullptr,
+              connection_addr != nullptr ? *connection_addr : ble_addr_t {} };
   return available == nullptr;
 }
 
 void IRKCaptureComponent::schedule_post_disconnect_check(const ble_addr_t& peer_id,
                                                          uint32_t connection_generation,
                                                          bool pairing_completed,
-                                                         CaptureOrigin origin) {
+                                                         CaptureOrigin origin,
+                                                         const ble_addr_t* connection_addr) {
   if (enqueue_peer_timer_(post_disc_timers_, peer_id, connection_generation,
-                          TimingConfig::POST_DISC_DELAY_MS, pairing_completed, origin)) {
+                          TimingConfig::POST_DISC_DELAY_MS, pairing_completed, origin,
+                          connection_addr)) {
     ESP_LOGW(TAG, "Post-disconnect timer queue full; replaced oldest fallback check");
   }
 }
 
 void IRKCaptureComponent::schedule_late_enc_check(const ble_addr_t& peer_id,
                                                   uint32_t connection_generation,
-                                                  CaptureOrigin origin) {
+                                                  CaptureOrigin origin,
+                                                  const ble_addr_t* connection_addr) {
   if (enqueue_peer_timer_(late_enc_timers_, peer_id, connection_generation,
-                          TimingConfig::ENC_LATE_READ_DELAY_MS, true, origin)) {
+                          TimingConfig::ENC_LATE_READ_DELAY_MS, true, origin, connection_addr)) {
     ESP_LOGW(TAG, "Late-ENC timer queue full; replaced oldest fallback check");
   }
 }
@@ -193,6 +228,7 @@ void IRKCaptureComponent::run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPAC
     return;
   }
 
+  const ble_addr_t* connection_addr = due.has_connection_addr ? &due.connection_addr : nullptr;
   struct ble_store_value_sec bond {};
   int rc = 0;
   const BondRead read = read_peer_irk_(due.peer_id, bond, &rc);
@@ -201,12 +237,14 @@ void IRKCaptureComponent::run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPAC
   } else if (read == BondRead::READ_ERROR) {
     ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d - %s check", rc, context_tag);
   } else if (read == BondRead::NO_IRK) {
-    publish_no_irk_(due.peer_id, due.connection_generation, due.pairing_completed, due.origin);
+    publish_no_irk_(due.peer_id, due.connection_generation, due.pairing_completed, due.origin,
+                    connection_addr);
   } else if (read == BondRead::INVALID_IRK) {
     log_no_irk_for_peer(due.peer_id);
   } else {
     publish_and_log_irk(this, due.peer_id, to_hex_rev(bond.irk, sizeof(bond.irk)), context_tag,
-                        due.connection_generation, due.origin);
+                        due.connection_generation, due.origin,
+                        check_irk_against_address(bond.irk, connection_addr));
 
     // Terminate only if the connection this check was scheduled for is still
     // up. A post-disconnect check never is; a late encryption check may be,
@@ -479,10 +517,12 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
 
   uint8_t irk_bytes[16];
   ble_addr_t peer_id;
-  if (try_get_irk(conn_handle_copy, irk_bytes, peer_id, connection_generation_copy, origin)) {
+  ble_addr_t connection_addr {};
+  if (try_get_irk(conn_handle_copy, irk_bytes, peer_id, connection_generation_copy, origin,
+                  &connection_addr)) {
     std::string irk_hex = to_hex_rev(irk_bytes, sizeof(irk_bytes));
     publish_and_log_irk(this, peer_id, irk_hex, "POLL_CONNECTED", connection_generation_copy,
-                        origin);
+                        origin, check_irk_against_address(irk_bytes, &connection_addr));
     // The store read and publish above ran without the lock. If the peer
     // disconnected meanwhile, NimBLE can hand the same handle to a replacement
     // connection, so terminating it now would drop an unrelated device and mark
@@ -521,7 +561,8 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
 //======================== Public publish utility ========================
 
 void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t connection_generation,
-                                          bool pairing_completed, CaptureOrigin origin) {
+                                          bool pairing_completed, CaptureOrigin origin,
+                                          const ble_addr_t* connection_addr) {
   if (!pairing_completed || connection_generation == 0) return;
   const std::string addr = addr_to_str(peer_id);
   {
@@ -546,15 +587,34 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
     capture_status_ = CaptureStatus::NO_IRK;
     status_result_hold_until_ = deadline_after(now_ms(), TimingConfig::STATUS_RESULT_HOLD_MS);
   }
-  // A completed pairing without an identity key does not by itself prove the
-  // peer uses a fixed address, so offer the MAC as a conditional next step
-  // rather than asserting that privacy is disabled.
   ESP_LOGW(TAG, "IRK capture failed for %s: completed pairing did not provide an IRK",
            addr.c_str());
-  ESP_LOGW(TAG,
-           "No IRK was provided. If this device uses a fixed BLE address, use this MAC "
-           "directly: %s",
-           addr.c_str());
+  // The address the peer connected from says whether its MAC can stand in for
+  // the missing key. Without it, offer the MAC only as a conditional next step.
+  const AddressKind kind =
+      connection_addr != nullptr ? classify_address(*connection_addr) : AddressKind::UNKNOWN;
+  switch (kind) {
+    case AddressKind::PUBLIC:
+    case AddressKind::STATIC_RANDOM:
+      ESP_LOGW(TAG,
+               "The device connected from a fixed %s address, so its MAC should not change. "
+               "Use this MAC directly: %s",
+               kind == AddressKind::PUBLIC ? "public" : "static random", addr.c_str());
+      break;
+    case AddressKind::RESOLVABLE_PRIVATE:
+    case AddressKind::NON_RESOLVABLE_PRIVATE:
+      ESP_LOGW(TAG,
+               "The device connected from a private address (%s) that changes over time, so its "
+               "MAC cannot be used instead of an IRK",
+               addr_to_str(*connection_addr).c_str());
+      break;
+    case AddressKind::UNKNOWN:
+      ESP_LOGW(TAG,
+               "No IRK was provided. If this device uses a fixed BLE address, use this MAC "
+               "directly: %s",
+               addr.c_str());
+      break;
+  }
 }
 
 void IRKCaptureComponent::close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,

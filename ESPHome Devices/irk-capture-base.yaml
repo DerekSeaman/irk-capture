@@ -109,6 +109,7 @@ irk_capture:
         data:
           irk: !lambda "return irk;"
           mac: !lambda "return mac;"
+          verification: !lambda "return verification;"
 
 # Text sensors for Wi-Fi info and IRK capture
 text_sensor:

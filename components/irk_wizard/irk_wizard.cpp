@@ -591,7 +591,8 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
       ",\"capture_result\":{\"boot_id\":" + std::to_string(s.capture_result.boot_id) +
       ",\"sequence\":" + std::to_string(s.capture_result.sequence) + ",\"irk\":\"" +
       json_escape(s.capture_result.irk) + "\",\"device_mac\":\"" +
-      json_escape(s.capture_result.device_mac) + "\"},";
+      json_escape(s.capture_result.device_mac) + "\",\"verification\":\"" +
+      irk_capture::irk_check_name(s.capture_result.verification) + "\"},";
   tail += "\"capture_start\":{\"operation_id\":" + std::to_string(s.capture_start.operation_id) +
           ",\"state\":\"" + capture_start_state_name(s.capture_start.state) +
           "\",\"boot_id\":" + std::to_string(s.capture_start.boot_id) +

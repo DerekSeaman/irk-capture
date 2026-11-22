@@ -22,7 +22,9 @@ CONF_ON_CAPTURE = "on_capture"
 
 irk_capture_ns = cg.esphome_ns.namespace("irk_capture")
 IRKCaptureComponent = irk_capture_ns.class_("IRKCaptureComponent", cg.Component)
-CaptureTrigger = automation.Trigger.template(cg.std_string, cg.std_string)
+CaptureTrigger = automation.Trigger.template(
+    cg.std_string, cg.std_string, cg.std_string
+)
 
 
 def header_constant(header, name):
@@ -138,8 +140,16 @@ async def to_code(config):
     for conf in config.get(CONF_ON_CAPTURE, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID])
         cg.add(var.add_on_capture_trigger(trigger))
+        # verification is "verified", "unverified" or "mismatch": whether the
+        # IRK generated the address the device connected from.
         await automation.build_automation(
-            trigger, [(cg.std_string, "irk"), (cg.std_string, "mac")], conf
+            trigger,
+            [
+                (cg.std_string, "irk"),
+                (cg.std_string, "mac"),
+                (cg.std_string, "verification"),
+            ],
+            conf,
         )
 
     # ESPHome 2026.9.0 excludes most built-in ESP-IDF components from the build

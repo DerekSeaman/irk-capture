@@ -70,14 +70,13 @@ static void log_banner(const char* context_tag) {
  * extraction paths from the same connection
  * @param force_pairing_publish True for an explicit pairing or REPEAT_PAIRING;
  * bypasses rate limiting
+ * @param check This observation's address check, kept with the entry
  * @return The outcome and the details needed to log it; publish is false for a
  * duplicate path, stale connection, rate-limited or over-limit reconnect
  */
-PublishDecision IRKCaptureComponent::record_observation_locked_(const std::string& irk_hex,
-                                                                const std::string& addr,
-                                                                uint8_t addr_type,
-                                                                uint32_t connection_generation,
-                                                                bool force_pairing_publish) {
+PublishDecision IRKCaptureComponent::record_observation_locked_(
+    const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
+    uint32_t connection_generation, bool force_pairing_publish, IrkCheck check) {
   // PRECONDITION: Caller holds state_mutex_
   using Reason = PublishDecision::Reason;
   PublishDecision decision;
@@ -111,6 +110,11 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(const std::strin
       // pairing or REPEAT_PAIRING is an explicit user action: always surface
       // its IRK, even when unchanged and inside the normal interval.
       const bool key_changed = entry.irk_hex != irk_hex;
+      // A new key starts with this observation's check. For the same key, a
+      // check that could not run must not hide an earlier result.
+      if (key_changed || check == IrkCheck::VERIFIED || check == IrkCheck::MISMATCH) {
+        entry.verification = check;
+      }
       if (key_changed || force_pairing_publish) {
         entry.irk_hex = irk_hex;
         entry.reconnect_count = 0;
@@ -169,6 +173,7 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(const std::strin
   entry.last_published_ms = now;
   entry.last_observed_generation = connection_generation;
   entry.label = next_capture_label_;
+  entry.verification = check;
   irk_cache_.push_back(std::move(entry));
   if (!next_capture_label_.empty()) {
     decision.label = next_capture_label_;
@@ -242,6 +247,29 @@ static void log_publish_decision(const PublishDecision& decision, const std::str
 
 //======================== Output helpers (centralized) ========================
 
+// Reports whether the IRK generated the address the peer connected from. Only
+// a mismatch is a warning: a peer on a fixed address has nothing to check.
+static void log_irk_check(IrkCheck check) {
+  switch (check) {
+    case IrkCheck::VERIFIED:
+      ESP_LOGI(TAG, "IRK check: verified (it resolves the address the device connected from)");
+      break;
+    case IrkCheck::MISMATCH:
+      ESP_LOGW(TAG,
+               "IRK check: MISMATCH. The device connected from a resolvable private address "
+               "this IRK does not generate; forget the ESP32 on the device and capture again");
+      break;
+    case IrkCheck::NOT_RESOLVABLE:
+      ESP_LOGI(TAG,
+               "IRK check: unverified (the device connected from an address an IRK does not "
+               "generate)");
+      break;
+    case IrkCheck::UNCHECKED:
+      ESP_LOGI(TAG, "IRK check: unverified (the connection address could not be checked)");
+      break;
+  }
+}
+
 /**
  * @brief Centralized IRK output helper - logs and publishes IRK to Home
  * Assistant sensors
@@ -254,6 +282,7 @@ static void log_publish_decision(const PublishDecision& decision, const std::str
  * @param connection_generation Monotonic connection identifier
  * @param origin How the connection began; a fresh pairing or re-pair is always
  * published, a bonded reconnect is rate-limited
+ * @param check Whether the IRK resolves the address the peer connected from
  *
  * This is the single point of IRK output, ensuring consistent formatting across
  * all capture paths. Called from ENC_CHANGE, DISCONNECT, the polling loop and
@@ -261,7 +290,7 @@ static void log_publish_decision(const PublishDecision& decision, const std::str
  */
 void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                          const std::string& irk_hex, const char* context_tag,
-                         uint32_t connection_generation, CaptureOrigin origin) {
+                         uint32_t connection_generation, CaptureOrigin origin, IrkCheck check) {
   if (!self) return;  // Early return if no component instance
 
   const std::string addr_str = addr_to_str(peer_id_addr);
@@ -289,8 +318,8 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
     // redundant. Cancel them before they can create log or counter noise.
     self->cancel_peer_timers_(peer_id_addr, connection_generation);
 
-    decision = self->record_observation_locked_(irk_hex, addr_str, peer_id_addr.type,
-                                                connection_generation, force_pairing_publish);
+    decision = self->record_observation_locked_(
+        irk_hex, addr_str, peer_id_addr.type, connection_generation, force_pairing_publish, check);
     should_publish = decision.publish;
     const bool is_new_device = decision.reason == PublishDecision::Reason::NEW_DEVICE;
     const bool key_changed = decision.reason == PublishDecision::Reason::KEY_CHANGED;
@@ -349,7 +378,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   // Called even for coalesced or rate-limited observations: the sensor decides
   // whether this may replace what is displayed (see publish_irk_to_sensors()).
   self->publish_irk_to_sensors(irk_hex, addr_str, connection_generation, capture_event,
-                               should_publish && (max_reached || stop_after_capture_hit));
+                               should_publish && (max_reached || stop_after_capture_hit), check);
 
   // Skip duplicate capture logs (deduplication happened under mutex).
   if (!should_publish) {
@@ -360,6 +389,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   log_banner(is_repair ? "REPAIR" : context_tag);
   ESP_LOGI(TAG, "Identity Address: %s (type=%u)", addr_str.c_str(), (unsigned) peer_id_addr.type);
   ESP_LOGI(TAG, "IRK: %s", irk_hex.c_str());
+  log_irk_check(check);
   ESP_LOGI(TAG, "Capture events this session: %" PRIu32, current_events);
   ESP_LOGI(TAG, "Unique devices this session: %" PRIu32, current_unique);
   if (max_reached) {
@@ -541,9 +571,10 @@ std::string IRKCaptureComponent::build_history_json() {
 }
 
 std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCacheEntry>& cache) {
-  // {"mac":"<17>","irk":"<32>","label":"<up to 24>","reconnects":<up to 5>},
-  // is 94 bytes of framing and fixed-width values plus the label and count.
-  static constexpr size_t ENTRY_RESERVE = 94 + CAPTURE_LABEL_MAX_LEN + 5;
+  // {"mac":"<17>","irk":"<32>","label":"<up to 24>","reconnects":<up to 5>,
+  // "verification":"<up to 10>"}, is 94 bytes of framing and fixed-width values
+  // plus the label, count and check.
+  static constexpr size_t ENTRY_RESERVE = 94 + CAPTURE_LABEL_MAX_LEN + 5 + 28;
   std::string json;
   json.reserve(cache.size() * ENTRY_RESERVE + 2);
   json += "[";
@@ -563,7 +594,9 @@ std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCache
     json += entry.label;
     json += "\",\"reconnects\":";
     json += std::to_string(entry.reconnect_count);
-    json += "}";
+    json += ",\"verification\":\"";
+    json += irk_check_name(entry.verification);
+    json += "\"}";
   }
   json += "]";
 

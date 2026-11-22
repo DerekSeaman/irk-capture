@@ -282,7 +282,7 @@ void IRKCaptureComponent::loop() {
 void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex,
                                                  const std::string& addr_str,
                                                  uint32_t connection_generation, bool capture_event,
-                                                 bool stop_after_result) {
+                                                 bool stop_after_result, IrkCheck check) {
   // Stage only; the ESPHome main loop() performs the actual publish_state().
   // Callers may run in the NimBLE task, where publish_state() is unsafe.
   MutexGuard lock(state_mutex_);
@@ -318,10 +318,11 @@ void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex,
       if (capture_result_.sequence == 0) capture_result_.sequence = 1;
       capture_result_.irk = irk_hex;
       capture_result_.device_mac = addr_str;
+      capture_result_.verification = check;
       capture_result_generation_ = connection_generation;
       if (!capture_triggers_.empty()) {
         if (pending_capture_events_.size() < CAPTURE_EVENT_CAPACITY) {
-          pending_capture_events_.push_back({ irk_hex, addr_str });
+          pending_capture_events_.push_back({ irk_hex, addr_str, check });
         } else if (pending_capture_event_drops_ != UINT32_MAX) {
           // Never overwrite an event already awaiting delivery. Keep the latest
           // result/history available and report this exceptional loss on loop().
@@ -432,7 +433,8 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   for (const auto& event : b.capture_events) {
     publish_result_entities_(event.irk, event.mac);
     publish_status_if_changed_("captured");
-    for (auto* trigger : capture_triggers_) trigger->trigger(event.irk, event.mac);
+    const std::string verification = irk_check_name(event.verification);
+    for (auto* trigger : capture_triggers_) trigger->trigger(event.irk, event.mac, verification);
   }
   // A newer no-IRK result or a capture whose event overflowed can differ from
   // the last queued event. Restore the matching latest snapshot after delivery.

@@ -318,14 +318,15 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     } else if (read == BondRead::IRK) {
       std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
       publish_and_log_irk(self, d.peer_id_addr, irk_hex, "DISC_IMMEDIATE", connection_generation,
-                          origin);
+                          origin, check_irk_against_address(bond.irk, &d.peer_ota_addr));
       needs_delayed_check = false;
     } else {
       log_no_irk_for_peer(d.peer_id_addr);
       // A public identity alone cannot establish whether a device uses privacy.
       // Only a completed pairing with a stored bond lacking an IRK is conclusive.
       if (read == BondRead::NO_IRK && pairing_completed) {
-        self->publish_no_irk_(d.peer_id_addr, connection_generation, pairing_completed, origin);
+        self->publish_no_irk_(d.peer_id_addr, connection_generation, pairing_completed, origin,
+                              &d.peer_ota_addr);
         needs_delayed_check = false;
       }
     }
@@ -333,7 +334,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
 
   if (needs_delayed_check) {
     self->schedule_post_disconnect_check(d.peer_id_addr, connection_generation, pairing_completed,
-                                         origin);
+                                         origin, &d.peer_ota_addr);
   }
 
   // Thread-safe advertising state update
@@ -449,20 +450,23 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       switch (self->read_peer_irk_(d.peer_id_addr, bond, &rc)) {
         case BondRead::NO_BOND:
           ESP_LOGD(TAG, "No bond for peer yet (ENOENT); scheduling late check");
-          self->schedule_late_enc_check(d.peer_id_addr, connection_generation, origin);
+          self->schedule_late_enc_check(d.peer_id_addr, connection_generation, origin,
+                                        &d.peer_ota_addr);
           break;
         case BondRead::READ_ERROR:
           ESP_LOGW(TAG, "ble_store_read_peer_sec rc=%d; scheduling late check", rc);
-          self->schedule_late_enc_check(d.peer_id_addr, connection_generation, origin);
+          self->schedule_late_enc_check(d.peer_id_addr, connection_generation, origin,
+                                        &d.peer_ota_addr);
           break;
         case BondRead::INVALID_IRK:
           ESP_LOGW(TAG, "IRK failed validation (all-zero or all-FF); scheduling late check");
-          self->schedule_late_enc_check(d.peer_id_addr, connection_generation, origin);
+          self->schedule_late_enc_check(d.peer_id_addr, connection_generation, origin,
+                                        &d.peer_ota_addr);
           break;
         case BondRead::IRK: {
           std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
           publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE", connection_generation,
-                              origin);
+                              origin, check_irk_against_address(bond.irk, &d.peer_ota_addr));
           // Tested working behavior: terminate immediately after successful ENC +
           // IRK capture
           int term_rc;
@@ -476,7 +480,8 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
         case BondRead::NO_IRK:
           // NimBLE has completed key distribution before reporting ENC_CHANGE
           // success. Preserve this outcome before timeout cleanup can delete it.
-          self->publish_no_irk_(d.peer_id_addr, connection_generation, true, origin);
+          self->publish_no_irk_(d.peer_id_addr, connection_generation, true, origin,
+                                &d.peer_ota_addr);
           self->close_after_no_irk_(ev->enc_change.conn_handle, connection_generation,
                                     "after ENC no-IRK result");
           break;

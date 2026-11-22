@@ -64,6 +64,7 @@ font-family:ui-monospace,monospace;font-size:14px;word-break:break-all;-webkit-u
 .irkrow .irkbox{flex:1;min-width:0;margin:0}
 .irkrow button{flex-shrink:0}
 .ok{color:var(--green)}
+.warn{color:var(--amber)}
 .hide{display:none}
 ol.pair{margin:0 0 4px;padding-left:20px;color:var(--ink2);font-size:13.5px}
 ol.pair li{margin-bottom:5px}
@@ -142,6 +143,7 @@ ol.pair li{margin-bottom:5px}
       Add Integration &rarr; Private BLE Device</b>.</p>
     <div class="irkrow"><div class="irkbox" id="wizIrk">-</div>
       <button class="primary" id="wizCopy" onclick="copyIrk()">Copy</button></div>
+    <p class="help" id="wizVerify" role="status"></p>
     <div class="callout">You can now <b>forget this device</b> in your device's Bluetooth settings -
       the pairing was only needed to capture the IRK.</div>
     <div class="btnrow"><button onclick="wizRestart()">Capture another device</button>
@@ -617,7 +619,8 @@ function renderHistory(d){
       history.forEach(function(h){
         var it=document.createElement('div'); it.className='item';
         var info=document.createElement('div'); info.className='info';
-        var nm=document.createElement('span'); nm.className='lbl'; nm.textContent=h.label||'(unlabeled)';
+        var nm=document.createElement('span'); nm.className='lbl';
+        nm.textContent=(h.label||'(unlabeled)')+verificationNote(h.verification);
         var key=document.createElement('span'); key.className='irk'; key.textContent=h.irk||'';
         info.appendChild(nm); info.appendChild(key);
         var btn=document.createElement('button'); btn.textContent='Copy';
@@ -650,7 +653,8 @@ function advanceCapture(d){
            /^[0-9a-f]{32}$/i.test(result.irk || '')){
           // Freeze the accepted key and MAC; later captures and failures belong
           // to subsequent runs, even when the browser missed the status hold.
-          acceptedCapture={boot_id:result.boot_id,sequence:result.sequence,irk:result.irk,device_mac:result.device_mac};
+          acceptedCapture={boot_id:result.boot_id,sequence:result.sequence,irk:result.irk,
+            device_mac:result.device_mac,verification:result.verification};
           cancelCapture(false); return true;
         }
       } else if(start.state==='cancelled' || start.state==='failed'){
@@ -710,7 +714,30 @@ function render(d){
     renderCaptureHint(d);
   }
 
-  if(wizStep===5 && acceptedCapture) el('wizIrk').textContent = acceptedCapture.irk;
+  if(wizStep===5 && acceptedCapture){
+    el('wizIrk').textContent = acceptedCapture.irk;
+    renderVerification(acceptedCapture.verification);
+  }
+}
+// Whether the key generated the address the device connected from. Only a
+// mismatch is a warning: a device on a fixed address has nothing to check.
+function renderVerification(v){
+  var p=el('wizVerify');
+  p.classList.toggle('ok', v==='verified');
+  p.classList.toggle('warn', v==='mismatch');
+  if(v==='verified')
+    p.textContent='Verified: this key matches the private address your device connected from.';
+  else if(v==='mismatch')
+    p.textContent='Warning: this key does not match the address your device connected from. '+
+      'Forget this device in its Bluetooth settings and capture it again.';
+  else
+    p.textContent='Not verified: your device connected from an address this key cannot be '+
+      'checked against. The key is usually still correct.';
+}
+function verificationNote(v){
+  if(v==='verified') return ' \u00b7 verified';
+  if(v==='mismatch') return ' \u00b7 address mismatch';
+  return '';
 }
 
 // Settles a reboot this page asked for, from a status the device has just sent.
