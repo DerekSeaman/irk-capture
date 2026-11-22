@@ -6,7 +6,7 @@ This ESPHome package will capture Apple and Android Bluetooth Identity Resolving
 
 You can capture IRKs through two interfaces: the ESP32's ESPHome device page in Home Assistant, or an optional standalone web wizard served by the ESP32. The wizard guides you through the capture process in your browser without needing Home Assistant. See [Optional: The Capture Wizard Package](#optional-the-capture-wizard-package) later in this README for setup instructions.
 
-Each capture also fires an `esphome.irk_captured` event in Home Assistant with the IRK and the device's BLE MAC. You can use it to trigger automations, such as a notification, or to publish new IRKs to MQTT for other systems. See [Optional: Home Assistant Events and MQTT Publishing](#optional-home-assistant-events-and-mqtt-publishing).
+Each capture also fires an `esphome.irk_captured` event in Home Assistant with the IRK, the device's BLE MAC, and the result of the IRK check. You can use it to trigger automations, such as a notification, or to publish new IRKs to MQTT for other systems. See [Optional: Home Assistant Events and MQTT Publishing](#optional-home-assistant-events-and-mqtt-publishing).
 
 This ESPHome IRK capture package is only designed to capture IRKs and can NOT pull double duty as a Bluetooth proxy. You can either flash this to a spare ESP32 device and keep it in a sock drawer when not being used, or temporarily flash this package to an ESP32 then flash back to your generic Bluetooth proxy ESPHome configuration. IRKs are generally permanent and do not change over time.
 
@@ -61,9 +61,12 @@ When your Apple or Android device pairs with the ESP32:
 2. Your device initiates a secure pairing process
 3. During pairing, the device shares its IRK with the ESP32
 4. The IRK is captured and exposed as a Home Assistant text sensor
-5. You can then use this IRK with the Private BLE Device integration for presence tracking
+5. The ESP32 checks the IRK and reports the result in the **IRK Check** sensor
+6. You can then use this IRK with the Private BLE Device integration for presence tracking
 
-![ESPHome IRK Capture Device](docs/screenshot-1.jpg)
+**IRK check.** Phones and watches that use BLE privacy connect from a private address generated from their IRK. After each capture, the ESP32 confirms that the captured IRK generates the address the device connected from. **IRK Check** shows `verified` when it does, which proves the key is correct. `unverified` means the device connected from a fixed address, so there was nothing to check; the key is usually still correct. `mismatch` means you should capture the device again. See [Checking a captured IRK](#checking-a-captured-irk) for details.
+
+![ESPHome IRK Capture device page in Home Assistant, with the IRK and IRK Check sensors highlighted](docs/screenshot-1.jpg)
 
 ## Requirements
 
