@@ -517,47 +517,48 @@ Skipping the clean step can result in stale cached object files being linked aga
 Below is a sample log showing a successful IRK capture:
 
 ```text
-[14:29:51.093][S][sensor]: 'Wi-Fi Channel' >> 6
-[14:29:57.443][I][irk_capture:144][nimble_host]: Connection established successfully
-[14:29:57.443][I][irk_capture:817][nimble_host]: Conn start: handle=0 enc_ready=0 was_adv=1
-[14:29:57.443][I][irk_capture:819][nimble_host]: Connected; handle=0, initiating security
-[14:29:57.444][I][irk_capture:026][nimble_host]: sec: enc=0 bonded=0 auth=0 key_size=0
-[14:29:57.444][I][irk_capture:102][nimble_host]: peer ota=4A:1B:2C:3D:4E:5F type=1
-[14:29:57.444][I][irk_capture:104][nimble_host]: peer id =4A:1B:2C:3D:4E:5F type=1
-[14:29:57.444][D][irk_capture:018][nimble_host]: conn params: interval=24 (30.00 ms) latency=0 supervision_timeout=72 (720 ms)
-[14:29:57.444][D][irk_capture:111][nimble_host]: role=slave our_ota=C0:FF:EE:12:34:56
-[14:29:57.447][I][irk_capture:063][nimble_host]: SM config: bonding=1 mitm=0 sc=1 io_cap=3 (NoInputNoOutput) our_key_dist=0x03 (ENC|ID) their_key_dist=0x03 (ENC|ID)
-[14:29:57.447][D][irk_capture:856][nimble_host]: Security initiate: started
-[14:29:57.547][S][text_sensor]: 'Status' >> 'pairing'
-[14:29:57.854][I][irk_capture:609][nimble_host]: MTU updated: 256
-[14:29:58.571][D][irk_capture:661][nimble_host]: Subscription changed: handle=0 attr=8 (Service Changed) notify=0 indicate=1 reason=1 (peer wrote CCCD)
-[14:29:59.595][D][irk_capture:291]: Security retry skipped after 2126 ms: pairing already in progress
-[14:30:00.209][D][irk_capture:687][nimble_host]: Pairing procedure ended: handle=0 (no SMP error; result follows in ENC_CHANGE)
-[14:30:00.209][D][irk_capture:675][nimble_host]: Peer identity address received: handle=0
-[14:30:00.209][I][irk_capture:403][nimble_host]: ENC_CHANGE status=0 (0x00) 2792 ms after connect
-[14:30:00.209][I][irk_capture:423][nimble_host]: Encryption established; attempting immediate IRK capture
-[14:30:00.209][I][irk_capture:026][nimble_host]: sec after pairing: enc=1 bonded=1 auth=0 key_size=16
-[14:30:00.209][D][irk_capture:234][nimble_host]: New IRK added to cache (total: 1/32)
-[14:30:00.209][I][irk_capture:042][nimble_host]:
-[14:30:00.209][I][irk_capture:045][nimble_host]: *** IRK CAPTURED *** (ENC_CHANGE)
-[14:30:00.209][I][irk_capture:361][nimble_host]: Identity Address: A1:B2:C3:D4:E5:F6 (type=0)
-[14:30:00.211][I][irk_capture:362][nimble_host]: IRK: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
-[14:30:00.211][I][irk_capture:363][nimble_host]: Capture events this session: 1
-[14:30:00.211][I][irk_capture:364][nimble_host]: Unique devices this session: 1
-[14:30:00.211][I][irk_capture:042][nimble_host]:
-[14:30:00.219][D][irk_capture:345][nimble_host]: Disconnect after ENC capture requested
-[14:30:00.219][D][irk_capture:272][nimble_host]: DevInfo read (Manufacturer): value='ESP32'
-[14:30:00.412][S][text_sensor]: 'IRK' >> 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
-[14:30:00.412][S][text_sensor]: 'Device BLE MAC' >> 'A1:B2:C3:D4:E5:F6'
-[14:30:00.412][S][text_sensor]: 'Status' >> 'captured'
-[14:30:00.436][D][irk_capture:661][nimble_host]: Subscription changed: handle=0 attr=8 (Service Changed) notify=0 indicate=0 reason=2 (connection ended)
-[14:30:00.443][I][irk_capture:294][nimble_host]: Disconnect reason=534 (0x216): terminated by local host after 3030 ms connected (encrypted=1)
-[14:30:00.520][D][irk_capture:875][nimble_host]: Connection closed; state reset and pending operations advanced
-[14:30:00.520][I][irk_capture:876][nimble_host]: Disconnected
-[14:30:00.520][I][irk_capture:367][nimble_host]: Continuous mode: restarting advertising for next device
-[14:30:00.520][I][irk_capture:234][nimble_host]: Advertising with profile: Heart Sensor
-[14:30:00.520][D][irk_capture:358][nimble_host]: Staged effective MAC: C0:FF:EE:12:34:56
-[14:30:00.617][S][text_sensor]: 'ESP32 BLE MAC' >> 'C0:FF:EE:12:34:56'
+[16:45:38.641][S][sensor]: 'Wi-Fi Signal' >> -31 dBm
+[16:45:39.359][S][sensor]: 'Wi-Fi Disconnects (since boot)' >> 0
+[16:45:40.280][I][irk_capture:144][nimble_host]: Connection established successfully
+[16:45:40.280][I][irk_capture:822][nimble_host]: Conn start: handle=0 enc_ready=0 was_adv=1
+[16:45:40.280][I][irk_capture:824][nimble_host]: Connected; handle=0, initiating security
+[16:45:40.280][I][irk_capture:026][nimble_host]: sec: enc=0 bonded=0 auth=0 key_size=0
+[16:45:40.280][I][irk_capture:102][nimble_host]: peer ota=4A:1B:2C:3D:4E:5F type=1
+[16:45:40.280][I][irk_capture:104][nimble_host]: peer id =4A:1B:2C:3D:4E:5F type=1
+[16:45:40.280][D][irk_capture:018][nimble_host]: conn params: interval=39 (48.75 ms) latency=0 supervision_timeout=500 (5000 ms)
+[16:45:40.280][D][irk_capture:111][nimble_host]: role=slave our_ota=C0:FF:EE:12:34:56
+[16:45:40.288][I][irk_capture:063][nimble_host]: SM config: bonding=1 mitm=0 sc=1 io_cap=3 (NoInputNoOutput) our_key_dist=0x03 (ENC|ID) their_key_dist=0x03 (ENC|ID)
+[16:45:40.288][D][irk_capture:866][nimble_host]: Security procedure already in progress; skipping retry
+[16:45:40.382][S][text_sensor]: 'Status' >> 'pairing'
+[16:45:43.352][D][irk_capture:692][nimble_host]: Pairing procedure ended: handle=0 (no SMP error; result follows in ENC_CHANGE)
+[16:45:43.352][D][irk_capture:680][nimble_host]: Peer identity address received: handle=0
+[16:45:43.352][I][irk_capture:404][nimble_host]: ENC_CHANGE status=0 (0x00) 3071 ms after connect
+[16:45:43.352][I][irk_capture:424][nimble_host]: Encryption established; attempting immediate IRK capture
+[16:45:43.352][I][irk_capture:026][nimble_host]: sec after pairing: enc=1 bonded=1 auth=0 key_size=16
+[16:45:43.352][D][irk_capture:239][nimble_host]: New IRK added to cache (total: 2/32)
+[16:45:43.352][I][irk_capture:042][nimble_host]:
+[16:45:43.352][I][irk_capture:045][nimble_host]: *** IRK CAPTURED *** (ENC_CHANGE)
+[16:45:43.352][I][irk_capture:390][nimble_host]: Identity Address: A1:B2:C3:D4:E5:F6 (type=0)
+[16:45:43.352][I][irk_capture:391][nimble_host]: IRK: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
+[16:45:43.352][I][irk_capture:255][nimble_host]: IRK check: verified (it resolves the address the device connected from)
+[16:45:43.352][I][irk_capture:393][nimble_host]: Capture events this session: 2
+[16:45:43.356][I][irk_capture:394][nimble_host]: Unique devices this session: 2
+[16:45:43.356][I][irk_capture:042][nimble_host]:
+[16:45:43.357][D][irk_capture:345][nimble_host]: Disconnect after ENC capture requested
+[16:45:43.462][S][text_sensor]: 'IRK' >> 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
+[16:45:43.462][S][text_sensor]: 'Device BLE MAC' >> 'A1:B2:C3:D4:E5:F6'
+[16:45:43.463][S][text_sensor]: 'IRK Check' >> 'verified'
+[16:45:43.463][S][text_sensor]: 'Status' >> 'captured'
+[16:45:43.463][I][irk_capture:294][nimble_host]: Disconnect reason=534 (0x216): terminated by local host after 3214 ms connected (encrypted=1)
+[16:45:43.550][D][irk_capture:880][nimble_host]: Connection closed; state reset and pending operations advanced
+[16:45:43.550][I][irk_capture:881][nimble_host]: Disconnected
+[16:45:43.550][I][irk_capture:368][nimble_host]: Continuous mode: restarting advertising for next device
+[16:45:43.550][I][irk_capture:234][nimble_host]: Advertising with profile: Heart Sensor
+[16:45:43.550][D][irk_capture:360][nimble_host]: Staged effective MAC: C0:FF:EE:12:34:56
+[16:45:43.595][S][text_sensor]: 'ESP32 BLE MAC' >> 'C0:FF:EE:12:34:56'
+[16:45:47.451][S][text_sensor]: 'Status' >> 'advertising'
+[16:46:08.585][S][sensor]: 'Wi-Fi Signal' >> -31 dBm
+[16:46:09.361][S][sensor]: 'Wi-Fi Disconnects (since boot)' >> 0
 ```
 
 ## Development Status
