@@ -328,6 +328,10 @@ class IRKCaptureComponent : public Component {
   void set_address_sensor(text_sensor::TextSensor* sensor) {
     address_sensor_ = sensor;
   }
+  // irk_check_name() of the latest result: verified, unverified or mismatch.
+  void set_irk_check_sensor(text_sensor::TextSensor* sensor) {
+    irk_check_sensor_ = sensor;
+  }
   void set_effective_mac_sensor(text_sensor::TextSensor* sensor) {
     effective_mac_sensor_ = sensor;
   }
@@ -448,6 +452,7 @@ class IRKCaptureComponent : public Component {
   uint8_t max_captures_ { 10 };                // Max unique devices (0=unlimited)
   text_sensor::TextSensor* irk_sensor_ { nullptr };
   text_sensor::TextSensor* address_sensor_ { nullptr };
+  text_sensor::TextSensor* irk_check_sensor_ { nullptr };
   text_sensor::TextSensor* effective_mac_sensor_ { nullptr };
   IRKCaptureSwitch* advertising_switch_ { nullptr };
   IRKCaptureButton* refresh_identity_button_ { nullptr };
@@ -561,6 +566,7 @@ class IRKCaptureComponent : public Component {
     bool label_pub { false };
     bool name_pub { false };
     std::string irk_hex, irk_addr, effmac, label_val, name_val;
+    IrkCheck irk_check { IrkCheck::UNCHECKED };
     const char* status { nullptr };  // Null when no Status sensor is configured
     std::vector<CaptureEvent> capture_events;
     uint32_t dropped_capture_events { 0 };
@@ -619,6 +625,7 @@ class IRKCaptureComponent : public Component {
   bool pending_irk_pub_ { false };
   std::string pending_irk_hex_;
   std::string pending_irk_addr_;
+  IrkCheck pending_irk_check_ { IrkCheck::UNCHECKED };
   uint32_t last_result_generation_ { 0 };  // Orders completed pairing outcomes across delayed reads
   bool pending_effmac_pub_ { false };
   std::string pending_effmac_;
@@ -795,7 +802,7 @@ class IRKCaptureComponent : public Component {
   // Takes every staged publish, clearing its pending_* flag, under one lock.
   PendingPublishBatch take_pending_publishes_();
   // Main task only. Write the IRK and MAC sensors, and Status when it changed.
-  void publish_result_entities_(const std::string& irk, const std::string& mac);
+  void publish_result_entities_(const std::string& irk, const std::string& mac, IrkCheck check);
   void publish_status_if_changed_(const char* status);
   void flush_pending_publishes_();
   // Reboots from the main loop. Safe to call from any task, including after

@@ -215,6 +215,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Device BLE MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
 | **ESP32 BLE MAC** | Text Sensor | Current Bluetooth MAC address being advertised by the ESP32 |
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
+| **IRK Check** | Text Sensor | Whether the latest IRK resolves the address its device connected from: `verified`, `unverified` or `mismatch`. See [Checking a captured IRK](#checking-a-captured-irk) |
 | **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, `reconnected`, `no_irk`, or `failed` |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information and restores the default BLE name |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
@@ -477,7 +478,7 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 
 ### Checking a captured IRK
 
-After each capture, the ESP32 checks the IRK against the address the device connected from. Phones and watches that use BLE privacy connect from a resolvable private address, which is generated from their IRK. If the captured IRK generates that address, the key is proven correct. The result appears in the log as an `IRK check:` line, in the wizard's result step and history, and as the `verification` field of the `esphome.irk_captured` event:
+After each capture, the ESP32 checks the IRK against the address the device connected from. Phones and watches that use BLE privacy connect from a resolvable private address, which is generated from their IRK. If the captured IRK generates that address, the key is proven correct. The result appears in the log as an `IRK check:` line, in the **IRK Check** sensor, in the wizard's result step and history, and as the `verification` field of the `esphome.irk_captured` event:
 
 - **`verified`**: The IRK generates the address the device connected from, so it is the right key.
 - **`unverified`**: The device connected from a fixed address, or the check could not run. This is normal for devices that do not use a private address and does not mean the key is wrong.

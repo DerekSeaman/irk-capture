@@ -583,6 +583,7 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
     last_result_generation_ = connection_generation;
     pending_irk_hex_ = "Failed: IRK not used";
     pending_irk_addr_ = addr;
+    pending_irk_check_ = IrkCheck::UNCHECKED;  // No key to check
     pending_irk_pub_ = true;
     capture_status_ = CaptureStatus::NO_IRK;
     status_result_hold_until_ = deadline_after(now_ms(), TimingConfig::STATUS_RESULT_HOLD_MS);

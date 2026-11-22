@@ -341,6 +341,7 @@ void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex,
   if (connection_generation != 0) last_result_generation_ = connection_generation;
   pending_irk_hex_ = irk_hex;
   pending_irk_addr_ = addr_str;
+  pending_irk_check_ = check;
   pending_irk_pub_ = true;
 }
 
@@ -373,9 +374,11 @@ void IRKCaptureComponent::request_reboot_() {
   App.scheduler.set_timeout(this, 0, []() { App.safe_reboot(); });
 }
 
-void IRKCaptureComponent::publish_result_entities_(const std::string& irk, const std::string& mac) {
+void IRKCaptureComponent::publish_result_entities_(const std::string& irk, const std::string& mac,
+                                                   IrkCheck check) {
   if (irk_sensor_) irk_sensor_->publish_state(irk);
   if (address_sensor_) address_sensor_->publish_state(mac);
+  if (irk_check_sensor_) irk_check_sensor_->publish_state(irk_check_name(check));
 }
 
 void IRKCaptureComponent::publish_status_if_changed_(const char* status) {
@@ -397,6 +400,7 @@ IRKCaptureComponent::PendingPublishBatch IRKCaptureComponent::take_pending_publi
   pending_irk_pub_ = false;
   b.irk_hex.swap(pending_irk_hex_);
   b.irk_addr.swap(pending_irk_addr_);
+  b.irk_check = pending_irk_check_;
   b.effmac_pub = pending_effmac_pub_;
   pending_effmac_pub_ = false;
   b.effmac.swap(pending_effmac_);
@@ -431,7 +435,7 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   // queued for the next flush rather than extending this batch indefinitely.
   // Each event's sensors and terminal Status are visible before its automation.
   for (const auto& event : b.capture_events) {
-    publish_result_entities_(event.irk, event.mac);
+    publish_result_entities_(event.irk, event.mac, event.verification);
     publish_status_if_changed_("captured");
     const std::string verification = irk_check_name(event.verification);
     for (auto* trigger : capture_triggers_) trigger->trigger(event.irk, event.mac, verification);
@@ -440,8 +444,10 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   // the last queued event. Restore the matching latest snapshot after delivery.
   const bool latest_already_published = !b.capture_events.empty() &&
                                         b.capture_events.back().irk == b.irk_hex &&
-                                        b.capture_events.back().mac == b.irk_addr;
-  if (b.irk_pub && !latest_already_published) publish_result_entities_(b.irk_hex, b.irk_addr);
+                                        b.capture_events.back().mac == b.irk_addr &&
+                                        b.capture_events.back().verification == b.irk_check;
+  if (b.irk_pub && !latest_already_published)
+    publish_result_entities_(b.irk_hex, b.irk_addr, b.irk_check);
   // Publish last so Status observers can read the corresponding result values.
   if (b.status != nullptr) publish_status_if_changed_(b.status);
   if (b.dropped_capture_events != 0) {

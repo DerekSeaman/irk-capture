@@ -135,6 +135,10 @@ text_sensor:
     last_address:
       name: "Device BLE MAC"
       id: last_addr
+    irk_check:
+      name: "IRK Check"
+      id: irk_check
+      icon: mdi:shield-check
     effective_mac:
       name: "ESP32 BLE MAC"
       id: effective_mac
