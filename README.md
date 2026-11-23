@@ -6,7 +6,7 @@ This ESPHome package will capture Apple and Android Bluetooth Identity Resolving
 
 You can capture IRKs through two interfaces: the ESP32's ESPHome device page in Home Assistant, or an optional standalone web wizard served by the ESP32. The wizard guides you through the capture process in your browser without needing Home Assistant. See [Optional: The Capture Wizard Package](#optional-the-capture-wizard-package) later in this README for setup instructions.
 
-Each capture also fires an `esphome.irk_captured` event in Home Assistant with the IRK and the device's BLE MAC. You can use it to trigger automations, such as a notification, or to publish new IRKs to MQTT for other systems. See [Optional: Home Assistant Events and MQTT Publishing](#optional-home-assistant-events-and-mqtt-publishing).
+Each capture also fires an `esphome.irk_captured` event in Home Assistant with the IRK, the device's BLE MAC, and the result of the IRK check. You can use it to trigger automations, such as a notification, or to publish new IRKs to MQTT for other systems. See [Optional: Home Assistant Events and MQTT Publishing](#optional-home-assistant-events-and-mqtt-publishing).
 
 This ESPHome IRK capture package is only designed to capture IRKs and can NOT pull double duty as a Bluetooth proxy. You can either flash this to a spare ESP32 device and keep it in a sock drawer when not being used, or temporarily flash this package to an ESP32 then flash back to your generic Bluetooth proxy ESPHome configuration. IRKs are generally permanent and do not change over time.
 
@@ -61,9 +61,12 @@ When your Apple or Android device pairs with the ESP32:
 2. Your device initiates a secure pairing process
 3. During pairing, the device shares its IRK with the ESP32
 4. The IRK is captured and exposed as a Home Assistant text sensor
-5. You can then use this IRK with the Private BLE Device integration for presence tracking
+5. The ESP32 checks the IRK and reports the result in the **IRK Check** sensor
+6. You can then use this IRK with the Private BLE Device integration for presence tracking
 
-![ESPHome IRK Capture Device](docs/screenshot-1.jpg)
+**IRK check.** Phones and watches that use BLE privacy connect from a private address generated from their IRK. After each capture, the ESP32 confirms that the captured IRK generates the address the device connected from. **IRK Check** shows `verified` when it does, which proves the key is correct. `unverified` means the device connected from a fixed address, so there was nothing to check; the key is usually still correct. `mismatch` means you should capture the device again. See [Checking a captured IRK](#checking-a-captured-irk) for details.
+
+![ESPHome IRK Capture device page in Home Assistant, with the IRK and IRK Check sensors highlighted](docs/screenshot-1.jpg)
 
 ## Requirements
 
@@ -215,6 +218,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Device BLE MAC** | Text Sensor | Bluetooth MAC address of the last paired device |
 | **ESP32 BLE MAC** | Text Sensor | Current Bluetooth MAC address being advertised by the ESP32 |
 | **IRK** | Text Sensor | Latest completed pairing result: a captured IRK or `Failed: IRK not used` |
+| **IRK Check** | Text Sensor | Whether the latest IRK resolves the address its device connected from: `verified`, `unverified` or `mismatch`. See [Checking a captured IRK](#checking-a-captured-irk) |
 | **Status** | Text Sensor | Current session state: `idle`, `advertising`, `pairing`, `capturing`, `captured`, `reconnected`, `no_irk`, or `failed` |
 | **Restart Device** | Button | Restart the ESP32 - Clears all pairing information and restores the default BLE name |
 | **BSSID** | Text Sensor | Wi-Fi access point BSSID (diagnostic) |
@@ -267,6 +271,7 @@ Each capture fires an `esphome.irk_captured` event in Home Assistant. You can us
 | :--- | :--- |
 | `irk` | The captured IRK |
 | `mac` | The captured device's BLE MAC |
+| `verification` | `verified`, `unverified` or `mismatch`. See [Checking a captured IRK](#checking-a-captured-irk) |
 | `device_id` | The Home Assistant device ID of the ESP32 that captured it |
 
 The event is built into the base package, so no ESPHome YAML changes are needed. It's only needed if you want to automate on captures.
@@ -306,6 +311,7 @@ actions:
       topic: irk_capture/captured
       payload: >-
         {{ {"irk": trigger.event.data.irk, "mac": trigger.event.data.mac,
+            "verification": trigger.event.data.verification,
             "device_id": trigger.event.data.device_id} | to_json }}
 ```
 
@@ -319,6 +325,28 @@ actions:
 ![MQTT Listen to a topic showing a captured IRK message](docs/MQTT.jpg)
 
 If the event appears but no MQTT message does, open the automation's **Traces** to confirm it ran and see the payload it sent.
+
+## Home Assistant Notifications
+
+To get a Home Assistant notification each time an IRK is captured, use the `esphome.irk_captured` event. It fires once per capture, with the IRK and the device's BLE MAC, and never for reconnects or restarts. First allow the event, as described in [Enable the event](#enable-the-event). Then go to **Settings → Automations & scenes → Create automation → ⋮ → Edit in YAML**, replace the contents with the automation below, and select **Save**. Use the copy button at the top right of the code block.
+
+```yaml
+alias: IRK Captured Notification
+triggers:
+  - trigger: event
+    event_type: esphome.irk_captured
+actions:
+  - action: persistent_notification.create
+    data:
+      title: "🔑 IRK Captured!"
+      message: |
+        IRK: {{ trigger.event.data.irk }}
+        Address: {{ trigger.event.data.mac }}
+        Check: {{ trigger.event.data.verification }}
+        Captured by: {{ device_attr(trigger.event.data.device_id, 'name_by_user') or device_attr(trigger.event.data.device_id, 'name') }}
+```
+
+![Home Assistant notification showing a captured IRK, its address and the capturing ESP32](docs/IRK-notification.jpg)
 
 ## Optional: The Capture Wizard Package
 
@@ -451,11 +479,21 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 - **A pairing ended without a result.** The log shows `ENC_CHANGE failed`, `IRK not found`, or `Encryption timeout` / `Pairing timeout` when the device connected but never finished pairing. See [IRK Not Captured After Pairing](#irk-not-captured-after-pairing).
 - **Bluetooth didn't start.** After 30 seconds the log shows `Bluetooth host has not synchronised`. Status stays `failed` until Bluetooth starts. The ESP32 restarts by itself after 5 minutes if nothing has been captured. If the restarts continue, check the Bluetooth configuration in your build, and do a clean build.
 
+### Checking a captured IRK
+
+After each capture, the ESP32 checks the IRK against the address the device connected from. Phones and watches that use BLE privacy connect from a resolvable private address, which is generated from their IRK. If the captured IRK generates that address, the key is proven correct. The result appears in the log as an `IRK check:` line, in the **IRK Check** sensor, in the wizard's result step and history, and as the `verification` field of the `esphome.irk_captured` event:
+
+- **`verified`**: The IRK generates the address the device connected from, so it is the right key.
+- **`unverified`**: The device connected from a fixed address, or the check could not run. This is normal for devices that do not use a private address and does not mean the key is wrong.
+- **`mismatch`**: The device connected from a private address this IRK does not generate. This should not happen. Forget the ESP32 in the device's Bluetooth settings and capture it again.
+
 ### IRK Not Captured After Pairing
 
 Some devices, including some Garmin watches, use a fixed BLE address and do not provide an IRK. When a completed pairing stores a bond without an IRK, the Home Assistant IRK sensor shows **`Failed: IRK not used`**, and **Device BLE MAC** identifies that peer. This replaces the previous sensor value so it reflects the latest completed attempt; prior values remain in Home Assistant's recorded history. A later successful capture replaces the failure with the 32-character IRK, including when a previously captured device reconnects.
 
 Missing bond records, incomplete pairing, and invalid key bytes are not reported as "IRK not used." A public identity address alone does not establish whether a device uses BLE privacy.
+
+The log also says which kind of address the device connected from. A device on a fixed public or static address can be tracked by its MAC instead. A device on a private address changes its MAC over time, so the MAC cannot stand in for the missing IRK.
 
 - After pairing, **forget/unpair the BLE device** from your device's Bluetooth settings
 - Turn Bluetooth OFF on your device
@@ -479,43 +517,48 @@ Skipping the clean step can result in stale cached object files being linked aga
 Below is a sample log showing a successful IRK capture:
 
 ```text
-[05:43:11.857][I][irk_capture:1250][nimble_host]: Connection established successfully
-[05:43:11.857][I][irk_capture:3066][nimble_host]: Conn start: handle=1 enc_ready=0 was_adv=1
-[05:43:11.857][I][irk_capture:3068][nimble_host]: Connected; handle=1, initiating security
-[05:43:11.857][I][irk_capture:497][nimble_host]: sec: enc=0 bonded=0 auth=0 key_size=0
-[05:43:11.857][I][irk_capture:501][nimble_host]: peer ota=4A:1B:2C:3D:4E:5F type=1
-[05:43:11.857][I][irk_capture:503][nimble_host]: peer id =4A:1B:2C:3D:4E:5F type=1
-[05:43:11.857][D][irk_capture:507][nimble_host]: conn params: interval=24 (30.00 ms) latency=0 supervision_timeout=72 (720 ms)
-[05:43:11.857][D][irk_capture:511][nimble_host]: role=slave our_ota=C0:FF:EE:12:34:56
-[05:43:11.869][I][irk_capture:517][nimble_host]: SM config: bonding=1 mitm=0 sc=1 io_cap=3 (NoInputNoOutput) our_key_dist=0x03 (ENC|ID) their_key_dist=0x03 (ENC|ID)
-[05:43:11.869][D][irk_capture:3101][nimble_host]: Security initiate: started
-[05:43:11.989][S][text_sensor]: 'Status' >> 'pairing'
-[05:43:12.401][I][irk_capture:1595][nimble_host]: MTU updated: 256
-[05:43:12.918][D][irk_capture:1646][nimble_host]: Subscription changed: handle=1 attr=8 (Service Changed) notify=0 indicate=1 reason=1 (peer wrote CCCD)
-[05:43:14.149][D][irk_capture:3426]: Security retry skipped after 2278 ms: pairing already in progress
-[05:43:14.721][D][irk_capture:1667][nimble_host]: Pairing procedure ended: handle=1 (no SMP error; result follows in ENC_CHANGE)
-[05:43:14.725][D][irk_capture:1657][nimble_host]: Peer identity address received: handle=1
-[05:43:14.725][I][irk_capture:1415][nimble_host]: ENC_CHANGE status=0 (0x00) 2868 ms after connect
-[05:43:14.725][I][irk_capture:1440][nimble_host]: Encryption established; attempting immediate IRK capture
-[05:43:14.725][I][irk_capture:1452][nimble_host]: sec after pairing: enc=1 bonded=1 auth=0 key_size=16
-[05:43:14.733][D][irk_capture:726][nimble_host]: New IRK added to cache (total: 1/10)
-[05:43:14.738][I][irk_capture:560][nimble_host]:
-[05:43:14.738][I][irk_capture:563][nimble_host]: *** IRK CAPTURED *** (ENC_CHANGE)
-[05:43:14.738][I][irk_capture:869][nimble_host]: Identity Address: A1:B2:C3:D4:E5:F6 (type=1)
-[05:43:14.741][I][irk_capture:870][nimble_host]: IRK: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
-[05:43:14.747][I][irk_capture:871][nimble_host]: Capture events this session: 1
-[05:43:14.832][S][text_sensor]: 'IRK' >> 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
-[05:43:14.832][S][text_sensor]: 'Device BLE MAC' >> 'A1:B2:C3:D4:E5:F6'
-[05:43:14.832][S][text_sensor]: 'Status' >> 'captured'
-[05:43:14.955][D][irk_capture:1646][nimble_host]: Subscription changed: handle=1 attr=8 (Service Changed) notify=0 indicate=0 reason=2 (connection ended)
-[05:43:14.959][I][irk_capture:1282][nimble_host]: Disconnect reason=534 (0x216): terminated by local host after 3102 ms connected (encrypted=1)
-[05:43:15.064][D][irk_capture:3120][nimble_host]: Connection closed; state reset and pending operations advanced
-[05:43:15.064][I][irk_capture:3121][nimble_host]: Disconnected
-[05:43:15.064][I][irk_capture:1386][nimble_host]: Continuous mode: restarting advertising for next device
-[05:43:15.064][D][irk_capture:2419][nimble_host]: Advertising with profile: Heart Sensor
-[05:43:15.064][D][irk_capture:3798][nimble_host]: Staged effective MAC: C0:FF:EE:12:34:56
-[05:43:15.132][S][text_sensor]: 'ESP32 BLE MAC' >> 'C0:FF:EE:12:34:56'
-[05:43:18.929][S][text_sensor]: 'Status' >> 'advertising'
+[16:45:38.641][S][sensor]: 'Wi-Fi Signal' >> -31 dBm
+[16:45:39.359][S][sensor]: 'Wi-Fi Disconnects (since boot)' >> 0
+[16:45:40.280][I][irk_capture:144][nimble_host]: Connection established successfully
+[16:45:40.280][I][irk_capture:822][nimble_host]: Conn start: handle=0 enc_ready=0 was_adv=1
+[16:45:40.280][I][irk_capture:824][nimble_host]: Connected; handle=0, initiating security
+[16:45:40.280][I][irk_capture:026][nimble_host]: sec: enc=0 bonded=0 auth=0 key_size=0
+[16:45:40.280][I][irk_capture:102][nimble_host]: peer ota=4A:1B:2C:3D:4E:5F type=1
+[16:45:40.280][I][irk_capture:104][nimble_host]: peer id =4A:1B:2C:3D:4E:5F type=1
+[16:45:40.280][D][irk_capture:018][nimble_host]: conn params: interval=39 (48.75 ms) latency=0 supervision_timeout=500 (5000 ms)
+[16:45:40.280][D][irk_capture:111][nimble_host]: role=slave our_ota=C0:FF:EE:12:34:56
+[16:45:40.288][I][irk_capture:063][nimble_host]: SM config: bonding=1 mitm=0 sc=1 io_cap=3 (NoInputNoOutput) our_key_dist=0x03 (ENC|ID) their_key_dist=0x03 (ENC|ID)
+[16:45:40.288][D][irk_capture:866][nimble_host]: Security procedure already in progress; skipping retry
+[16:45:40.382][S][text_sensor]: 'Status' >> 'pairing'
+[16:45:43.352][D][irk_capture:692][nimble_host]: Pairing procedure ended: handle=0 (no SMP error; result follows in ENC_CHANGE)
+[16:45:43.352][D][irk_capture:680][nimble_host]: Peer identity address received: handle=0
+[16:45:43.352][I][irk_capture:404][nimble_host]: ENC_CHANGE status=0 (0x00) 3071 ms after connect
+[16:45:43.352][I][irk_capture:424][nimble_host]: Encryption established; attempting immediate IRK capture
+[16:45:43.352][I][irk_capture:026][nimble_host]: sec after pairing: enc=1 bonded=1 auth=0 key_size=16
+[16:45:43.352][D][irk_capture:239][nimble_host]: New IRK added to cache (total: 2/32)
+[16:45:43.352][I][irk_capture:042][nimble_host]:
+[16:45:43.352][I][irk_capture:045][nimble_host]: *** IRK CAPTURED *** (ENC_CHANGE)
+[16:45:43.352][I][irk_capture:390][nimble_host]: Identity Address: A1:B2:C3:D4:E5:F6 (type=0)
+[16:45:43.352][I][irk_capture:391][nimble_host]: IRK: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
+[16:45:43.352][I][irk_capture:255][nimble_host]: IRK check: verified (it resolves the address the device connected from)
+[16:45:43.352][I][irk_capture:393][nimble_host]: Capture events this session: 2
+[16:45:43.356][I][irk_capture:394][nimble_host]: Unique devices this session: 2
+[16:45:43.356][I][irk_capture:042][nimble_host]:
+[16:45:43.357][D][irk_capture:345][nimble_host]: Disconnect after ENC capture requested
+[16:45:43.462][S][text_sensor]: 'IRK' >> 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
+[16:45:43.462][S][text_sensor]: 'Device BLE MAC' >> 'A1:B2:C3:D4:E5:F6'
+[16:45:43.463][S][text_sensor]: 'IRK Check' >> 'verified'
+[16:45:43.463][S][text_sensor]: 'Status' >> 'captured'
+[16:45:43.463][I][irk_capture:294][nimble_host]: Disconnect reason=534 (0x216): terminated by local host after 3214 ms connected (encrypted=1)
+[16:45:43.550][D][irk_capture:880][nimble_host]: Connection closed; state reset and pending operations advanced
+[16:45:43.550][I][irk_capture:881][nimble_host]: Disconnected
+[16:45:43.550][I][irk_capture:368][nimble_host]: Continuous mode: restarting advertising for next device
+[16:45:43.550][I][irk_capture:234][nimble_host]: Advertising with profile: Heart Sensor
+[16:45:43.550][D][irk_capture:360][nimble_host]: Staged effective MAC: C0:FF:EE:12:34:56
+[16:45:43.595][S][text_sensor]: 'ESP32 BLE MAC' >> 'C0:FF:EE:12:34:56'
+[16:45:47.451][S][text_sensor]: 'Status' >> 'advertising'
+[16:46:08.585][S][sensor]: 'Wi-Fi Signal' >> -31 dBm
+[16:46:09.361][S][sensor]: 'Wi-Fi Disconnects (since boot)' >> 0
 ```
 
 ## Development Status

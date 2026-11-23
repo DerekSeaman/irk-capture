@@ -272,7 +272,7 @@ int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt
   ESP_LOGD(TAG, "DevInfo read (%s): value='%s'", is_manufacturer ? "Manufacturer" : "Model",
            value_copy.c_str());
   return append_const_string_or_default(ctxt->om, value_copy.c_str(),
-                                        is_manufacturer ? "ESPresense" : DEFAULT_BLE_NAME);
+                                        is_manufacturer ? "ESP32" : DEFAULT_BLE_NAME);
 }
 int chr_read_batt(uint16_t, uint16_t, struct ble_gatt_access_ctxt* ctxt, void*) {
   uint8_t lvl = 100;  // Placeholder static battery level

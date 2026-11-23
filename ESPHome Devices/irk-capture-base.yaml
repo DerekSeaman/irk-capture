@@ -109,6 +109,7 @@ irk_capture:
         data:
           irk: !lambda "return irk;"
           mac: !lambda "return mac;"
+          verification: !lambda "return verification;"
 
 # Text sensors for Wi-Fi info and IRK capture
 text_sensor:
@@ -134,6 +135,10 @@ text_sensor:
     last_address:
       name: "Device BLE MAC"
       id: last_addr
+    irk_check:
+      name: "IRK Check"
+      id: irk_check
+      icon: mdi:shield-check
     effective_mac:
       name: "ESP32 BLE MAC"
       id: effective_mac

@@ -319,6 +319,9 @@ jobs:
               last_address:
                 id: last_addr
                 name: "Device MAC"
+              irk_check:
+                id: irk_check
+                name: "IRK Check"
               effective_mac:
                 id: effective_mac
                 name: "Effective MAC"

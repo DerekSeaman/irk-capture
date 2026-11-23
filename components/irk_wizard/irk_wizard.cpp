@@ -153,6 +153,10 @@ static bool json_request(httpd_req_t* req) {
 static bool read_request_body(httpd_req_t* req, std::string& body) {
   static constexpr size_t MAX_BODY = 512;
   static constexpr int MAX_TIMEOUTS = 3;
+  // The timeout count alone can't stop a client that sends a byte just before
+  // each receive window closes; that would hold the server for many minutes.
+  // A deadline caps the whole read, whatever progress the body makes.
+  static constexpr uint32_t MAX_BODY_READ_MS = 10000;
   if (req->content_len == 0) return send_error(req, "400 Bad Request", "Request body required");
   if (req->content_len > MAX_BODY) {
     return send_error(req, "413 Content Too Large", "Request body too large");
@@ -160,7 +164,11 @@ static bool read_request_body(httpd_req_t* req, std::string& body) {
   body.resize(req->content_len);
   size_t received = 0;
   int timeouts = 0;
+  const uint32_t started = millis();
   while (received < req->content_len) {
+    if (millis() - started >= MAX_BODY_READ_MS) {
+      return send_error(req, "408 Request Timeout", "Timed out reading the request body");
+    }
     const int r = httpd_req_recv(req, &body[received], req->content_len - received);
     if (r == HTTPD_SOCK_ERR_TIMEOUT) {
       // A slow link is not a malformed request. Allow a few more receive
@@ -583,7 +591,8 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
       ",\"capture_result\":{\"boot_id\":" + std::to_string(s.capture_result.boot_id) +
       ",\"sequence\":" + std::to_string(s.capture_result.sequence) + ",\"irk\":\"" +
       json_escape(s.capture_result.irk) + "\",\"device_mac\":\"" +
-      json_escape(s.capture_result.device_mac) + "\"},";
+      json_escape(s.capture_result.device_mac) + "\",\"verification\":\"" +
+      irk_capture::irk_check_name(s.capture_result.verification) + "\"},";
   tail += "\"capture_start\":{\"operation_id\":" + std::to_string(s.capture_start.operation_id) +
           ",\"state\":\"" + capture_start_state_name(s.capture_start.state) +
           "\",\"boot_id\":" + std::to_string(s.capture_start.boot_id) +
@@ -674,9 +683,13 @@ static esp_err_t handle_post_label(httpd_req_t* req) {
   if (!json_extract_string(command.body, "label", label)) {
     return reply_error(req, "400 Bad Request", "label must be a string");
   }
-  const std::string saved_label = command.capture->set_next_capture_label(label);
-  ESP_LOGI(TAG, "Wizard: next capture label '%s'", saved_label.c_str());
-  return send_json(req, "{\"ok\":true,\"label\":\"" + json_escape(saved_label) + "\"}");
+  const auto saved = command.capture->set_next_capture_label(label);
+  if (!saved.accepted) {
+    return reply_error(req, "400 Bad Request",
+                       "label needs letters, digits, spaces, hyphens, underscores or apostrophes");
+  }
+  ESP_LOGI(TAG, "Wizard: next capture label '%s'", saved.stored_label.c_str());
+  return send_json(req, "{\"ok\":true,\"label\":\"" + json_escape(saved.stored_label) + "\"}");
 }
 
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
