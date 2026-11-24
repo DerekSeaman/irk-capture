@@ -339,6 +339,7 @@ void IRKCaptureComponent::reset_connection_state_() {
   // Caller holds state_mutex_. Keep the generation for delayed capture results;
   // on_connect() advances it before the next peer can become active.
   pending_terminate_handle_ = BLE_HS_CONN_HANDLE_NONE;
+  pending_terminate_for_rotation_ = false;
   pending_terminate_busy_logged_ = false;
   connected_ = false;
   conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
@@ -640,17 +641,22 @@ void IRKCaptureComponent::close_after_no_irk_(uint16_t conn_handle, uint32_t con
 }
 
 void IRKCaptureComponent::terminate_bounded_(uint16_t conn_handle, uint32_t generation,
-                                             const char* context) {
+                                             const char* context, bool for_rotation) {
   // Never wait on the host queue or terminate a bare handle from the main task.
   // A disconnect/reconnect can reuse it while an operation waits for a lock.
   {
     MutexGuard lock(state_mutex_);
     if (!connected_ || conn_handle_ != conn_handle || connection_generation_ != generation) return;
-    if (pending_terminate_handle_ != conn_handle || pending_terminate_generation_ != generation)
+    if (pending_terminate_handle_ != conn_handle || pending_terminate_generation_ != generation) {
       pending_terminate_busy_logged_ = false;
+      pending_terminate_for_rotation_ = false;
+    }
     pending_terminate_handle_ = conn_handle;
     pending_terminate_generation_ = generation;
     pending_terminate_context_ = context;
+    // Preserve rotation ownership if a completion disconnect coalesces onto an
+    // already-queued rotation disconnect for the same connection.
+    pending_terminate_for_rotation_ |= for_rotation;
   }
   notify_bond_clear_();
 }
@@ -683,17 +689,40 @@ void IRKCaptureComponent::handle_pending_termination_() {
       return;
     }
     uint16_t handle;
+    uint32_t connection_generation;
+    uint32_t rotation_generation;
+    bool rotation_waiting;
+    bool rotation_owned;
     {
       MutexGuard lock(state_mutex_);
       handle = pending_terminate_handle_;
       context = pending_terminate_context_;
+      connection_generation = pending_terminate_generation_;
+      rotation_owned = pending_terminate_for_rotation_;
       const bool current = connected_ && handle != BLE_HS_CONN_HANDLE_NONE &&
                            conn_handle_ == handle &&
-                           connection_generation_ == pending_terminate_generation_;
+                           connection_generation_ == connection_generation;
       pending_terminate_handle_ = BLE_HS_CONN_HANDLE_NONE;
+      pending_terminate_for_rotation_ = false;
       if (!current) return;
+      rotation_waiting = mac_rotation_state_ == MacRotationState::REQUESTED;
+      rotation_generation = mac_rotation_generation_;
     }
     rc = ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
+    if (rotation_waiting && rc != 0 && rc != BLE_HS_EALREADY) {
+      MutexGuard lock(state_mutex_);
+      if (mac_rotation_state_ == MacRotationState::REQUESTED &&
+          mac_rotation_generation_ == rotation_generation && conn_handle_ == handle &&
+          connection_generation_ == connection_generation) {
+        // The host callback is serialized with GAP. ENOTCONN here means the
+        // tracked descriptor is already gone, so finish the disconnect. Only a
+        // termination initiated for the rotation aborts it on other errors.
+        if (rc == BLE_HS_ENOTCONN)
+          finish_disconnect_(now_ms());
+        else if (rotation_owned)
+          abort_rotation_locked_();
+      }
+    }
   }
   log_terminate_result(rc, context);
 }

@@ -587,6 +587,7 @@ class IRKCaptureComponent : public Component {
   uint16_t pending_terminate_handle_ { BLE_HS_CONN_HANDLE_NONE };
   uint32_t pending_terminate_generation_ { 0 };
   const char* pending_terminate_context_ { nullptr };  // String literal only
+  bool pending_terminate_for_rotation_ { false };
   bool pending_terminate_busy_logged_ { false };
 
   // Wizard-facing session state (see README). The entity pointers are set
@@ -748,7 +749,8 @@ class IRKCaptureComponent : public Component {
   void close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
                            const char* context);
   // Queues a generation-checked disconnect on the host task without waiting.
-  void terminate_bounded_(uint16_t conn_handle, uint32_t generation, const char* context);
+  void terminate_bounded_(uint16_t conn_handle, uint32_t generation, const char* context,
+                          bool for_rotation = false);
   void handle_pending_termination_();  // NimBLE event task only
   // Shows Status "failed" for a pairing that ended without a result.
   void report_capture_failure_(uint32_t connection_generation);

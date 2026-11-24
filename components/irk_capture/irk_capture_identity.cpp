@@ -304,8 +304,9 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
 
   // THREAD-SAFE: Atomically update state machine and pending MAC buffer
   bool should_stop_adv;
+  bool disconnect_unavailable = false;
   uint16_t conn_handle_copy;
-  uint32_t rotation_generation;
+  uint32_t conn_generation_copy;
   auto commit_request = [&]() {
     MutexGuard lock(state_mutex_);
 
@@ -323,7 +324,6 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     identity_refresh_result_.state = IdentityRefreshState::PENDING;
     identity_refresh_result_.cleanup_reason.clear();
     mac_rotation_generation_++;
-    rotation_generation = mac_rotation_generation_;
     // Naming intent belongs to this rotation generation. In particular, a
     // newer accepted manual name supersedes both an older refresh request and
     // any generated name waiting to publish on the main task.
@@ -337,7 +337,8 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
       }
       pending_ble_name_pub_ = true;
     }
-    mac_rotation_state_ = MacRotationState::REQUESTED;
+    mac_rotation_state_ =
+        connected_ ? MacRotationState::REQUESTED : MacRotationState::READY_TO_ROTATE;
     mac_rotation_ready_time_ = 0;
     mac_rotation_prepared_ = false;
     mac_rotation_cleanup_failed_ = false;
@@ -347,6 +348,11 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     // Snapshot connection state for disconnect logic
     should_stop_adv = advertising_;
     conn_handle_copy = conn_handle_;
+    conn_generation_copy = connection_generation_;
+    if (connected_ && !bond_clear_task_) {
+      abort_rotation_locked_();
+      disconnect_unavailable = true;
+    }
     return true;
   };
 
@@ -385,52 +391,21 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     return false;
   }  // Release both mutexes before stopping advertising or terminating a link.
 
+  if (disconnect_unavailable) {
+    ESP_LOGW(TAG, "MAC rotation needs a disconnect, but the BLE worker is unavailable");
+    return true;
+  }
+
   // Stop advertising (non-blocking)
   if (should_stop_adv) {
     stop_advertising();
   }
 
-  // Terminate any active connection (non-blocking)
+  // Disconnect on the host task, where a GAP callback cannot interleave with
+  // the connection-generation check. A peer that already left advances the
+  // rotation through finish_disconnect_() and leaves nothing to terminate.
   if (conn_handle_copy != BLE_HS_CONN_HANDLE_NONE) {
-    ESP_LOGI(TAG, "Terminating connection for MAC rotation");
-    int rc = 0;
-    bool terminate_started = false;
-    {
-      BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
-      if (ble_lock.acquired()) {
-        rc = ble_gap_terminate(conn_handle_copy, BLE_ERR_REM_USER_CONN_TERM);
-        // EALREADY means the asynchronous termination is already in progress;
-        // keep the rotation request alive so on_disconnect() can advance it.
-        terminate_started = (rc == 0 || rc == BLE_HS_EALREADY);
-      } else {
-        ESP_LOGW(TAG, "MAC rotation terminate: ble_op_mutex timeout");
-      }
-    }
-    if (terminate_started) {
-      // on_disconnect() will advance the state machine to READY_TO_ROTATE
-    } else {
-      // Neither the mutex nor the terminate succeeded, so no disconnect callback
-      // will fire and the state machine would hang in REQUESTED forever (loop()
-      // only handles READY_TO_ROTATE). Abort the rotation
-      // and restore advertising instead of getting stuck.
-      if (rc != 0) {
-        ESP_LOGW(TAG, "ble_gap_terminate during MAC rotation rc=%d", rc);
-      }
-      ESP_LOGW(TAG, "MAC rotation aborted (could not disconnect); restoring prior state");
-      {
-        MutexGuard lock(state_mutex_);
-        if (rotation_generation != mac_rotation_generation_) return true;
-        abort_rotation_locked_();
-      }
-      start_advertising();
-    }
-  } else {
-    // No connection - safe to rotate immediately
-    ESP_LOGD(TAG, "No active connection, ready to rotate MAC");
-    MutexGuard lock(state_mutex_);
-    if (rotation_generation != mac_rotation_generation_) return true;
-    mac_rotation_state_ = MacRotationState::READY_TO_ROTATE;
-    // loop() will handle the actual rotation
+    terminate_bounded_(conn_handle_copy, conn_generation_copy, "for MAC rotation", true);
   }
   return true;
 }
