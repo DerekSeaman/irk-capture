@@ -715,6 +715,7 @@ class IRKCaptureComponent : public Component {
                    uint32_t connection_generation, CaptureOrigin origin = CaptureOrigin::UNKNOWN,
                    ble_addr_t* connection_addr_out = nullptr);
   void setup_ble();
+  void setup_ble_worker_();
   bool register_gatt_services();
   std::string sanitize_ble_name(const std::string& name);
   std::string advertised_name_();                   // Caller holds state_mutex_
