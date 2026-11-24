@@ -503,7 +503,8 @@ class IRKCaptureComponent : public Component {
   uint8_t mac_rotation_retries_ { 0 };      // Retry counter for MAC rotation
   uint32_t mac_rotation_ready_time_ { 0 };  // Earliest next attempt (settle delay or retry backoff)
   uint32_t mac_rotation_generation_ { 0 };  // Invalidates work after reset or a new request
-  bool mac_rotation_prepared_ { false };    // Advertising stopped and bond cleanup attempted
+  bool mac_rotation_cleanup_pending_ { false };  // A host-task cleanup was requested
+  bool mac_rotation_prepared_ { false };         // Advertising stopped and bond cleanup attempted
   bool mac_rotation_cleanup_failed_ { false };
 
   // IRK capture tracking with deduplication and rate limiting
@@ -682,7 +683,8 @@ class IRKCaptureComponent : public Component {
   //           manufacturer_name_,
   //           mac_rotation_state_, pending_mac_,
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
-  //           mac_rotation_prepared_, mac_rotation_cleanup_failed_, failed_generation_,
+  //           mac_rotation_cleanup_pending_, mac_rotation_prepared_, mac_rotation_cleanup_failed_,
+  //           failed_generation_,
   //           adv_restart_time_, capture_events_,
   //           unique_devices_, irk_cache_ (deduplication state),
   //           capture_result_, capture_result_generation_,
@@ -791,6 +793,8 @@ class IRKCaptureComponent : public Component {
 
   // Loop helpers
   void handle_mac_rotation_(uint32_t now);
+  void handle_rotation_cleanup_();  // NimBLE event task only
+  void finish_rotation_cleanup_locked_(const char* failure_reason);
   void retry_security_if_needed(uint32_t now);
   bool handle_connection_timeout_(uint32_t now);
   // Caller holds state_mutex_. Reset is also used by connect/host reset;

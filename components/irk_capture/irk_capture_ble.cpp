@@ -356,6 +356,7 @@ void IRKCaptureComponent::setup_ble_worker_() {
         auto* self = static_cast<IRKCaptureComponent*>(ble_npl_event_get_arg(event));
         self->handle_pending_termination_();
         self->handle_forget_bonds_();
+        self->handle_rotation_cleanup_();
       },
       this);
 
@@ -448,6 +449,7 @@ void IRKCaptureComponent::setup_ble() {
     // disconnect callback that can no longer arrive.
     g_irk_instance->mac_rotation_generation_++;
     g_irk_instance->mac_rotation_state_ = MacRotationState::IDLE;
+    g_irk_instance->mac_rotation_cleanup_pending_ = false;
     g_irk_instance->mac_rotation_retries_ = 0;
     g_irk_instance->mac_rotation_ready_time_ = 0;
     g_irk_instance->identity_refresh_pending_ = false;
