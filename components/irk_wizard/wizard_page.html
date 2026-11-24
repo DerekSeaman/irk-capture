@@ -32,7 +32,8 @@ button.danger{color:var(--red);border-color:#4a2a26}
 button:disabled{opacity:.45;cursor:default}
 button.big{display:block;width:100%;padding:14px;font-size:15px;margin-bottom:18px}
 .toggle{display:flex;justify-content:space-between;align-items:center}
-.switch{width:38px;height:22px;border-radius:99px;background:var(--border);position:relative;cursor:pointer;flex:none}
+.switch{width:38px;height:22px;border-radius:99px;background:var(--border);position:relative;cursor:pointer;flex:none;border:0;padding:0}
+.switch:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .switch.on{background:var(--accent)}
 .switch::after{content:"";position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px;transition:.15s}
 .switch.on::after{left:18px}
@@ -164,7 +165,8 @@ ol.pair li{margin-bottom:5px}
 
   <div class="card">
     <div class="row toggle"><span class="k">Stop advertising after capture</span>
-      <div class="switch" id="stopAfterSwitch"></div></div>
+      <button type="button" class="switch" id="stopAfterSwitch" role="switch" aria-checked="false"
+        aria-label="Stop advertising after capture"></button></div>
   </div>
 
   <h2 class="section">Express Capture</h2>
@@ -585,6 +587,7 @@ function renderPanel(d,advName){
   el('advBtn').textContent = d.advertising ? 'Stop Advertising' : 'Start Advertising';
   el('advBtn').dataset.on = d.advertising ? '1' : '0';
   el('stopAfterSwitch').classList.toggle('on', !!d.stop_after_capture);
+  el('stopAfterSwitch').setAttribute('aria-checked', d.stop_after_capture ? 'true' : 'false');
 }
 // A rotation runs after its request was acknowledged, so its failure can
 // only arrive here. A failure from before this page loaded is not replayed.
