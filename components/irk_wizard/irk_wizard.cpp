@@ -41,7 +41,12 @@ static bool send_error(httpd_req_t* req, const char* status, const char* message
   return false;
 }
 
+static void mark_close_if_unread(httpd_req_t* req) {
+  if (req->content_len != 0) httpd_resp_set_hdr(req, "Connection", "close");
+}
+
 static esp_err_t send_unauthorized(httpd_req_t* req) {
+  mark_close_if_unread(req);
   httpd_resp_set_status(req, "401 Unauthorized");
   httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"IRK Capture\"");
   return httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
@@ -75,14 +80,26 @@ static uint32_t client_key(httpd_req_t* req) {
   return hash != 0 ? hash : 1;
 }
 
-// Returns true when the request may proceed. On failure it has already sent
-// the response, so the handler must just return ESP_OK.
+// Returning ESP_OK makes httpd drain any unread bytes on its server task.
+// After a rejection, close any session whose request body was not read.
+static esp_err_t unread_body_result(const httpd_req_t* req) {
+  return req->content_len == 0 ? ESP_OK : ESP_FAIL;
+}
+
+static bool bodyless_request(httpd_req_t* req) {
+  if (req->content_len == 0) return true;
+  mark_close_if_unread(req);
+  return send_error(req, "400 Bad Request", "Unexpected request body");
+}
+
+// Returns true when the request may proceed. On failure the response has been sent.
 static bool authorized(httpd_req_t* req) {
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   const std::string& expected = self->expected_auth();
   if (expected.empty()) {
     // The config schema requires credentials, so this means set_auth() never
     // ran. Refuse rather than serve captured keys to anyone who asks.
+    mark_close_if_unread(req);
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Wizard credentials not configured");
     return false;
   }
@@ -94,6 +111,7 @@ static bool authorized(httpd_req_t* req) {
   if (throttle.locked(now)) {
     // The header value must outlive this call; httpd keeps only the pointer.
     static const std::string RETRY_AFTER = std::to_string(AuthThrottle::LOCKOUT_MS / 1000);
+    mark_close_if_unread(req);
     httpd_resp_set_hdr(req, "Retry-After", RETRY_AFTER.c_str());
     return send_error(req, "429 Too Many Requests", "Too many failed attempts, try again shortly");
   }
@@ -141,24 +159,24 @@ static bool json_request(httpd_req_t* req) {
               is_json_content_type(value.c_str());
   }
   if (!is_json) {
+    mark_close_if_unread(req);
     send_error(req, "415 Unsupported Media Type", "Content-Type must be application/json");
   }
   return is_json;
 }
 
-// Reads the whole request body. As with authorized(), a failure has already
-// sent its response, so the handler must just return ESP_OK. Each failure gets
-// its own answer: reporting a missing or oversized body as a bad field value
-// sends whoever is debugging the request to the wrong place.
+// Reads the whole request body, answering failures when the socket is usable.
 static bool read_request_body(httpd_req_t* req, std::string& body) {
   static constexpr size_t MAX_BODY = 512;
   static constexpr int MAX_TIMEOUTS = 3;
   // The timeout count alone can't stop a client that sends a byte just before
   // each receive window closes; that would hold the server for many minutes.
-  // A deadline caps the whole read, whatever progress the body makes.
+  // Stop after the receive window that reaches the deadline, even if it
+  // delivered the last bytes.
   static constexpr uint32_t MAX_BODY_READ_MS = 10000;
   if (req->content_len == 0) return send_error(req, "400 Bad Request", "Request body required");
   if (req->content_len > MAX_BODY) {
+    mark_close_if_unread(req);
     return send_error(req, "413 Content Too Large", "Request body too large");
   }
   body.resize(req->content_len);
@@ -166,25 +184,19 @@ static bool read_request_body(httpd_req_t* req, std::string& body) {
   int timeouts = 0;
   const uint32_t started = millis();
   while (received < req->content_len) {
-    if (millis() - started >= MAX_BODY_READ_MS) {
-      return send_error(req, "408 Request Timeout", "Timed out reading the request body");
-    }
     const int r = httpd_req_recv(req, &body[received], req->content_len - received);
-    if (r == HTTPD_SOCK_ERR_TIMEOUT) {
-      // A slow link is not a malformed request. Allow a few more receive
-      // windows, but not so many that one stalled client holds the server.
-      if (++timeouts >= MAX_TIMEOUTS) {
-        return send_error(req, "408 Request Timeout", "Timed out reading the request body");
-      }
-      continue;
-    }
-    if (r <= 0) {
+    const bool timed_out = r == HTTPD_SOCK_ERR_TIMEOUT;
+    if (r <= 0 && !timed_out) {
       // The connection closed or failed, so there is nobody left to answer.
       ESP_LOGW(TAG, "Request body read failed (%d)", r);
       body.clear();
       return false;
     }
-    received += (size_t) r;
+    if (millis() - started >= MAX_BODY_READ_MS || (timed_out && ++timeouts >= MAX_TIMEOUTS)) {
+      mark_close_if_unread(req);
+      return send_error(req, "408 Request Timeout", "Timed out reading the request body");
+    }
+    if (!timed_out) received += (size_t) r;
   }
   return true;
 }
@@ -206,23 +218,32 @@ static irk_capture::IRKCaptureComponent* usable_capture(httpd_req_t* req) {
   return capture;
 }
 
-// What a command needs before it can act. As with authorized(), a false return
-// from begin_command() means the response has already been sent, so the
-// handler must just return ESP_OK. The checks run in a fixed order: login,
-// content type, a usable capture component, then the body.
+// Check login, content type, request body, and capture availability. On
+// failure, command.error_result is ESP_FAIL whenever bytes remain unread so
+// httpd closes the session instead of draining untrusted input on its task.
 struct Command {
   std::string body;
   irk_capture::IRKCaptureComponent* capture { nullptr };
+  esp_err_t error_result { ESP_OK };
 };
 enum : uint8_t { NEEDS_CAPTURE = 1, NEEDS_BODY = 2 };
 
 static bool begin_command(httpd_req_t* req, uint8_t needs, Command& command) {
+  command.error_result = unread_body_result(req);
   if (!authorized(req) || !json_request(req)) return false;
+  // The page sends {} even for commands that take no arguments. Read any
+  // supplied body through the size/time bounds before checking capture health
+  // so an authenticated 503 drains cleanly instead of closing with unread bytes
+  // (which triggers a TCP RST on lwIP and can hide the error message).
+  if ((needs & NEEDS_BODY) || req->content_len != 0) {
+    if (!read_request_body(req, command.body)) return false;
+  }
+  command.error_result = ESP_OK;
   if (needs & NEEDS_CAPTURE) {
     command.capture = usable_capture(req);
     if (command.capture == nullptr) return false;
   }
-  return !(needs & NEEDS_BODY) || read_request_body(req, command.body);
+  return true;
 }
 
 //======================== Snapshot ========================
@@ -548,7 +569,7 @@ void IRKWizardComponent::dump_config() {
 // size and is sent as-is with Content-Encoding: gzip.
 
 static esp_err_t handle_index(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
+  if (!authorized(req) || !bodyless_request(req)) return unread_body_result(req);
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   if (self->page_data() == nullptr || self->page_size() == 0) {
     // An empty 200 renders as a blank page with nothing to explain it.
@@ -563,7 +584,7 @@ static esp_err_t handle_index(httpd_req_t* req) {
 }
 
 static esp_err_t handle_get_status(httpd_req_t* req) {
-  if (!authorized(req)) return ESP_OK;
+  if (!authorized(req) || !bodyless_request(req)) return unread_body_result(req);
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   WizardSnapshot s = self->get_snapshot();
   // Editable values and consume-once label updates must be visible immediately,
@@ -622,7 +643,7 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
 
 static esp_err_t handle_post_advertising(httpd_req_t* req) {
   Command command;
-  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return ESP_OK;
+  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return command.error_result;
   bool on = false;
   if (!json_extract_bool(command.body, "on", on)) {
     return reply_error(req, "400 Bad Request", "on must be a boolean");
@@ -635,7 +656,7 @@ static esp_err_t handle_post_capture_start(httpd_req_t* req) {
   // Without the capture check the request is accepted and the page is told only
   // that the start "failed", with advice to retry something that needs a reboot.
   Command command;
-  if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return command.error_result;
   const auto start = static_cast<IRKWizardComponent*>(req->user_ctx)->start_capture();
   httpd_resp_set_status(req, "202 Accepted");
   return send_json(req, "{\"operation_id\":" + std::to_string(start.operation_id) +
@@ -646,7 +667,7 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
   // A failed capture component still accepts a profile change: switching
   // profile and rebooting is the way out of a GATT table that will not register.
   Command command;
-  if (!begin_command(req, NEEDS_BODY, command)) return ESP_OK;
+  if (!begin_command(req, NEEDS_BODY, command)) return command.error_result;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   const std::string& body = command.body;
   std::string profile;
@@ -678,7 +699,7 @@ static esp_err_t handle_post_profile(httpd_req_t* req) {
 
 static esp_err_t handle_post_label(httpd_req_t* req) {
   Command command;
-  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return ESP_OK;
+  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return command.error_result;
   std::string label;
   if (!json_extract_string(command.body, "label", label)) {
     return reply_error(req, "400 Bad Request", "label must be a string");
@@ -694,7 +715,7 @@ static esp_err_t handle_post_label(httpd_req_t* req) {
 
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
   Command command;
-  if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return command.error_result;
   auto* capture = command.capture;
   ESP_LOGI(TAG, "Wizard: forget all bonds requested");
   const auto result = capture->request_bond_clear();
@@ -709,7 +730,7 @@ static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
 
 static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
   Command command;
-  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return ESP_OK;
+  if (!begin_command(req, NEEDS_CAPTURE | NEEDS_BODY, command)) return command.error_result;
   bool enabled = false;
   if (!json_extract_bool(command.body, "enabled", enabled)) {
     return reply_error(req, "400 Bad Request", "enabled must be a boolean");
@@ -721,7 +742,7 @@ static esp_err_t handle_post_stop_after_capture(httpd_req_t* req) {
 
 static esp_err_t handle_post_fresh_identity(httpd_req_t* req) {
   Command command;
-  if (!begin_command(req, NEEDS_CAPTURE, command)) return ESP_OK;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return command.error_result;
   static_cast<IRKWizardComponent*>(req->user_ctx)->fresh_identity();
   return send_ok(req);
 }
@@ -729,7 +750,7 @@ static esp_err_t handle_post_fresh_identity(httpd_req_t* req) {
 static esp_err_t handle_post_reboot(httpd_req_t* req) {
   // A reboot is how a failed component recovers, so it needs no usable one.
   Command command;
-  if (!begin_command(req, NEEDS_BODY, command)) return ESP_OK;
+  if (!begin_command(req, NEEDS_BODY, command)) return command.error_result;
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   uint32_t boot_id = 0;
   if (!matching_boot_baseline(req, command.body, boot_id)) return ESP_OK;
