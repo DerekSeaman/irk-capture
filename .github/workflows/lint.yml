@@ -211,17 +211,18 @@ jobs:
             // locked client keeps its slot, and when every slot is locked
             // further clients share the overflow throttle
             ClientThrottles table;
-            for (uint32_t key = 1; key <= 4; key++) {
+            constexpr uint32_t N = ClientThrottles::SLOTS;
+            for (uint32_t key = 1; key <= N; key++) {
               for (int i = 0; i < 5; i++) table.for_client(key, 1000).fail(1000);
             }
             assert(table.for_client(1, 1000).locked(1000));
-            assert(&table.for_client(5, 1000) == &table.overflow);
+            assert(&table.for_client(N + 1, 1000) == &table.overflow);
             assert(!table.overflow.locked(1000));
-            assert(table.for_client(4, 1000).locked(1000));
+            assert(table.for_client(N, 1000).locked(1000));
             const uint32_t later = 1000 + AuthThrottle::LOCKOUT_MS;
             table.for_client(2, later + 1);
-            assert(&table.for_client(6, later + 2) == &table.slots[0].throttle);
-            assert(table.slots[0].key == 6 && table.slots[0].throttle.failures == 0);
+            assert(&table.for_client(N + 2, later + 2) == &table.slots[0].throttle);
+            assert(table.slots[0].key == N + 2 && table.slots[0].throttle.failures == 0);
 
             printf("wizard_util: all assertions passed\n");
             return 0;
