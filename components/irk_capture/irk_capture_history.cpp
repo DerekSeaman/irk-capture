@@ -457,8 +457,13 @@ BondClearResult IRKCaptureComponent::request_bond_clear() {
 void IRKCaptureComponent::notify_bond_clear_() {
   {
     MutexGuard lock(state_mutex_);
-    if (!bond_clear_task_ || (!bond_clear_pending_ && !mac_rotation_cleanup_pending_ &&
-                              pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE))
+    // A disconnect waiting out its retry backoff has nothing to do yet; loop()
+    // calls this every tick, so waking the host for it would be pure churn.
+    const bool terminate_due = pending_terminate_handle_ != BLE_HS_CONN_HANDLE_NONE &&
+                               (pending_terminate_retry_time_ == 0 ||
+                                deadline_reached(now_ms(), pending_terminate_retry_time_));
+    if (!bond_clear_task_ ||
+        (!bond_clear_pending_ && !mac_rotation_cleanup_pending_ && !terminate_due))
       return;
   }
   // Task notifications do not wait for queue capacity. A reset racing this

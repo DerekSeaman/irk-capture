@@ -374,6 +374,10 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     mac_rotation_prepared_ = false;
     mac_rotation_cleanup_failed_ = false;
     mac_rotation_retries_ = 0;  // Reset retry counter for new rotation attempt
+    // A disconnect still retrying for an earlier rotation on this link now
+    // serves this one, with a full attempt budget. Its backoff stays: the host
+    // that just refused it is no less busy.
+    pending_terminate_retries_ = 0;
     std::memcpy(pending_mac_, temp_mac, sizeof(pending_mac_));
 
     // Snapshot connection state for disconnect logic
