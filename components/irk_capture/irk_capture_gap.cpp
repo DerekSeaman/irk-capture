@@ -434,6 +434,27 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     }
   }
 
+  // Non-blocking disconnect from the NimBLE host task. When ble_op_mutex_ is
+  // free this disconnects at once without a worker round-trip; when the main
+  // task holds the lock it defers to terminate_bounded_() instead of blocking
+  // the host task.
+  auto terminate_now_or_defer = [&](const char* context) {
+    int term_rc = 0;
+    bool acquired;
+    {
+      BleOpGuard ble_lock(self->ble_op_mutex_, 0);
+      acquired = ble_lock.acquired();
+      if (acquired) {
+        term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+      }
+    }
+    if (!acquired) {
+      self->terminate_bounded_(ev->enc_change.conn_handle, connection_generation, context);
+      return;
+    }
+    log_terminate_result(term_rc, context);
+  };
+
   if (ev->enc_change.status == 0) {
     ESP_LOGI(TAG, "Encryption established; attempting immediate IRK capture");
     // Immediate store read using identity address
@@ -468,12 +489,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
                               origin, check_irk_against_address(bond.irk, &d.peer_ota_addr));
           // Tested working behavior: terminate immediately after successful ENC +
           // IRK capture
-          int term_rc;
-          {
-            BleOpGuard ble_lock(self->ble_op_mutex_);
-            term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-          }
-          log_terminate_result(term_rc, "after ENC capture");
+          terminate_now_or_defer("after ENC capture");
           break;
         }
         case BondRead::NO_IRK:
@@ -511,12 +527,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
                ev->enc_change.status);
     }
     self->report_capture_failure_(connection_generation);
-    int term_rc;
-    {
-      BleOpGuard ble_lock(self->ble_op_mutex_);
-      term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-    }
-    log_terminate_result(term_rc, "after ENC failure");
+    terminate_now_or_defer("after ENC failure");
 
     // On a DHKey check failure, hold off the next advertising restart for a
     // few seconds (local behaviour only; it does not reset the peer). Match the
