@@ -105,60 +105,51 @@ enum class BLEProfile : uint8_t {
 };
 
 // Select for BLE profile
-class IRKCaptureSelect : public select::Select, public Component {
+class IRKCaptureSelect : public select::Select {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void control(const std::string& value) override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
 };
 
 // Text input for BLE name
-class IRKCaptureText : public text::Text, public Component {
+class IRKCaptureText : public text::Text {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void control(const std::string& value) override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
 };
 
 // Text sensor for IRK/Address output
-class IRKCaptureTextSensor : public text_sensor::TextSensor, public Component {
- public:
-  void setup() override {
-  }
-  void dump_config() override;
-};
+class IRKCaptureTextSensor : public text_sensor::TextSensor {};
 
 // Switch for advertising control
-class IRKCaptureSwitch : public switch_::Switch, public Component {
+class IRKCaptureSwitch : public switch_::Switch {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void write_state(bool state) override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
 };
 
 // Button for new MAC
-class IRKCaptureButton : public button::Button, public Component {
+class IRKCaptureButton : public button::Button {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void press_action() override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
@@ -166,13 +157,12 @@ class IRKCaptureButton : public button::Button, public Component {
 
 // Button that clears capture history and requests a bond-store wipe without
 // rotating the advertised address.
-class IRKCaptureForgetBondsButton : public button::Button, public Component {
+class IRKCaptureForgetBondsButton : public button::Button {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void press_action() override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
@@ -180,13 +170,12 @@ class IRKCaptureForgetBondsButton : public button::Button, public Component {
 
 // Switch: stop advertising automatically once a capture publishes, instead of
 // continuing to hunt for more unique devices this session.
-class IRKCaptureStopAfterCaptureSwitch : public switch_::Switch, public Component {
+class IRKCaptureStopAfterCaptureSwitch : public switch_::Switch {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void write_state(bool state) override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
@@ -194,13 +183,12 @@ class IRKCaptureStopAfterCaptureSwitch : public switch_::Switch, public Componen
 
 // Text input: label attached to the next new device this session captures.
 // Consumed, and cleared in the UI, the moment a new identity is cached.
-class IRKCaptureLabelText : public text::Text, public Component {
+class IRKCaptureLabelText : public text::Text {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void control(const std::string& value) override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };

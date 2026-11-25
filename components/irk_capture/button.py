@@ -11,11 +11,9 @@ CONF_REFRESH_IDENTITY = "refresh_identity"
 CONF_NEW_MAC = "new_mac"
 CONF_FORGET_BONDS = "forget_bonds"
 
-IRKCaptureButton = irk_capture_ns.class_(
-    "IRKCaptureButton", button.Button, cg.Component
-)
+IRKCaptureButton = irk_capture_ns.class_("IRKCaptureButton", button.Button)
 IRKCaptureForgetBondsButton = irk_capture_ns.class_(
-    "IRKCaptureForgetBondsButton", button.Button, cg.Component
+    "IRKCaptureForgetBondsButton", button.Button
 )
 
 CONFIG_SCHEMA = cv.All(

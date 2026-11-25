@@ -41,10 +41,8 @@ def capture_label_max_len():
     return int(match.group(1))
 
 
-IRKCaptureText = irk_capture_ns.class_("IRKCaptureText", text.Text, cg.Component)
-IRKCaptureLabelText = irk_capture_ns.class_(
-    "IRKCaptureLabelText", text.Text, cg.Component
-)
+IRKCaptureText = irk_capture_ns.class_("IRKCaptureText", text.Text)
+IRKCaptureLabelText = irk_capture_ns.class_("IRKCaptureLabelText", text.Text)
 
 CONFIG_SCHEMA = cv.Schema(
     {
