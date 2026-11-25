@@ -23,6 +23,13 @@ void IRKCaptureComponent::setup() {
   ble_name_ = sanitize_ble_name(ble_name_);
   if (ble_name_.empty()) ble_name_ = DEFAULT_BLE_NAME;
 
+  // Stable for this boot, including NimBLE host recovery. A browser can detect
+  // an MCU reboot even when its next capture has the same sequence number.
+  // Set before anything can fail: the wizard's reboot and profile recovery
+  // commands need it, and refuse a zero boot identity.
+  esp_fill_random(&capture_result_.boot_id, sizeof(capture_result_.boot_id));
+  if (capture_result_.boot_id == 0) capture_result_.boot_id = 1;
+
   state_mutex_ = xSemaphoreCreateMutex();
   if (!state_mutex_) {
     ESP_LOGE(TAG, "CRITICAL: Failed to create state mutex - thread safety compromised!");
@@ -39,11 +46,6 @@ void IRKCaptureComponent::setup() {
     publish_setup_failure_();
     return;
   }
-
-  // Stable for this boot, including NimBLE host recovery. A browser can detect
-  // an MCU reboot even when its next capture has the same sequence number.
-  esp_fill_random(&capture_result_.boot_id, sizeof(capture_result_.boot_id));
-  if (capture_result_.boot_id == 0) capture_result_.boot_id = 1;
 
   // Load persisted BLE profile from NVS (before BLE stack init so GATT is
   // correct)
