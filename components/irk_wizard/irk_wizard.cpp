@@ -588,12 +588,17 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   WizardSnapshot s = self->get_snapshot();
   // Editable values and consume-once label updates must be visible immediately,
-  // even when the main task has not rebuilt its periodic snapshot yet.
+  // even when the main task has not rebuilt its periodic snapshot yet. The
+  // same goes for the controls: the page refreshes right after a command, and
+  // a start acknowledged as ready next to stale advertising=false would tell
+  // the user that advertising is off.
   if (self->irk_capture()) {
     s.next_capture_label = self->irk_capture()->get_next_capture_label();
     s.profile = self->irk_capture()->get_ble_profile() == irk_capture::BLEProfile::KEYBOARD
                     ? "Keyboard"
                     : "Heart Sensor";
+    s.advertising = self->irk_capture()->is_advertising_requested();
+    s.stop_after_capture = self->irk_capture()->get_stop_after_capture();
   }
 
   std::string head = "{";
