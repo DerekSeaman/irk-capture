@@ -437,7 +437,9 @@ async function wizSaveLabel(){
   var request={run:wizardRun, visit:wizLabelVisit, edit:wizLabelEdit}; wizLabelSave=request;
   // Only a reply to the step the user is still on may show an error or move
   // the wizard: they may have left it, gone Back, or started a new run.
-  var current=function(){ return request.run===wizardRun && request.visit===wizLabelVisit; };
+  var current=function(){
+    return wizStep===2 && request.run===wizardRun && request.visit===wizLabelVisit;
+  };
   var saved=null;
   clearError();
   try{ saved=await post('/api/label',{label:el('wizLabel').value}); refresh(); }
@@ -449,17 +451,13 @@ async function wizSaveLabel(){
   if(!current()) return;
   // Text typed while this save was in flight is newer than what it stored.
   // Next was already pressed, so save that text rather than discard it.
-  if(request.edit!==wizLabelEdit){
-    if(wizStep===2) return wizSaveLabel();
-    return;
-  }
+  if(request.edit!==wizLabelEdit) return wizSaveLabel();
   // Show what the device stored, which may drop characters it rejects. The
   // step change below renders the cached status, so it must agree, or a
   // cleared label would be filled back in from it.
   if(typeof saved.label==='string') el('wizLabel').value=saved.label;
   wizLabelDirty=false;
-  // Only move on from the step that asked; the user may have left it.
-  if(wizStep===2) wizGo(3);
+  wizGo(3);
 }
 function hideClearMessage(id){
   el(id).textContent=''; el(id).classList.add('hide'); el(id).classList.remove('ok');
