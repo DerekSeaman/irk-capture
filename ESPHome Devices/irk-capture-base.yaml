@@ -3,8 +3,8 @@
 # This package provides IRK capture functionality for ESP32 devices
 # Intended to be added as a `packages:` entry to an ESPHome Device Builder-generated
 # device YAML. The device YAML must already provide: esphome.name, esphome.friendly_name,
-# esp32.variant (+ flash_size/board), api.encryption.key, ota password, and
-# wifi.ssid/password/ap. This package supplies everything else.
+# esp32.variant (+ flash_size/board), api.encryption.key, ota encryption or password,
+# and wifi.ssid/password/ap. This package supplies everything else.
 
 esphome:
   # Log the station MAC before Wi-Fi setup so AP-side authentication failures

@@ -72,7 +72,7 @@ When your Apple or Android device pairs with the ESP32:
 
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESP-IDF framework** (required - this component does NOT support Arduino framework)
-- **ESPHome** 2026.7.4 or newer (the oldest version the build tests use) - Tested with 2026.10.2
+- **ESPHome** 2026.7.4 or newer (the oldest version the build tests use) - Tested with 2026.10.2. The example YAML below uses encrypted OTA updates (`encryption:` under `ota:`), which need ESPHome 2026.9.0 or newer; on 2026.7.x or 2026.8.x, give `ota:` a `password:` instead
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
 - **ESPHome Device Builder** (optional, but makes managing ESPHome devices in Home Assistant easier)
 
@@ -115,7 +115,7 @@ api:
 
 ota:
   - platform: esphome
-    encryption:
+    encryption:  # ESPHome 2026.9.0+; older versions use password:
 
 wifi:
   ssid: !secret wifi_ssid
@@ -170,7 +170,7 @@ api:
 
 ota:
   - platform: esphome
-    encryption:
+    encryption:  # ESPHome 2026.9.0+; older versions use password:
 
 wifi:
   ssid: !secret wifi_ssid
