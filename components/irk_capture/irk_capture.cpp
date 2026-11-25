@@ -11,7 +11,7 @@
 namespace esphome {
 namespace irk_capture {
 
-static constexpr char VERSION[] = "1.7.8";
+static constexpr char VERSION[] = "1.7.9";
 
 //======================== Component lifecycle ========================
 
