@@ -431,8 +431,13 @@ async function wizSaveLabel(){
   try{
     var saved=await action('/api/label',{label:el('wizLabel').value});
     if(!saved) return;
-    // Show what the device stored, which may drop characters it rejects.
-    if(typeof saved.label==='string') el('wizLabel').value=saved.label;
+    // Show what the device stored, which may drop characters it rejects. The
+    // step change below renders the cached status, so it must agree, or a
+    // cleared label would be filled back in from it.
+    if(typeof saved.label==='string'){
+      el('wizLabel').value=saved.label;
+      if(lastData) lastData.next_capture_label=saved.label;
+    }
     wizLabelDirty=false;
     // Only move on from the step that asked; the user may have left it.
     if(wizStep===2) wizGo(3);
