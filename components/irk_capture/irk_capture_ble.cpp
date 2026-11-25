@@ -95,10 +95,7 @@ static bool is_encrypted(uint16_t conn_handle) {
 }
 
 static void hr_measurement_sample(uint8_t* buf, size_t* len) {
-  buf[0] = 0x00;  // Flags byte: bit0=0 (UINT8 format), bit1-2=0 (sensor contact
-                  // not supported),
-                  //             bit3=0 (no energy expended), bit4=0 (RR
-                  //             interval not present)
+  buf[0] = 0x00;                                  // Flags: UINT8 bpm, no contact/energy/RR fields
   buf[1] = (uint8_t) (60 + (esp_random() % 40));  // 60-99 bpm
   *len = 2;
 }
@@ -109,10 +106,8 @@ static int append_att_value(struct os_mbuf* om, const void* data, size_t len) {
   return os_mbuf_append(om, data, len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
 }
 
-// Helper to safely append const string or default value
 static int append_const_string_or_default(struct os_mbuf* om, const char* str,
                                           const char* default_str) {
-  // Safely append string to mbuf, using default if str is nullptr or empty
   const char* val = (str && str[0] != '\0') ? str : default_str;
   return append_att_value(om, val, strlen(val));
 }
@@ -248,12 +243,10 @@ static struct ble_gatt_svc_def gatt_svcs_keyboard[] = {
 int chr_read_devinfo(uint16_t conn_handle, uint16_t, struct ble_gatt_access_ctxt* ctxt, void* arg) {
   if (!is_encrypted(conn_handle)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
 
-  // THREAD-SAFE: arg points to IRKCaptureComponent instance for both
-  // characteristics We determine which characteristic by UUID comparison
+  // Shared by Manufacturer Name and Model Number; dispatch by UUID.
   auto* self = static_cast<IRKCaptureComponent*>(arg);
   if (self == nullptr) return BLE_ATT_ERR_UNLIKELY;  // Registered without its component.
 
-  // Determine which characteristic is being read
   const ble_uuid_t* char_uuid = ctxt->chr->uuid;
   bool is_manufacturer = ble_uuid_cmp(char_uuid, &UUID_CHR_MANUF.u) == 0;
 
@@ -375,8 +368,8 @@ void IRKCaptureComponent::setup_ble_worker_() {
           "irk_bond_clear", 2048, this, tskIDLE_PRIORITY + 1, &bond_clear_task_) != pdPASS) {
     bond_clear_task_ = nullptr;
     ESP_LOGE(TAG,
-             "BLE worker allocation failed; bond clearing unavailable, disconnects use timeout "
-             "recovery");
+             "BLE worker allocation failed; forgetting bonds is unavailable, Refresh BLE Identity "
+             "cannot clear old pairings, and disconnects use timeout recovery. Restart the ESP32");
   }
 }
 
@@ -402,7 +395,6 @@ void IRKCaptureComponent::setup_ble() {
     return;
   }
 
-  // Set global instance for callbacks that don't accept user args
   g_irk_instance = this;
 
   // From here on a failure must undo nimble_port_init(). Otherwise the
@@ -546,8 +538,6 @@ void IRKCaptureComponent::on_ble_host_synced() {
 }
 
 bool IRKCaptureComponent::register_gatt_services() {
-  // THREAD-SAFE: Pass 'this' pointer to BOTH DevInfo characteristics
-  // Callback will determine which field to read based on UUID
   devinfo_chrs[0].arg = (void*) this;  // Manufacturer Name
   devinfo_chrs[1].arg = (void*) this;  // Model Number
 
@@ -622,7 +612,6 @@ void IRKCaptureComponent::notify_hr_if_due(uint32_t now) {
   if (hr_handle == 0) return;
   if (now - last_notify_ <= TimingConfig::HR_NOTIFY_INTERVAL_MS) return;
 
-  // THREAD-SAFE: Copy connection handle before BLE stack call
   uint16_t conn_handle_copy;
   {
     MutexGuard lock(state_mutex_);

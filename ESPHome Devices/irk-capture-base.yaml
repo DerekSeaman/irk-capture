@@ -1,10 +1,9 @@
 ---
 # Generic ESP32 IRK Capture Package
-# This package provides IRK capture functionality for ESP32 devices
 # Intended to be added as a `packages:` entry to an ESPHome Device Builder-generated
 # device YAML. The device YAML must already provide: esphome.name, esphome.friendly_name,
-# esp32.variant (+ flash_size/board), api.encryption.key, ota password, and
-# wifi.ssid/password/ap. This package supplies everything else.
+# esp32.variant (+ flash_size/board), api.encryption.key, ota encryption or password,
+# and wifi.ssid/password/ap. This package supplies everything else.
 
 esphome:
   # Log the station MAC before Wi-Fi setup so AP-side authentication failures
@@ -17,13 +16,10 @@ esphome:
             ESP_LOGI("wifi", "WiFi STA MAC: %s", wifi_mac.c_str());
 
 esp32:
-  # NimBLE stack with ESP-IDF. Supports all ESP32 variants (ESP32, C3, C6, S3, etc.)
-  # board/variant come from the device YAML.
-  # NOTE: All Bluetooth/NimBLE sdkconfig options are set by the irk_capture
-  # component itself (components/irk_capture/__init__.py) and are the single
-  # source of truth. Do NOT re-declare them here: the component applies its
-  # values after the esp32 platform, so any values set here would be silently
-  # overridden.
+  # The device YAML selects an ESP32 board with BLE and usable Wi-Fi.
+  # This package uses ESP-IDF/NimBLE. CI builds ESP32, C3, C6, and S3.
+  # Do NOT declare Bluetooth/NimBLE sdkconfig_options here:
+  # components/irk_capture/__init__.py sets them afterwards and wins.
   framework:
     type: esp-idf
     version: recommended
@@ -69,19 +65,11 @@ wifi:
 
 mdns:
 
-# Pull irk_capture external component. The component always tracks main so
-# devices pick up the latest component fixes automatically; the package YAML
-# version is pinned separately via the device YAML's packages: ref.
-#
-# Both can be redirected from the device YAML by setting irk_component_url /
-# irk_component_ref in its substitutions - useful for testing a branch or a
-# fork without having to edit this package. A device YAML's substitutions
-# take precedence over a package's.
-#
-# When testing a branch, set irk_component_ref to match the device YAML's
-# packages: ref. Otherwise a newer package runs against main's component and
-# fails validation on any option main does not have yet (for example
-# "[status] is an invalid option for [text_sensor.irk_capture]").
+# Pull irk_capture from main by default; override irk_component_url /
+# irk_component_ref in the device YAML's substitutions to test a fork or
+# branch without editing this package (device substitutions win).
+# When testing a branch, match irk_component_ref to your packages: ref so
+# package options do not outrun the component schema.
 substitutions:
   irk_component_url: https://github.com/DerekSeaman/irk-capture
   irk_component_ref: main
@@ -94,7 +82,6 @@ external_components:
     components: [irk_capture]
     refresh: always
 
-# Configure the custom IRK capture component
 irk_capture:
   id: irk
   ble_name: "IRK Capture"
@@ -111,7 +98,6 @@ irk_capture:
           mac: !lambda "return mac;"
           verification: !lambda "return verification;"
 
-# Text sensors for Wi-Fi info and IRK capture
 text_sensor:
   - platform: wifi_info
     bssid:
@@ -157,7 +143,6 @@ switch:
       # Preserve start_on_boot; an explicit restore mode can override it.
       restore_mode: DISABLED
 
-# Buttons
 button:
   - platform: irk_capture
     irk_capture_id: irk
@@ -168,7 +153,6 @@ button:
   - platform: restart
     name: "Restart Device"
 
-# Text input to change the BLE name dynamically
 text:
   - platform: irk_capture
     irk_capture_id: irk
@@ -177,7 +161,6 @@ text:
       name: "BLE Device Name"
       mode: text
 
-# BLE profile selection dropdown
 select:
   - platform: irk_capture
     irk_capture_id: irk
@@ -186,7 +169,6 @@ select:
       name: "BLE Profile"
       # Options: "Heart Sensor" or "Keyboard" (default set in code)
 
-# Diagnostics and basics
 sensor:
   - platform: uptime
     name: "Uptime"
@@ -214,7 +196,6 @@ sensor:
     lambda: |-
       return id(_wifi_disconnects_since_boot);
 
-# Since-boot only; not restored across reboots
 globals:
   - id: _wifi_disconnects_since_boot
     type: int

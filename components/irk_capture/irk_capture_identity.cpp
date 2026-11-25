@@ -12,10 +12,8 @@ namespace irk_capture {
 //======================== BLE name sanitization ========================
 
 std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
-  // Keeps the characters that are safe to advertise (alphanumeric, space,
-  // hyphen, underscore), trims surrounding spaces, then limits the length.
-  // Returns an empty string when nothing usable remains; the caller decides
-  // whether that means a default name or a rejected change.
+  // Keeps [A-Za-z0-9 _-], trims spaces, and caps length. Returns "" if empty;
+  // caller chooses fallback vs reject.
   std::string sanitized;
   sanitized.reserve(name.size());
   size_t rejected = 0;
@@ -64,8 +62,8 @@ std::string IRKCaptureComponent::get_ble_name() {
 }
 
 std::string IRKCaptureComponent::advertised_name_() {
-  // Keyboard poses as a "Logitech K380" to get past Samsung's BLE filtering,
-  // unless a name was entered in Home Assistant since the last reboot.
+  // Keyboard poses as "Logitech K380" for Samsung BLE filtering until renamed
+  // or refreshed since boot.
   if (ble_profile_ == BLEProfile::KEYBOARD && !keyboard_name_custom_) return KEYBOARD_DEFAULT_NAME;
   return ble_name_;
 }
@@ -100,9 +98,8 @@ void IRKCaptureComponent::abort_rotation_locked_() {
   mac_rotation_cleanup_pending_ = false;
   mac_rotation_retries_ = 0;
   mac_rotation_ready_time_ = 0;
-  // The address never changed, so there is no new suffix to name. Leaving the
-  // request armed would rename the device as a side effect of the next plain
-  // rotation, such as the one a name change from Home Assistant triggers.
+  // Disarm naming: the address did not change, and leaving this set would
+  // rename the device if start_advertising() later initializes an address.
   identity_refresh_pending_ = false;
   identity_refresh_result_.state = IdentityRefreshState::FAILED;
 }
@@ -124,7 +121,7 @@ void IRKCaptureComponent::handle_rotation_cleanup_() {
     generation = mac_rotation_generation_;
     if (!rotation_current_locked_(generation)) {
       mac_rotation_cleanup_pending_ = false;
-      return;  // The loop will wait for the connection to close before retrying.
+      return;  // Reset, superseded, or a peer connected (loop() retries after disconnect).
     }
   }
 
@@ -156,22 +153,21 @@ void IRKCaptureComponent::handle_rotation_cleanup_() {
 //   READY, !prepared:            stop fails                     retry in
 //     stop advertising             (retries_ < MAX)               ADV_RETRY_MS
 //                                stop fails (retries_ = MAX)    IDLE, FAILED
-//                                stop verified: queue cleanup   READY, cleanup pending
+//                                stop verified                  READY, cleanup pending
+//                                                               (or prepared if no worker)
 //   READY, cleanup pending      host task clears bonds          READY, prepared
 //   READY, prepared:             set_rnd OK                     IDLE, SUCCEEDED
 //     wait SETTLE_DELAY_MS,                                       or PARTIAL
 //     then ble_hs_id_set_rnd()   set_rnd fails (retries_<MAX)   backoff retry
 //                                set_rnd fails (retries_=MAX)   IDLE, FAILED
-//   any                          host reset                     IDLE
-//                                newer request                  REQUESTED anew
+//   any                          host reset                     IDLE, FAILED (if pending)
+//                                newer request                  REQUESTED or READY anew
 //
-// mac_rotation_retries_ counts the stop attempts, then is reset to 0 when
-// preparation commits and counts the address attempts. A busy BLE lock in the
-// address phase retries on the next loop without counting. Bond cleanup is
-// attempted once before mac_rotation_prepared_ becomes true; a failed cleanup
-// still rotates but ends PARTIAL. An abort leaves the address unchanged. The
-// address phase restarts advertising when it ends (success or abort); a stop
-// abort does not, because the radio never stopped.
+// mac_rotation_retries_ counts stop attempts, then resets to 0 on prepare and
+// counts address attempts. A busy BLE lock in the address phase retries on the
+// next loop without counting. Bond cleanup runs once; failure still rotates
+// (PARTIAL). An abort leaves the address unchanged; only the address phase
+// restarts advertising on exit (a stop abort never confirmed advertising off).
 void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   uint32_t generation;
   uint32_t ready_time;
@@ -206,10 +202,9 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
     prepared = mac_rotation_prepared_;
   }
   if (!prepared) {
-    // A failed initial stop must be retried here: ON intent is retained during
-    // rotation, so the ordinary OFF retry in loop() does not own this stop.
-    // Verification still takes the BLE lock when the cache says OFF. The stop
-    // helper avoids another stop/log when GAP is already inactive.
+    // Rotation must verify that advertising stopped before cleanup, whether
+    // intent is ON or OFF. stop_advertising() checks GAP under the BLE lock
+    // and issues a stop only when advertising is active.
     const bool stopped = stop_advertising();
     bool abort = false;
     {
@@ -332,7 +327,6 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
   make_static_random_addr(temp_mac);
   ESP_LOGD(TAG, "Pre-generated MAC: %s", mac_to_str(temp_mac).c_str());
 
-  // THREAD-SAFE: Atomically update state machine and pending MAC buffer
   bool should_stop_adv;
   bool disconnect_unavailable = false;
   uint16_t conn_handle_copy;
@@ -349,7 +343,6 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
       return false;
     }
 
-    // Set rotation state and commit pre-generated MAC to shared buffer
     if (++identity_refresh_result_.operation_id == 0) ++identity_refresh_result_.operation_id;
     identity_refresh_result_.state = IdentityRefreshState::PENDING;
     identity_refresh_result_.cleanup_reason.clear();
@@ -373,10 +366,13 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     mac_rotation_cleanup_pending_ = false;
     mac_rotation_prepared_ = false;
     mac_rotation_cleanup_failed_ = false;
-    mac_rotation_retries_ = 0;  // Reset retry counter for new rotation attempt
+    mac_rotation_retries_ = 0;
+    // A disconnect still retrying for an earlier rotation on this link now
+    // serves this one, with a full attempt budget. Its backoff stays: the host
+    // that just refused it is no less busy.
+    pending_terminate_retries_ = 0;
     std::memcpy(pending_mac_, temp_mac, sizeof(pending_mac_));
 
-    // Snapshot connection state for disconnect logic
     should_stop_adv = advertising_;
     conn_handle_copy = conn_handle_;
     conn_generation_copy = connection_generation_;
@@ -427,7 +423,7 @@ bool IRKCaptureComponent::request_mac_rotation_(bool refresh_name, const NameCha
     return true;
   }
 
-  // Stop advertising (non-blocking)
+  // Best-effort initial stop; handle_mac_rotation_() verifies and retries.
   if (should_stop_adv) {
     stop_advertising();
   }
@@ -479,8 +475,6 @@ bool IRKCaptureComponent::update_ble_name(const std::string& name) {
     change.name_generation = ble_name_generation_;
   }
 
-  // The helper commits only after a successful GAP write and restores the
-  // accepted GAP value if this write was superseded while the stack ran.
   return request_mac_rotation_(false, &change);
 }
 
@@ -518,15 +512,11 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
   const char* profile_name = (profile == BLEProfile::HEART_SENSOR) ? "Heart Sensor" : "Keyboard";
   ESP_LOGI(TAG, "BLE profile changed to: %s", profile_name);
 
-  // Only trigger changes if profile actually changed
   if (old_profile != profile) {
-    // Persist profile to NVS before restart
     const bool persisted = persist_ble_profile(profile);
 
-    // setup() reloads the profile from NVS on boot, so rebooting without a
-    // successful write would land right back on the old profile while also
-    // discarding the capture session. Roll the selection back instead and let
-    // the user retry.
+    // Rebooting without a saved profile would revert on boot and lose the
+    // session; roll back instead.
     if (!persisted) {
       {
         MutexGuard lock(state_mutex_);
@@ -539,29 +529,22 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
       return;
     }
 
-    // Update the displayed BLE name based on profile
     if (profile == BLEProfile::KEYBOARD) {
-      // Keyboard profile uses fixed name "Logitech K380"
       if (ble_name_text_) {
         ble_name_text_->publish_state(KEYBOARD_DEFAULT_NAME);
       }
     } else {
-      // Heart Sensor profile restores the configured name
       if (ble_name_text_) {
         ble_name_text_->publish_state(current_name);
       }
     }
 
-    // GATT database cannot be dynamically changed in NimBLE - restart required
-    // Use ESPHome's safe_reboot to avoid watchdog timeout from blocking
-    // vTaskDelay
+    // NimBLE's GATT table is fixed at boot, so a reboot is required. Must run
+    // on the main task (publishes entities directly); request_reboot_() defers
+    // the reboot so callers (e.g. IRKCaptureSelect::control()) finish first.
     ESP_LOGW(TAG,
              "Profile change requires restart to update GATT database - "
              "scheduling safe reboot...");
-    // This function publishes entities directly, so it must run on the main
-    // task; the wizard defers its call here for that reason. The reboot is
-    // still deferred so the caller finishes first: the select publishes its
-    // new state, and a wizard request has already been answered.
     request_reboot_();
   }
 }

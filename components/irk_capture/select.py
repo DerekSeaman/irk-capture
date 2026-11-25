@@ -8,9 +8,7 @@ from . import CONF_IRK_CAPTURE_ID, IRKCaptureComponent, irk_capture_ns
 
 CONF_BLE_PROFILE = "ble_profile"
 
-IRKCaptureSelect = irk_capture_ns.class_(
-    "IRKCaptureSelect", select.Select, cg.Component
-)
+IRKCaptureSelect = irk_capture_ns.class_("IRKCaptureSelect", select.Select)
 
 CONFIG_SCHEMA = cv.Schema(
     {

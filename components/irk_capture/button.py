@@ -7,15 +7,13 @@ from esphome.components import button
 from . import CONF_IRK_CAPTURE_ID, IRKCaptureComponent, irk_capture_ns
 
 CONF_REFRESH_IDENTITY = "refresh_identity"
-# What refresh_identity was called while the press only rotated the address.
+# Legacy alias for refresh_identity (kept for existing configs).
 CONF_NEW_MAC = "new_mac"
 CONF_FORGET_BONDS = "forget_bonds"
 
-IRKCaptureButton = irk_capture_ns.class_(
-    "IRKCaptureButton", button.Button, cg.Component
-)
+IRKCaptureButton = irk_capture_ns.class_("IRKCaptureButton", button.Button)
 IRKCaptureForgetBondsButton = irk_capture_ns.class_(
-    "IRKCaptureForgetBondsButton", button.Button, cg.Component
+    "IRKCaptureForgetBondsButton", button.Button
 )
 
 CONFIG_SCHEMA = cv.All(
@@ -23,8 +21,8 @@ CONFIG_SCHEMA = cv.All(
         {
             cv.GenerateID(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
             # Rotates the advertised address and adopts a name carrying the
-            # profile and the new address's low two octets ("IRK HR 7F3A",
-            # "IRK KB 7F3A"), in both profiles, until the next reboot.
+            # profile and new address's low two octets ("IRK HR 7F3A",
+            # "IRK KB 7F3A") until renamed or rebooted.
             cv.Optional(CONF_REFRESH_IDENTITY): button.button_schema(IRKCaptureButton),
             cv.Optional(CONF_NEW_MAC): button.button_schema(IRKCaptureButton),
             # Clears capture history and requests a bond-store wipe without
@@ -34,8 +32,7 @@ CONFIG_SCHEMA = cv.All(
             ),
         }
     ),
-    # Both spellings drive one setter, so accepting both at once would build a
-    # second button that nothing ever calls.
+    # new_mac is a legacy alias for refresh_identity; reject configs setting both.
     cv.has_at_most_one_key(CONF_REFRESH_IDENTITY, CONF_NEW_MAC),
 )
 
@@ -44,8 +41,6 @@ async def to_code(config):
     """Generate code for buttons."""
     parent = await cg.get_variable(config[CONF_IRK_CAPTURE_ID])
 
-    # new_mac is the previous spelling, still accepted so an existing
-    # configuration keeps compiling across the rename.
     for key in (CONF_REFRESH_IDENTITY, CONF_NEW_MAC):
         if key in config:
             btn = await button.new_button(config[key])

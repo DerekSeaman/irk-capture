@@ -42,9 +42,8 @@ enum class IrkCheck : uint8_t {
   MISMATCH,        // The address is resolvable, but not with this IRK
 };
 
-// The value's name in the on_capture automation and the wizard's JSON, which
-// compare these strings. Only a resolved address counts as verified; a check
-// that could not run is not a failure.
+// String form for irk_check_sensor_, on_capture, and wizard JSON (part of the
+// external contract). Only a resolved RPA is "verified"; unchecked is not a failure.
 inline const char* irk_check_name(IrkCheck check) {
   switch (check) {
     case IrkCheck::VERIFIED:

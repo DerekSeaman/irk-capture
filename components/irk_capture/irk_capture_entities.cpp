@@ -1,5 +1,5 @@
-// Home Assistant entity glue: the switch, button, text, select and text
-// sensor classes that forward to IRKCaptureComponent.
+// Home Assistant entity glue: the switch, button, text, and select classes
+// that forward commands to IRKCaptureComponent.
 
 #include "irk_capture_internal.h"
 
@@ -72,36 +72,6 @@ void IRKCaptureLabelText::control(const std::string& value) {
   parent_->set_next_capture_label(value);
 }
 
-//======================== Entity dump_config ========================
-
-void IRKCaptureText::dump_config() {
-  ESP_LOGCONFIG(TAG, "IRK Capture BLE Name Text:");
-  ESP_LOGCONFIG(TAG, "  Value: '%s'", state.c_str());
-}
-
-void IRKCaptureSwitch::dump_config() {
-  ESP_LOGCONFIG(TAG, "IRK Capture Advertising Switch:");
-  ESP_LOGCONFIG(TAG, "  State: %s", state ? "ON" : "OFF");
-}
-
-void IRKCaptureButton::dump_config() {
-  ESP_LOGCONFIG(TAG, "IRK Capture Refresh Identity Button");
-}
-
-void IRKCaptureForgetBondsButton::dump_config() {
-  ESP_LOGCONFIG(TAG, "IRK Capture Forget Bonds Button");
-}
-
-void IRKCaptureStopAfterCaptureSwitch::dump_config() {
-  ESP_LOGCONFIG(TAG, "IRK Capture Stop-After-Capture Switch:");
-  ESP_LOGCONFIG(TAG, "  State: %s", state ? "ON" : "OFF");
-}
-
-void IRKCaptureLabelText::dump_config() {
-  ESP_LOGCONFIG(TAG, "IRK Capture Next Capture Label Text:");
-  ESP_LOGCONFIG(TAG, "  Value: '%s'", state.c_str());
-}
-
 void IRKCaptureSelect::control(const std::string& value) {
   // A failed component still accepts a profile change: with a GATT table that
   // would not register, switching profile and rebooting is the way out.
@@ -124,14 +94,6 @@ void IRKCaptureSelect::control(const std::string& value) {
   // state instead of overwriting that rollback with the requested selection.
   publish_state(parent_->get_ble_profile() == BLEProfile::HEART_SENSOR ? "Heart Sensor"
                                                                        : "Keyboard");
-}
-
-void IRKCaptureSelect::dump_config() {
-  ESP_LOGCONFIG(TAG, "IRK Capture BLE Profile Select");
-}
-
-void IRKCaptureTextSensor::dump_config() {
-  ESP_LOGCONFIG(TAG, "IRK Capture Text Sensor");
 }
 
 }  // namespace irk_capture

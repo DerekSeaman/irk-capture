@@ -104,7 +104,6 @@ static void log_conn_desc(uint16_t conn_handle) {
     ESP_LOGI(TAG, "peer id =%s type=%d", addr_to_str(d.peer_id_addr).c_str(), d.peer_id_addr.type);
 
     // Connection parameters (helpful for Android watch debugging)
-    // supervision_timeout is the link supervision timeout per BLE spec
     log_conn_params("conn params", d.conn_itvl, d.conn_latency, d.supervision_timeout);
 
     // Role and features
@@ -113,32 +112,11 @@ static void log_conn_desc(uint16_t conn_handle) {
   }
 }
 
-//======================== GAP event handlers (extracted)
-//========================
-/*
-GAP Event Handler Return Value Semantics:
--    Return 0: Event handled successfully, continue normal NimBLE processing
--    Return BLE_GAP_REPEAT_PAIRING_RETRY: Delete peer bond and retry pairing
-(only valid for REPEAT_PAIRING event)
--    Return BLE_GAP_REPEAT_PAIRING_IGNORE: Ignore repeat pairing request (only
-valid for REPEAT_PAIRING event)
--    Other non-zero values: Error occurred, but NimBLE will continue (logged but
-not fatal)
+//======================== GAP event handlers ========================
+// Run on the NimBLE host task; avoid blocking or heavy work.
 
-THREADING: These handlers run in NimBLE task context, NOT ESPHome main task.
-Avoid blocking operations and heavy computation in these functions.
-*/
-
-/**
- * @brief Handles BLE_GAP_EVENT_CONNECT - called when peer connects or
- * connection fails
- * @param self Pointer to IRKCaptureComponent instance
- * @param ev GAP event structure containing connection details
- * @return 0 (always - connection success/failure is logged only)
- *
- * On successful connection, initiates security/pairing via on_connect().
- * On failure, restarts advertising to allow retry.
- */
+// BLE_GAP_EVENT_CONNECT: start security via on_connect() on success, or close
+// any lingering link and restart advertising on failure.
 int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   if (ev->connect.status == 0) {
     ESP_LOGI(TAG, "Connection established successfully");
@@ -170,13 +148,11 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       }
     }
 
-    // Thread-safe advertising state reset
     {
       MutexGuard lock(self->state_mutex_);
       self->advertising_ = false;
     }
 
-    // Restart advertising (will set flag with mutex internally)
     self->start_advertising();
   }
   return 0;
@@ -248,23 +224,13 @@ static const char* disconnect_reason_str(int reason) {
   }
 }
 
-/**
- * @brief Handles BLE_GAP_EVENT_DISCONNECT - called when peer disconnects
- * @param self Pointer to IRKCaptureComponent instance
- * @param ev GAP event structure containing disconnect reason
- * @return 0 (always)
- *
- * If the connection has not produced a result yet, reads the peer's bond once
- * more and schedules a delayed read (+800ms) when that is inconclusive. Then
- * restarts advertising, unless the capture limit was reached, the user turned
- * advertising off, or a restart is already scheduled after a hold-off.
- */
+// BLE_GAP_EVENT_DISCONNECT: if no result was observed yet, run a fallback bond
+// read (and schedule a +800 ms check if inconclusive), then restart advertising
+// unless limited, OFF, or held off.
 int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
-  // Use the connection descriptor embedded in the disconnect event directly
-  // (ble_gap_conn_find may fail after disconnect since NimBLE removes the
-  // descriptor). The post-disconnect timer's peer is set by
-  // schedule_post_disconnect_check() below, so no separate cache is needed here.
+  // Use the event's embedded descriptor; NimBLE has already removed it from ble_gap_conn_find().
   const struct ble_gap_conn_desc& d = ev->disconnect.conn;
+  const std::string peer_addr = addr_to_str(d.peer_id_addr);
   uint32_t connection_generation = 0;
   bool already_observed = false;
   bool pairing_completed = false;
@@ -277,7 +243,6 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       connected_since = self->pairing_start_time_;
       pairing_completed = self->enc_ready_;
       origin = self->connection_origin_;
-      const std::string peer_addr = addr_to_str(d.peer_id_addr);
       for (const auto& entry : self->irk_cache_) {
         if (entry.mac_addr == peer_addr && entry.addr_type == d.peer_id_addr.type &&
             entry.last_observed_generation == connection_generation) {
@@ -337,26 +302,19 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
                                          origin, &d.peer_ota_addr);
   }
 
-  // Thread-safe advertising state update
-  {
-    MutexGuard lock(self->state_mutex_);
-    self->advertising_ = false;
-  }
-
-  // Check if we should stop advertising
-  // THREAD-SAFE: Snapshot capture counts and restart schedule under mutex
+  // Update advertising state and snapshot restart conditions in one lock.
   bool should_stop_adv = false;
   bool requested;
   bool restart_scheduled;
   {
     MutexGuard lock(self->state_mutex_);
+    self->advertising_ = false;
     should_stop_adv = self->capture_limit_reached_locked_();
     requested = self->advertising_requested_;
     restart_scheduled = self->adv_restart_time_ != 0;
   }
 
   if (should_stop_adv) {
-    // Don't restart - max captures reached
     ESP_LOGI(TAG, "Unique-device limit reached - stopping advertising");
     self->set_advertising_requested(false);
   } else if (!requested) {
@@ -372,20 +330,9 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   return 0;
 }
 
-/**
- * @brief Handles BLE_GAP_EVENT_ENC_CHANGE - called when encryption/pairing
- * completes or fails
- * @param self Pointer to IRKCaptureComponent instance
- * @param ev GAP event structure containing encryption status
- * @return 0 (always)
- *
- * On success (status=0): reads the peer's bond at once. A valid IRK is
- * published and the link closed; a bond without an IRK is reported as "no IRK"
- * and the link closed; otherwise a delayed read is scheduled (+5s).
- * On failure: logs the decoded reason, deletes only this peer's bond and closes
- * the link so the peer pairs afresh. It does not retry security; the single
- * retry in retry_security_if_needed() is time-based.
- */
+// BLE_GAP_EVENT_ENC_CHANGE: on success, read the peer's bond (publish/close on
+// IRK or NO_IRK, else schedule +5s check); on failure, delete only this peer's
+// bond, report failure, and disconnect (no security retry here).
 int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   uint32_t connection_generation = 0;
   CaptureOrigin origin = CaptureOrigin::UNKNOWN;
@@ -434,6 +381,27 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     }
   }
 
+  // Non-blocking disconnect from the NimBLE host task. When ble_op_mutex_ is
+  // free this disconnects at once without a worker round-trip; when the main
+  // task holds the lock it defers to terminate_bounded_() instead of blocking
+  // the host task. A transient failure is handed to the worker as well, whose
+  // retries keep the link from lasting until the 90 s pairing timeout.
+  auto terminate_now_or_defer = [&](const char* context) {
+    int term_rc = 0;
+    bool acquired;
+    {
+      BleOpGuard ble_lock(self->ble_op_mutex_, 0);
+      acquired = ble_lock.acquired();
+      if (acquired) {
+        term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+      }
+    }
+    if (acquired) log_terminate_result(term_rc, context);
+    if (!acquired || transient_terminate_error(term_rc)) {
+      self->terminate_bounded_(ev->enc_change.conn_handle, connection_generation, context);
+    }
+  };
+
   if (ev->enc_change.status == 0) {
     ESP_LOGI(TAG, "Encryption established; attempting immediate IRK capture");
     // Immediate store read using identity address
@@ -468,12 +436,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
                               origin, check_irk_against_address(bond.irk, &d.peer_ota_addr));
           // Tested working behavior: terminate immediately after successful ENC +
           // IRK capture
-          int term_rc;
-          {
-            BleOpGuard ble_lock(self->ble_op_mutex_);
-            term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-          }
-          log_terminate_result(term_rc, "after ENC capture");
+          terminate_now_or_defer("after ENC capture");
           break;
         }
         case BondRead::NO_IRK:
@@ -511,12 +474,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
                ev->enc_change.status);
     }
     self->report_capture_failure_(connection_generation);
-    int term_rc;
-    {
-      BleOpGuard ble_lock(self->ble_op_mutex_);
-      term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-    }
-    log_terminate_result(term_rc, "after ENC failure");
+    terminate_now_or_defer("after ENC failure");
 
     // On a DHKey check failure, hold off the next advertising restart for a
     // few seconds (local behaviour only; it does not reset the peer). Match the
@@ -533,22 +491,10 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   return 0;
 }
 
-/**
- * @brief Handles BLE_GAP_EVENT_REPEAT_PAIRING - peer attempting to pair when
- * already bonded
- * @param self Pointer to IRKCaptureComponent instance; the connection is
- * marked as an explicit re-pair so its IRK is always published
- * @param ev GAP event structure containing repeat pairing details
- * @return BLE_GAP_REPEAT_PAIRING_RETRY after a successful stale-bond deletion;
- * BLE_GAP_REPEAT_PAIRING_IGNORE if recovery cannot be prepared safely
- *
- * This event occurs when a peer device has forgotten our bond but we still have
- * theirs stored. We delete our stale bond data and return RETRY to allow NimBLE
- * to complete fresh pairing. This is essential for recovering from out-of-sync
- * bond states between devices.
- */
+// BLE_GAP_EVENT_REPEAT_PAIRING: an already-bonded peer asks to pair again.
+// Delete the stored bond. If it is removed or already absent, mark a tracked
+// connection REPAIR and return RETRY. Otherwise return IGNORE.
 int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* ev) {
-  // Portable: get the current connection descriptor from the handle
   struct ble_gap_conn_desc d {};
   int rc = ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d);
   if (rc == 0) {
@@ -574,8 +520,7 @@ int handle_gap_repeat_pairing(IRKCaptureComponent* self, struct ble_gap_event* e
   return BLE_GAP_REPEAT_PAIRING_IGNORE;
 }
 
-//======================== GAP event handler (dispatcher)
-//========================
+//======================== GAP event dispatcher ========================
 
 int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) {
   auto* self = static_cast<IRKCaptureComponent*>(arg);
@@ -642,7 +587,6 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
                  "pairing");
       }
 
-      // Just log and return - main branch behavior
       return 0;
     }
 
@@ -768,7 +712,6 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 //======================== GAP helpers ========================
 
 void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
-  // Thread-safe connection and pairing state update
   bool was_advertising = false;
   bool reject_extra_connection = false;
   uint16_t existing_handle = BLE_HS_CONN_HANDLE_NONE;
@@ -807,9 +750,7 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
       }
     }
     if (terminate_failed) {
-      // on_connect() runs on the NimBLE host task, and rebooting from here also
-      // did it while ble_op_mutex_ was still held. The reboot now runs on the
-      // main loop, after this handler has returned and released the guard.
+      // Defer reboot to the main loop: on_connect() runs on the NimBLE host task.
       request_reboot_();
     }
     return;
@@ -853,8 +794,6 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   }
 
   // Proactively initiate pairing; peer should show pairing dialog now
-  // THREAD-SAFE: use the conn_handle parameter (already stored to conn_handle_
-  // under mutex at the top of on_connect)
   int rc = ble_gap_security_initiate(conn_handle);
   if (rc == 0) {
     ESP_LOGD(TAG, "Security initiate: started");

@@ -13,7 +13,7 @@ CONF_STATUS = "status"
 CONF_IRK_CHECK = "irk_check"
 
 IRKCaptureTextSensor = irk_capture_ns.class_(
-    "IRKCaptureTextSensor", text_sensor.TextSensor, cg.Component
+    "IRKCaptureTextSensor", text_sensor.TextSensor
 )
 
 CONFIG_SCHEMA = cv.Schema(

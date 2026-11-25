@@ -1,18 +1,14 @@
 ---
 # Optional IRK Capture Wizard package
 #
-# Adds a guided, on-device capture UI plus the entities that go with it. Add
-# it as a SECOND packages: entry alongside irk-capture-base.yaml:
+# Adds an on-device browser UI (Express Capture and guided multi-device flow)
+# served on its own port, working without Home Assistant or internet,
+# including from the fallback AP. Add as a SECOND packages: entry alongside
+# irk-capture-base.yaml (most users capturing via Home Assistant do not need it):
 #
 #   packages:
 #     device: !include ...irk-capture-base.yaml
 #     wizard: !include ...irk-capture-wizard.yaml
-#
-# Most people capture straight from the Home Assistant device page and don't
-# need any of this. It is only worth adding for a guided multi-device flow.
-#
-# The UI is served from the ESP32 on its own port, so it works with no Home
-# Assistant and no internet - including from the fallback AP.
 
 external_components:
   - source:
@@ -27,8 +23,8 @@ external_components:
 switch:
   - platform: irk_capture
     irk_capture_id: irk
-    # Ends the session after one device instead of continuing to hunt for
-    # more, while keeping the multi-capture buffer available.
+    # Stops advertising after each genuine capture while keeping the
+    # multi-capture history open.
     stop_after_capture:
       id: stop_after_capture
       name: "Stop Advertising After Capture"
@@ -37,8 +33,7 @@ switch:
 text:
   - platform: irk_capture
     irk_capture_id: irk
-    # Consumed by the next new device captured, so a key can be told apart
-    # from the others afterwards.
+    # Consumed by the next device added to visible history so keys can be told apart.
     next_capture_label:
       id: next_capture_label
       name: "Next Capture Label"

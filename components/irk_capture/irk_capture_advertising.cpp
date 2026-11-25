@@ -68,7 +68,7 @@ void IRKCaptureComponent::start_advertising() {
     return;
   }
 
-  // Enforce the single-connection invariant before touching the controller.
+  // Skip if advertising is OFF, a peer is connected, or maintenance is pending.
   BLEProfile current_profile;
   std::string name_copy;
   bool requested;
@@ -163,7 +163,6 @@ void IRKCaptureComponent::start_advertising() {
       rc = ble_gap_adv_set_fields(&fields);
     }
 
-    // Set scan response data if needed (Keyboard profile)
     if (rc == 0 && use_scan_response) {
       operation = "scan response setup";
       rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
@@ -175,7 +174,7 @@ void IRKCaptureComponent::start_advertising() {
       advp.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
       // Faster advertising interval for quicker discovery in Samsung/Android
-      // Settings UI Units are 0.625ms: 0x00A0 = 100ms, 0x00F0 = 150ms (default
+      // Settings UI. Units are 0.625ms: 0x00A0 = 100ms, 0x00F0 = 150ms (default
       // NimBLE is ~1.28s)
       advp.itvl_min = 0x00A0;
       advp.itvl_max = 0x00F0;

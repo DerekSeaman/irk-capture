@@ -33,25 +33,20 @@ def capture_label_max_len():
         raise EsphomeError(f"irk_capture cannot read {path}: {err}") from err
     match = re.search(r"\bCAPTURE_LABEL_MAX_LEN = (\d+);", header)
     if match is None:
-        # Without this the build stops on "'NoneType' object has no attribute
-        # 'group'", which says nothing about what to fix.
         raise EsphomeError(
             f"irk_capture: CAPTURE_LABEL_MAX_LEN is not defined as a number in {path}"
         )
     return int(match.group(1))
 
 
-IRKCaptureText = irk_capture_ns.class_("IRKCaptureText", text.Text, cg.Component)
-IRKCaptureLabelText = irk_capture_ns.class_(
-    "IRKCaptureLabelText", text.Text, cg.Component
-)
+IRKCaptureText = irk_capture_ns.class_("IRKCaptureText", text.Text)
+IRKCaptureLabelText = irk_capture_ns.class_("IRKCaptureLabelText", text.Text)
 
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
         cv.Optional(CONF_BLE_NAME): text.text_schema(IRKCaptureText),
-        # Label attached to the next new device captured this session; a
-        # wizard sets it right before starting advertising.
+        # Label attached to the next device added to visible history (consumed once).
         cv.Optional(CONF_NEXT_CAPTURE_LABEL): text.text_schema(
             IRKCaptureLabelText, entity_category="config"
         ),
@@ -73,8 +68,6 @@ async def to_code(config):
         cg.add(parent.set_ble_name_text(txt))
 
     if CONF_NEXT_CAPTURE_LABEL in config:
-        # Home Assistant limits the field instead of the device silently
-        # trimming it.
         txt = await text.new_text(
             config[CONF_NEXT_CAPTURE_LABEL], max_length=capture_label_max_len()
         )

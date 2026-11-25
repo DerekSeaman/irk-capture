@@ -11,7 +11,7 @@
 namespace esphome {
 namespace irk_capture {
 
-static constexpr char VERSION[] = "1.7.8";
+static constexpr char VERSION[] = "1.7.9";
 
 //======================== Component lifecycle ========================
 
@@ -23,7 +23,13 @@ void IRKCaptureComponent::setup() {
   ble_name_ = sanitize_ble_name(ble_name_);
   if (ble_name_.empty()) ble_name_ = DEFAULT_BLE_NAME;
 
-  // Initialize mutex for thread-safe access to shared state
+  // Stable for this boot, including NimBLE host recovery. A browser can detect
+  // an MCU reboot even when its next capture has the same sequence number.
+  // Set before anything can fail: the wizard's reboot and profile recovery
+  // commands need it, and refuse a zero boot identity.
+  esp_fill_random(&capture_result_.boot_id, sizeof(capture_result_.boot_id));
+  if (capture_result_.boot_id == 0) capture_result_.boot_id = 1;
+
   state_mutex_ = xSemaphoreCreateMutex();
   if (!state_mutex_) {
     ESP_LOGE(TAG, "CRITICAL: Failed to create state mutex - thread safety compromised!");
@@ -40,11 +46,6 @@ void IRKCaptureComponent::setup() {
     publish_setup_failure_();
     return;
   }
-
-  // Stable for this boot, including NimBLE host recovery. A browser can detect
-  // an MCU reboot even when its next capture has the same sequence number.
-  esp_fill_random(&capture_result_.boot_id, sizeof(capture_result_.boot_id));
-  if (capture_result_.boot_id == 0) capture_result_.boot_id = 1;
 
   // Load persisted BLE profile from NVS (before BLE stack init so GATT is
   // correct)
@@ -82,6 +83,7 @@ void IRKCaptureComponent::setup() {
   // which is called later during BLE stack initialization)
   irk_cache_.clear();
   irk_cache_.reserve(cache_limit_());
+  history_changed_locked_();
   capture_events_ = 0;
   unique_devices_ = 0;
   connection_generation_ = 0;
@@ -132,7 +134,6 @@ void IRKCaptureComponent::setup() {
     ble_name_text_->publish_state(name);
   }
   if (ble_profile_select_) {
-    // Initialize select to persisted profile
     ble_profile_select_->publish_state(ble_profile_ == BLEProfile::KEYBOARD ? "Keyboard"
                                                                             : "Heart Sensor");
   }
@@ -157,7 +158,6 @@ void IRKCaptureComponent::publish_setup_failure_() {
 }
 
 void IRKCaptureComponent::dump_config() {
-  // THREAD-SAFE: Copy state before logging
   std::string name_copy;
   bool adv_state;
   BLEProfile current_profile;
@@ -201,7 +201,7 @@ void IRKCaptureComponent::loop() {
   handle_mac_rotation_(now);
   uint16_t conn_handle_copy;
 
-  // Auto-restart advertising once a scheduled hold-off or retry delay expires
+  // Reconcile unwanted advertising and scheduled advertising restarts.
   bool should_restart_adv = false;
   bool should_stop_unwanted_adv = false;
   {
@@ -232,12 +232,9 @@ void IRKCaptureComponent::loop() {
 
   // Encryption and overall pairing deadlines share termination, retry, and
   // cleanup. Once recovery starts, leave the link to that handler until closed.
-  // Security initiation can dispatch a new connection while this loop is in
-  // progress. Sample time again so its start cannot appear newer than "now".
+  // Earlier loop work can let NimBLE accept a new connection; re-sample now_ms().
   if (handle_connection_timeout_(now_ms())) return;
 
-  // THREAD-SAFE: Check connection state before proceeding with
-  // connection-specific work
   bool is_connected;
   {
     MutexGuard lock(state_mutex_);
@@ -431,7 +428,7 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   }
 }
 
-//======================== Wizard-facing controls (1.7.0) ========================
+//======================== Session controls and status ========================
 
 void IRKCaptureComponent::set_stop_after_capture(bool enabled) {
   MutexGuard lock(state_mutex_);
@@ -454,13 +451,24 @@ LabelUpdateResult IRKCaptureComponent::set_next_capture_label(const std::string&
   // the 12-byte BLE-name cap, and an apostrophe for names like "Dave's iPhone".
   // Everything kept is safe unescaped inside build_history_json()'s strings.
   std::string sanitized;
-  sanitized.reserve(CAPTURE_LABEL_MAX_LEN);
+  sanitized.reserve(value.size());
   for (char c : value) {
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' ||
         c == '-' || c == '_' || c == '\'') {
       sanitized += c;
     }
-    if (sanitized.length() >= CAPTURE_LABEL_MAX_LEN) break;
+  }
+  // Trim surrounding spaces before truncating so leading spaces do not eat into
+  // the length budget and space-only text is rejected instead of stored.
+  const size_t start = sanitized.find_first_not_of(' ');
+  if (start == std::string::npos) {
+    sanitized.clear();
+  } else {
+    sanitized = sanitized.substr(start, sanitized.find_last_not_of(' ') - start + 1);
+    if (sanitized.length() > CAPTURE_LABEL_MAX_LEN) {
+      sanitized.resize(CAPTURE_LABEL_MAX_LEN);
+      sanitized.erase(sanitized.find_last_not_of(' ') + 1);
+    }
   }
   if (sanitized.empty() && !value.empty()) {
     // Only an empty value clears the label. Text with no supported characters
@@ -486,7 +494,7 @@ LabelUpdateResult IRKCaptureComponent::set_next_capture_label(const std::string&
   return { true, sanitized };
 }
 
-SessionState IRKCaptureComponent::get_session_state() {
+SessionState IRKCaptureComponent::get_session_state(uint32_t known_history_version) {
   // One lock for everything a status page shows. Reading the same values
   // through the individual getters takes state_mutex_ once per value, several
   // times a second, in competition with the NimBLE task during pairing.
@@ -494,7 +502,11 @@ SessionState IRKCaptureComponent::get_session_state() {
   std::vector<IRKCacheEntry> cache_copy;
   {
     MutexGuard lock(state_mutex_);
-    cache_copy = irk_cache_;
+    state.history_version = history_version_;
+    // An unchanged history needs neither the copy under the lock nor the
+    // formatting after it; the caller keeps the JSON it already has.
+    state.history_changed = known_history_version != history_version_;
+    if (state.history_changed) cache_copy = irk_cache_;
     state.next_capture_label = next_capture_label_;
     state.advertised_name = advertised_name_();
     state.profile = ble_profile_;
@@ -504,8 +516,21 @@ SessionState IRKCaptureComponent::get_session_state() {
     state.bond_clear = bond_clear_result_;
     state.identity_refresh = identity_refresh_result_;
   }
-  state.history_json = format_history_json_(cache_copy);
+  if (state.history_changed)
+    state.history_json = format_history_json_(cache_copy);
+  else
+    state.history_json.clear();
   return state;
+}
+
+LiveControls IRKCaptureComponent::get_live_controls() {
+  MutexGuard lock(state_mutex_);
+  LiveControls controls;
+  controls.next_capture_label = next_capture_label_;
+  controls.profile = ble_profile_;
+  controls.advertising_requested = advertising_requested_;
+  controls.stop_after_capture = stop_after_capture_;
+  return controls;
 }
 
 const char* IRKCaptureComponent::status_value_locked_(uint32_t now) {

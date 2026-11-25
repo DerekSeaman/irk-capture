@@ -105,60 +105,51 @@ enum class BLEProfile : uint8_t {
 };
 
 // Select for BLE profile
-class IRKCaptureSelect : public select::Select, public Component {
+class IRKCaptureSelect : public select::Select {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void control(const std::string& value) override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
 };
 
 // Text input for BLE name
-class IRKCaptureText : public text::Text, public Component {
+class IRKCaptureText : public text::Text {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void control(const std::string& value) override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
 };
 
-// Text sensor for IRK/Address output
-class IRKCaptureTextSensor : public text_sensor::TextSensor, public Component {
- public:
-  void setup() override {
-  }
-  void dump_config() override;
-};
+// Text sensor for IRK Capture outputs (IRK, addresses, check, status)
+class IRKCaptureTextSensor : public text_sensor::TextSensor {};
 
 // Switch for advertising control
-class IRKCaptureSwitch : public switch_::Switch, public Component {
+class IRKCaptureSwitch : public switch_::Switch {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void write_state(bool state) override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
 };
 
-// Button for new MAC
-class IRKCaptureButton : public button::Button, public Component {
+// Button to refresh BLE identity (rotate MAC and adopt a generated name)
+class IRKCaptureButton : public button::Button {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void press_action() override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
@@ -166,13 +157,12 @@ class IRKCaptureButton : public button::Button, public Component {
 
 // Button that clears capture history and requests a bond-store wipe without
 // rotating the advertised address.
-class IRKCaptureForgetBondsButton : public button::Button, public Component {
+class IRKCaptureForgetBondsButton : public button::Button {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void press_action() override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
@@ -180,27 +170,24 @@ class IRKCaptureForgetBondsButton : public button::Button, public Component {
 
 // Switch: stop advertising automatically once a capture publishes, instead of
 // continuing to hunt for more unique devices this session.
-class IRKCaptureStopAfterCaptureSwitch : public switch_::Switch, public Component {
+class IRKCaptureStopAfterCaptureSwitch : public switch_::Switch {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void write_state(bool state) override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
 };
 
-// Text input: label attached to the next new device this session captures.
-// Consumed, and cleared in the UI, the moment a new identity is cached.
-class IRKCaptureLabelText : public text::Text, public Component {
+// Text input: consume-once label for the next device added or restored to visible history.
+class IRKCaptureLabelText : public text::Text {
  public:
   void set_parent(IRKCaptureComponent* parent) {
     parent_ = parent;
   }
   void control(const std::string& value) override;
-  void dump_config() override;
 
  protected:
   IRKCaptureComponent* parent_ { nullptr };
@@ -257,7 +244,11 @@ struct PublishDecision {
 
 // The session values a status page shows, copied under a single lock.
 struct SessionState {
+  // Left empty, with history_changed false, when the caller already holds
+  // the history for history_version.
   std::string history_json { "[]" };
+  uint32_t history_version { 0 };
+  bool history_changed { true };
   std::string next_capture_label;
   std::string advertised_name;
   BLEProfile profile { BLEProfile::KEYBOARD };
@@ -268,7 +259,16 @@ struct SessionState {
   IdentityRefreshResult identity_refresh;
 };
 
-// Free-function helpers (external linkage). Definitions live in the .cpp.
+// The controls a status request overlays on the wizard's periodic snapshot,
+// read under one lock so they agree with each other.
+struct LiveControls {
+  std::string next_capture_label;
+  BLEProfile profile { BLEProfile::KEYBOARD };
+  bool advertising_requested { false };
+  bool stop_after_capture { false };
+};
+
+// GAP event handlers (irk_capture_gap.cpp) and IRK output helper (irk_capture_history.cpp).
 int handle_gap_connect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
 int handle_gap_disconnect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
 int handle_gap_enc_change(class IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -294,8 +294,7 @@ class IRKCaptureComponent : public Component {
     capture_triggers_.push_back(trigger);
   }
 
-  // Friend functions for GAP event handlers and helpers (access private
-  // members)
+  // GAP event handlers and IRK output helper.
   friend int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev);
   friend int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -404,32 +403,31 @@ class IRKCaptureComponent : public Component {
                               bool stop_after_result = false, IrkCheck check = IrkCheck::UNCHECKED);
   void publish_effective_mac();
 
-  // New in 1.7.0: wizard-facing runtime controls (see README "Home Assistant
-  // Entities"). These are additive and default OFF so existing continuous
-  // multi-capture behavior is unchanged unless a user opts in.
+  // Wizard-facing runtime controls and session snapshots.
   void set_stop_after_capture(bool enabled);
   bool get_stop_after_capture();
   std::string get_next_capture_label();
   // Longest capture label kept; text.py gives the Home Assistant entity the
   // same limit.
   static constexpr size_t CAPTURE_LABEL_MAX_LEN = 24;
-  // Sanitizes, stores, and returns the label for the next device added to
-  // visible history (consumed once). Keeps letters, digits, spaces, '-', '_'
-  // and apostrophes, up to CAPTURE_LABEL_MAX_LEN characters. "" clears it. A
-  // non-empty value with none of those is refused and the label is kept.
+  // Sanitizes, trims, stores, and returns the label for the next device added
+  // or restored to visible history (consumed once). Keeps [A-Za-z0-9 _-'] up
+  // to CAPTURE_LABEL_MAX_LEN chars; "" clears it; unusable/space-only text is
+  // rejected and the current label kept.
   LabelUpdateResult set_next_capture_label(const std::string& value);
   // Clears visible history, retaining deduplication/capture accounting. The
   // NimBLE task clears stored bonds only when no peer is connected.
   void forget_all_bonds();
   BondClearResult request_bond_clear();
   BondClearResult get_bond_clear_result();
-  // This session's captures as a JSON array of {mac, irk, label, reconnects}.
-  // Served over HTTP by the wizard rather than published as an entity: Home
-  // Assistant caps a state at 255 characters and shows anything longer as
-  // unknown, which this passes at the third device.
+  // Session captures as JSON [{mac, irk, label, reconnects, verification}].
+  // Served over HTTP rather than an HA entity (HA caps entity states at 255 chars).
   std::string build_history_json();
-  // Thread-safe snapshot for a status page; includes build_history_json().
-  SessionState get_session_state();
+  // Thread-safe snapshot for a status page, including visible capture history
+  // JSON. Pass the history_version of the last state taken to skip copying and
+  // reformatting a history that has not changed since; 0 always builds it.
+  SessionState get_session_state(uint32_t known_history_version = 0);
+  LiveControls get_live_controls();
 
  protected:
   // Configuration/state
@@ -443,9 +441,8 @@ class IRKCaptureComponent : public Component {
   bool generated_name_active_ { false };
   // Same-value manual accepts supersede older GAP writes without another rotation.
   uint32_t ble_name_generation_ { 0 };
-  // Set when a name is entered in Home Assistant while in the Keyboard
-  // profile. Until then, and again after any reboot, Keyboard advertises as
-  // "Logitech K380".
+  // Set when a custom or generated name overrides the Keyboard default
+  // ("Logitech K380"); resets on reboot or when "Logitech K380" is re-applied.
   bool keyboard_name_custom_ { false };
   std::string manufacturer_name_ { "ESP32" };  // BLE Device Info manufacturer
   bool continuous_mode_ { true };              // Keep advertising after captures
@@ -476,7 +473,7 @@ class IRKCaptureComponent : public Component {
   bool sec_retry_done_ { false };
   uint32_t sec_init_time_ms_ { 0 };
   uint32_t adv_restart_time_ { 0 };  // When to restart advertising after a hold-off; 0 = none
-  // When to retry a stop that could not get ble_op_mutex_; 0 = no retry pending.
+  // When to retry an unsuccessful stop (lock busy or radio still active); 0 = none.
   uint32_t adv_stop_retry_time_ { 0 };
   // When the Bluetooth host began to be unsynced (boot or a host reset); 0 once
   // it syncs. Lets a host that never comes up be reported instead of ignored.
@@ -522,6 +519,13 @@ class IRKCaptureComponent : public Component {
     IrkCheck verification { IrkCheck::UNCHECKED };
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
+  // Caller holds state_mutex_. Every change to irk_cache_ must call this so
+  // get_session_state() rebuilds the history. Never 0, which callers pass to
+  // mean "no history yet".
+  uint32_t history_version_ { 1 };
+  void history_changed_locked_() {
+    if (++history_version_ == 0) history_version_ = 1;
+  }
   // Most entries irk_cache_ holds before the oldest is evicted. The floor is
   // well above the default capture limit on purpose: advertising can be turned
   // back on after the limit is reached, and devices captured then must not
@@ -583,12 +587,14 @@ class IRKCaptureComponent : public Component {
   bool bond_clear_pending_ { false };
   uint32_t bond_clear_host_generation_ { 0 };
   BondClearResult bond_clear_result_;
-  // Completion disconnects execute on the host task, where handle reuse cannot
-  // interleave with the generation check. The same worker queues their wake-up.
+  // Deferred disconnects (post-capture and MAC rotation) run on the host task
+  // so handle reuse cannot interleave with the generation check.
   uint16_t pending_terminate_handle_ { BLE_HS_CONN_HANDLE_NONE };
   uint32_t pending_terminate_generation_ { 0 };
   const char* pending_terminate_context_ { nullptr };  // String literal only
   bool pending_terminate_for_rotation_ { false };
+  uint8_t pending_terminate_retries_ { 0 };      // Failed attempts of a rotation disconnect
+  uint32_t pending_terminate_retry_time_ { 0 };  // Earliest retry after a transient failure
   bool pending_terminate_busy_logged_ { false };
 
   // Wizard-facing session state (see README). The entity pointers are set
@@ -598,9 +604,9 @@ class IRKCaptureComponent : public Component {
   IRKCaptureStopAfterCaptureSwitch* stop_after_capture_switch_ { nullptr };
   IRKCaptureLabelText* next_capture_label_text_ { nullptr };
 
-  // Auto-off advertising after any publish.
+  // Auto-off advertising after a genuine capture (excludes bonded reconnects).
   bool stop_after_capture_ { false };
-  // Consumed by the next new cache entry.
+  // Consumed by the next device added or restored to visible history.
   std::string next_capture_label_;
   // Caller holds state_mutex_. Clears the label and stages the same for its
   // entity, which would otherwise keep showing a label that is no longer armed.
@@ -611,18 +617,16 @@ class IRKCaptureComponent : public Component {
   }
   // Avoids redundant status publishes. Main task only; not locked.
   std::string last_status_value_;
-  // Terminal status belongs to last_result_generation_, just like the IRK
-  // sensor. NONE also covers ordinary bonded reconnects (no capture event).
-  // FAILED: a pairing ended without a result (encryption failed, or the IRK
-  // never became readable). It is shown for the hold period only.
+  // CAPTURED/NO_IRK belong to last_result_generation_ (held while that link
+  // stays up or during the hold window). FAILED belongs to failed_generation_
+  // (encryption failure, poll give-up, or timeout) and is shown for the hold
+  // period only. NONE also covers ordinary bonded reconnects.
   enum class CaptureStatus { NONE, CAPTURED, NO_IRK, FAILED };
   CaptureStatus capture_status_ { CaptureStatus::NONE };
   uint32_t status_result_hold_until_ { 0 };
 
-  // Deferred entity publishing. ESPHome entity publish_state() is not safe to
-  // call from the NimBLE task, so BLE-context code stages values here (under
-  // state_mutex_) and the main-task loop() drains them via
-  // flush_pending_publishes_().
+  // Deferred entity publishing: non-main tasks stage values under state_mutex_
+  // and loop() drains them via flush_pending_publishes_().
   bool pending_adv_pub_ { false };
   bool pending_irk_pub_ { false };
   std::string pending_irk_hex_;
@@ -631,10 +635,8 @@ class IRKCaptureComponent : public Component {
   uint32_t last_result_generation_ { 0 };  // Orders completed pairing outcomes across delayed reads
   bool pending_effmac_pub_ { false };
   std::string pending_effmac_;
-  // Config entities can now be changed from two places (the HA entity itself
-  // and the on-device wizard's HTTP API, which runs on httpd's own task), so
-  // their entity state is staged here and published from the main task like
-  // everything else rather than written directly from the caller's context.
+  // Staged config-entity publishes (mutated from HA, httpd, or NimBLE tasks;
+  // drained on the main task).
   bool pending_stop_after_capture_pub_ { false };
   bool pending_label_pub_ { false };
   std::string pending_label_val_;
@@ -673,42 +675,19 @@ class IRKCaptureComponent : public Component {
     bool bond_cleared { false };
   } connection_timeout_;
 
-  // FreeRTOS mutex for thread-safe access to shared state
-  // Protects: timer queues, conn_handle_, connected_, advertising_,
-  //           advertising_requested_, advertising_start_attempts_, advertising_failure_log_time_,
-  //           random_address_ready_, host_generation_,
-  //           pairing_start_time_,
-  //           ble_name_, ble_name_generation_, identity_refresh_pending_, generated_name_active_,
-  //           keyboard_name_custom_, ble_profile_,
-  //           manufacturer_name_,
-  //           mac_rotation_state_, pending_mac_,
-  //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
-  //           mac_rotation_cleanup_pending_, mac_rotation_prepared_, mac_rotation_cleanup_failed_,
-  //           failed_generation_,
-  //           adv_restart_time_, capture_events_,
-  //           unique_devices_, irk_cache_ (deduplication state),
-  //           capture_result_, capture_result_generation_,
-  //           pending_capture_events_, pending_capture_event_drops_,
-  //           bond_clear_pending_, bond_clear_host_generation_, bond_clear_result_,
-  //           connection_generation_, connection_origin_,
-  //           enc_ready_, enc_time_, sec_retry_done_, sec_init_time_ms_,
-  //           connection_timeout_,
-  //           irk_gave_up_, irk_last_try_ms_ (pairing/polling state),
-  //           every pending_* staging field, stop_after_capture_, next_capture_label_,
-  //           last_result_generation_, capture_status_, status_result_hold_until_,
-  //           adv_stop_retry_time_, host_wait_since_, host_wait_log_time_,
-  //           irk_read_error_logged_, identity_refresh_result_
-  // Not protected, because only the main task touches them: last_loop_,
-  // last_notify_, last_status_value_.
-  // Not protected, because it never changes at runtime: capture_triggers_ is
-  // filled by generated setup code before NimBLE starts, then only read.
-  // publish_irk_to_sensors() checks it from BLE contexts; the triggers
-  // themselves fire only on the main task, in flush_pending_publishes_().
+  // Protects all mutable shared state (connection/pairing/timer/cache/
+  // rotation/bond-clear/termination state and pending_* staging fields).
+  // Exceptions:
+  // - Main-task only: last_loop_, last_notify_, last_status_value_
+  // - Atomic: host_synced_
+  // - Fixed before the host starts: entity pointers, capture_triggers_,
+  //   continuous_mode_, max_captures_, bond_clear_task_
+  // - NPL manages bond_clear_event_ queue state. Its callback and argument
+  //   are set before the host starts.
   SemaphoreHandle_t state_mutex_ { nullptr };
 
-  // Serializes BLE control operations that can be called from both NimBLE and
-  // ESPHome contexts (start/stop advertising, device-name updates, MAC
-  // changes).
+  // Serializes BLE host control calls across NimBLE and ESPHome tasks
+  // (advertising start/stop, disconnects, GAP name updates, MAC changes).
   SemaphoreHandle_t ble_op_mutex_ { nullptr };
 
   // Internal helpers
@@ -731,7 +710,7 @@ class IRKCaptureComponent : public Component {
     uint32_t name_generation;
   };
   bool request_mac_rotation_(bool refresh_name, const NameChange* name_change = nullptr);
-  // Both: caller holds state_mutex_.
+  // Caller holds state_mutex_.
   bool rotation_current_locked_(uint32_t generation, bool require_idle_link = true) const;
   void abort_rotation_locked_();
   bool adv_start_current_locked_(uint32_t host_generation, uint32_t rotation_generation) const;
@@ -808,8 +787,9 @@ class IRKCaptureComponent : public Component {
   // drained only on the ESPHome main task in loop().
   // Takes every staged publish, clearing its pending_* flag, under one lock.
   PendingPublishBatch take_pending_publishes_();
-  // Main task only. Write the IRK and MAC sensors, and Status when it changed.
+  // Main task only. Publish the IRK, identity MAC, and IRK check sensors.
   void publish_result_entities_(const std::string& irk, const std::string& mac, IrkCheck check);
+  // Main task only. Publish Status when it changes.
   void publish_status_if_changed_(const char* status);
   void flush_pending_publishes_();
   // Reboots from the main loop. Safe to call from any task, including after

@@ -203,10 +203,15 @@ ol.pair li{margin-bottom:5px}
 </div>
 <script>
 function el(id){return document.getElementById(id)}
-var lastHistKey = null;   // history last rendered, see render()
+var lastHistKey = null;   // history last rendered, see renderHistory()
 var wizStep = 0;          // 0 = panel view
 var lastData = null;
 var labelDirty = false;
+var wizLabelDirty = false;   // wizard label edited since it was last filled or saved
+var wizLabelEdit = 0;        // bumped on every wizard label edit or reset
+var wizLabelSave = null;     // {run, edit} of the save in flight
+var wizardRun = 0;           // bumped each time the wizard opens
+var wizLabelVisit = 0;       // bumped each time step 2 is entered
 var labelEdit = 0;
 var pendingLabelSave = null;
 var awaitingCapture = false;
@@ -403,11 +408,17 @@ async function trackReboot(url,body,profile,fromWizard){
 function showPanel(){ cancelCapture(true); wizStep=0; el('wizView').classList.add('hide'); el('panelView').classList.remove('hide');
   window.scrollTo(0,0); refresh(); }
 function showWizard(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback();
+  // A save from an earlier run must neither block nor steer this one.
+  ++wizardRun; wizLabelSave=null;
   if(!pendingReboot) wizardProfileReady=false;
+  // A new run starts from the device's pending label, not the last run's text.
+  resetWizardLabel();
   wizGo(1); el('panelView').classList.add('hide'); el('wizView').classList.remove('hide');
   window.scrollTo(0,0); }
 function wizGo(n){
   if(wizStep===4 && n!==4 && n!==5) cancelCapture(true);
+  // A label save from an earlier visit to step 2 must not steer this one.
+  if(n===2 && wizStep!==2){ ++wizLabelVisit; wizLabelSave=null; }
   wizStep=n;
   for(var i=1;i<=5;i++) el('step'+i).classList.toggle('hide', i!==n);
   document.querySelectorAll('.steps .s').forEach(function(s){
@@ -420,8 +431,33 @@ function wizGo(n){
 }
 
 /* ---------- wizard actions ---------- */
+function resetWizardLabel(){ wizLabelDirty=false; ++wizLabelEdit; el('wizLabel').value=''; }
 async function wizSaveLabel(){
-  if(await action('/api/label',{label:el('wizLabel').value})) wizGo(3);
+  if(wizLabelSave) return;
+  var request={run:wizardRun, visit:wizLabelVisit, edit:wizLabelEdit}; wizLabelSave=request;
+  // Only a reply to the step the user is still on may show an error or move
+  // the wizard: they may have left it, gone Back, or started a new run.
+  var current=function(){
+    return wizStep===2 && request.run===wizardRun && request.visit===wizLabelVisit;
+  };
+  var saved=null;
+  clearError();
+  try{ saved=await post('/api/label',{label:el('wizLabel').value}); refresh(); }
+  catch(e){ if(current()) showError(e); }
+  finally{ if(wizLabelSave===request) wizLabelSave=null; }
+  if(!saved) return;
+  // The device holds this label now, whatever the page does next.
+  if(typeof saved.label==='string' && lastData) lastData.next_capture_label=saved.label;
+  if(!current()) return;
+  // Text typed while this save was in flight is newer than what it stored.
+  // Next was already pressed, so save that text rather than discard it.
+  if(request.edit!==wizLabelEdit) return wizSaveLabel();
+  // Show what the device stored, which may drop characters it rejects. The
+  // step change below renders the cached status, so it must agree, or a
+  // cleared label would be filled back in from it.
+  if(typeof saved.label==='string') el('wizLabel').value=saved.label;
+  wizLabelDirty=false;
+  wizGo(3);
 }
 function hideClearMessage(id){
   el(id).textContent=''; el(id).classList.add('hide'); el(id).classList.remove('ok');
@@ -478,8 +514,9 @@ async function wizStart(){
   }catch(e){
     if(attempt.run!==captureRun) return;
     captureFailed('Could not start capture. Go back a step and try again.');
-    // A lost response may still have delivered START. Queue OFF to cancel it.
-    action('/api/advertising',{on:false});
+    // A lost response may still have delivered START. Queue OFF to cancel it,
+    // but skip when an HTTP rejection proves START was refused.
+    if(!e.httpStatus) action('/api/advertising',{on:false});
     showError(e); if(lastData) render(lastData);
   }
 }
@@ -488,18 +525,31 @@ function wizStop(){
   cancelCapture(false); captureMessage='Capture stopped. Go back a step to start again.';
   action('/api/advertising',{on:false}); if(lastData) render(lastData);
 }
-function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizardProfileReady=false; el('wizLabel').value=''; wizGo(1); }
+function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizardProfileReady=false; resetWizardLabel(); wizGo(1); }
 
+function copyViaTextarea(txt){
+  var ta=document.createElement('textarea');
+  try{
+    ta.value=txt; ta.setAttribute('readonly','');
+    ta.style.position='fixed'; ta.style.top='0'; ta.style.left='0';
+    ta.style.opacity='0'; ta.style.pointerEvents='none';
+    document.body.appendChild(ta);
+    ta.select();
+    if(ta.setSelectionRange) ta.setSelectionRange(0, txt.length);
+    return !!document.execCommand('copy');
+  }catch(e){ return false; }
+  finally{ if(ta.parentNode) document.body.removeChild(ta); }
+}
 function copyText(txt, done){
   // navigator.clipboard is unavailable over plain HTTP, so fall back.
   if(navigator.clipboard && window.isSecureContext){
-    navigator.clipboard.writeText(txt).then(function(){done(true)},function(){done(false)});
+    navigator.clipboard.writeText(txt).then(
+      function(){done(true)},
+      function(){done(copyViaTextarea(txt))}
+    );
     return;
   }
-  try{
-    var ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta);
-    ta.select(); var ok=document.execCommand('copy'); document.body.removeChild(ta); done(ok);
-  }catch(e){ done(false); }
+  done(copyViaTextarea(txt));
 }
 function copyIrk(){
   if(!acceptedCapture) return;
@@ -542,6 +592,7 @@ async function savePanelLabel(){
 }
 el('label').addEventListener('input',function(){labelDirty=true; ++labelEdit;});
 el('label').addEventListener('blur',savePanelLabel);
+el('wizLabel').addEventListener('input',function(){ wizLabelDirty=true; ++wizLabelEdit; });
 el('profile').addEventListener('change',function(){return changeProfile(el('profile').value)});
 el('wizProfile').addEventListener('change',function(){return changeProfile(el('wizProfile').value,true)});
 el('advBtn').addEventListener('click',function(){
@@ -604,7 +655,6 @@ function reportIdentityFailure(d){
 }
 function renderHistory(d){
   var history=[];
-  // The device sends history as a real JSON array, not a string.
   if(Array.isArray(d.history)) history=d.history;
   // Rebuild only when the list changes, so a Copy button's "Copied" state
   // survives the next status poll.
@@ -654,8 +704,8 @@ function advanceCapture(d){
         var result=d.capture_result;
         if(result && result.boot_id===attempt.boot_id && newer(result.sequence,attempt.baseline) &&
            /^[0-9a-f]{32}$/i.test(result.irk || '')){
-          // Freeze the accepted key and MAC; later captures and failures belong
-          // to subsequent runs, even when the browser missed the status hold.
+          // Freeze the accepted capture; later captures/failures belong to
+          // subsequent runs, even if the browser missed the status hold.
           acceptedCapture={boot_id:result.boot_id,sequence:result.sequence,irk:result.irk,
             device_mac:result.device_mac,verification:result.verification};
           cancelCapture(false); return true;
@@ -707,7 +757,8 @@ function render(d){
   /* wizard */
   if(wizStep===0) return;
   el('wizProfile').value = pendingReboot && pendingReboot.profile ? pendingReboot.profile : d.profile;
-  if(document.activeElement !== el('wizLabel') && !el('wizLabel').value && d.next_capture_label)
+  // An empty field the user cleared stays empty; only an untouched one fills.
+  if(!wizLabelDirty && document.activeElement !== el('wizLabel') && !el('wizLabel').value && d.next_capture_label)
     el('wizLabel').value = d.next_capture_label;
 
   if(wizStep===4){
@@ -791,7 +842,7 @@ function refresh(){
         // request that got no answer counts toward the reconnecting banner.
         failCount=0; showStatusError(e.message);
       }else{
-        // A profile change reboots the device; say so instead of going silent.
+        // Count consecutive unreachable polls for the offline/reconnecting banner.
         ++failCount;
       }
     }finally{

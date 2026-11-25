@@ -148,8 +148,7 @@ static bool authorized(httpd_req_t* req) {
 // forces a preflight, which this server never answers, so a hostile page
 // can't reach these handlers even though the browser sends LAN requests.
 static bool json_request(httpd_req_t* req) {
-  // The buffer is sized from the header. A fixed 64 bytes rejected a valid
-  // JSON type as soon as its parameters ran past the end of the buffer.
+  // Cap header allocation while allowing long Content-Type parameters.
   static constexpr size_t MAX_CONTENT_TYPE = 256;
   const size_t len = httpd_req_get_hdr_value_len(req, "Content-Type");
   bool is_json = false;
@@ -253,10 +252,8 @@ void IRKWizardComponent::set_auth(const std::string& username, const std::string
 }
 
 void IRKWizardComponent::fresh_identity() {
-  // irk_capture owns the naming: it derives the name from the address that
-  // actually took effect, which only the rotation knows. Deferring keeps the
-  // BLE work off esp_http_server's task and lets this request answer first, so
-  // the page gets its response instead of the connection dropping mid-reply.
+  // Defer to the main task to keep BLE work off httpd's task and serialize
+  // identity refreshes with Home Assistant controls.
   this->defer([this]() {
     ESP_LOGI(TAG, "Wizard: refresh BLE identity requested");
     if (irk_capture_) irk_capture_->refresh_identity();
@@ -264,10 +261,8 @@ void IRKWizardComponent::fresh_identity() {
 }
 
 void IRKWizardComponent::set_profile(bool keyboard) {
-  // set_ble_profile() publishes the BLE Profile and BLE Device Name entities
-  // itself rather than staging them, and entity publishes belong on the main
-  // task. Deferring also lets this request answer before the reboot the
-  // switch schedules.
+  // set_ble_profile() publishes entities directly (main task only) and
+  // schedules a reboot; deferring keeps both off httpd's task.
   this->defer([this, keyboard]() {
     const auto requested =
         keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
@@ -344,22 +339,27 @@ void IRKWizardComponent::refresh_snapshot_() {
   if (!irk_capture_) return;
   WizardSnapshot next;
   next.status = status_sensor_ ? status_sensor_->state : "idle";
-  // One lock on irk_capture's state for the whole snapshot.
-  irk_capture::SessionState core = irk_capture_->get_session_state();
-  // Shared, not copied. With a long history this is by far the largest value
-  // the wizard holds, and every status request used to copy it twice more.
-  if (core.history_json.empty()) core.history_json = "[]";
-  next.history_json = std::make_shared<const std::string>(std::move(core.history_json));
+  // One lock on irk_capture's state for the whole snapshot. An unchanged
+  // history comes back empty, so keep the one already shared.
+  irk_capture::SessionState core = irk_capture_->get_session_state(history_version_);
+  if (core.history_changed) {
+    // Shared, not copied. With a long history this is by far the largest value
+    // the wizard holds, and every status request used to copy it twice more.
+    if (core.history_json.empty()) core.history_json = "[]";
+    next.history_json = std::make_shared<const std::string>(std::move(core.history_json));
+  } else {
+    MutexGuard lock(snapshot_mutex_);
+    next.history_json = snapshot_.history_json;
+  }
+  history_version_ = core.history_version;
   next.irk = irk_sensor_ ? irk_sensor_->state : "";
   next.device_mac = device_mac_sensor_ ? device_mac_sensor_->state : "";
   next.effective_mac = effective_mac_sensor_ ? effective_mac_sensor_->state : "";
   next.next_capture_label = core.next_capture_label;
   const bool keyboard = core.profile == irk_capture::BLEProfile::KEYBOARD;
   next.profile = keyboard ? "Keyboard" : "Heart Sensor";
-  // get_ble_name() is the name on air, already accounting for the Keyboard
-  // profile's "Logitech K380" and for anything that has replaced it since
-  // boot. Deciding it here instead would send the user hunting for a name the
-  // device stopped advertising the moment the identity was refreshed.
+  // Capture owns the selected advertising name, including profile defaults,
+  // renames, and identity refreshes. It can select a name while the radio is off.
   next.advertised_name = core.advertised_name;
   next.advertising = core.advertising_requested;
   next.stop_after_capture = core.stop_after_capture;
@@ -387,7 +387,16 @@ static esp_err_t handle_post_stop_after_capture(httpd_req_t* req);
 // The wizard has no reason to be framed or to have its responses reinterpreted
 // as another type. Without these, a page on another origin could overlay the
 // wizard in a frame and trick a signed-in user into pressing its controls.
+// The page is one inline document that only fetches its own API, so the policy
+// allows exactly that; frame-ancestors is the modern form of X-Frame-Options,
+// which stays for older browsers. httpd keeps at most max_resp_headers (8)
+// extra headers per response; the busiest, a 429, sends 7.
 static void set_security_headers(httpd_req_t* req) {
+  httpd_resp_set_hdr(req, "Content-Security-Policy",
+                     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                     "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+                     "form-action 'none'");
+  httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
   httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
   httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
 }
@@ -395,10 +404,8 @@ static void set_security_headers(httpd_req_t* req) {
 static void set_json_headers(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
   set_security_headers(req);
-  // /api/status carries the captured IRK and the peer's identity address, which
-  // permanently deanonymize a phone. no-store keeps them out of the browser's
-  // disk cache and out of any intermediary, rather than merely requiring
-  // revalidation the way the page's no-cache does.
+  // /api/status returns sensitive IRKs and identity MACs; no-store prevents
+  // disk/proxy caching (unlike the HTML page's no-cache).
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 }
 
@@ -549,7 +556,8 @@ void IRKWizardComponent::loop() {
   }
 
   // Each refresh takes irk_capture's state_mutex_, which the NimBLE task also
-  // contends for during pairing, and copies the capture history. Poll briskly
+  // contends for during pairing, and copies the capture history whenever it
+  // has changed. Poll briskly
   // only while someone is actually using the wizard; otherwise back right off.
   uint32_t now = millis();
   const bool active = (now - last_request_ms_.load(std::memory_order_relaxed)) < 30000;
@@ -564,9 +572,8 @@ void IRKWizardComponent::dump_config() {
 }
 
 //======================== Page ========================
-// The page lives in wizard_page.html. __init__.py gzips it at build time and
-// hands it over as a flash array, so it costs about a quarter of its source
-// size and is sent as-is with Content-Encoding: gzip.
+// __init__.py gzips wizard_page.html at build time into a flash array.
+// The HTTP handler sends that array as-is with Content-Encoding: gzip.
 
 static esp_err_t handle_index(httpd_req_t* req) {
   if (!authorized(req) || !bodyless_request(req)) return unread_body_result(req);
@@ -588,42 +595,67 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
   WizardSnapshot s = self->get_snapshot();
   // Editable values and consume-once label updates must be visible immediately,
-  // even when the main task has not rebuilt its periodic snapshot yet.
+  // even when the main task has not rebuilt its periodic snapshot yet. The
+  // same goes for the controls: the page refreshes right after a command, and
+  // a start acknowledged as ready next to stale advertising=false would tell
+  // the user that advertising is off.
   if (self->irk_capture()) {
-    s.next_capture_label = self->irk_capture()->get_next_capture_label();
-    s.profile = self->irk_capture()->get_ble_profile() == irk_capture::BLEProfile::KEYBOARD
-                    ? "Keyboard"
-                    : "Heart Sensor";
+    irk_capture::LiveControls live = self->irk_capture()->get_live_controls();
+    s.next_capture_label = std::move(live.next_capture_label);
+    s.profile = live.profile == irk_capture::BLEProfile::KEYBOARD ? "Keyboard" : "Heart Sensor";
+    s.advertising = live.advertising_requested;
+    s.stop_after_capture = live.stop_after_capture;
   }
 
-  std::string head = "{";
-  head += "\"boot_id\":" + std::to_string(s.capture_result.boot_id) + ",";
-  head += "\"status\":\"" + json_escape(s.status) + "\",";
-  head += "\"next_capture_label\":\"" + json_escape(s.next_capture_label) + "\",";
-  head += "\"advertised_name\":\"" + json_escape(s.advertised_name) + "\",";
-  head += "\"profile\":\"" + json_escape(s.profile) + "\",";
-  head += "\"advertising\":" + std::string(s.advertising ? "true" : "false") + ",";
-  head += "\"effective_mac\":\"" + json_escape(s.effective_mac) + "\",";
-  head += "\"device_mac\":\"" + json_escape(s.device_mac) + "\",";
-  head += "\"irk\":\"" + json_escape(s.irk) + "\",";
-  head += "\"stop_after_capture\":" + std::string(s.stop_after_capture ? "true" : "false") + ",";
-  head += "\"history\":";
-  std::string tail =
-      ",\"capture_result\":{\"boot_id\":" + std::to_string(s.capture_result.boot_id) +
-      ",\"sequence\":" + std::to_string(s.capture_result.sequence) + ",\"irk\":\"" +
-      json_escape(s.capture_result.irk) + "\",\"device_mac\":\"" +
-      json_escape(s.capture_result.device_mac) + "\",\"verification\":\"" +
-      irk_capture::irk_check_name(s.capture_result.verification) + "\"},";
-  tail += "\"capture_start\":{\"operation_id\":" + std::to_string(s.capture_start.operation_id) +
-          ",\"state\":\"" + capture_start_state_name(s.capture_start.state) +
-          "\",\"boot_id\":" + std::to_string(s.capture_start.boot_id) +
-          ",\"sequence\":" + std::to_string(s.capture_start.sequence) + "},";
-  tail += "\"bond_clear\":" + bond_clear_json(s.bond_clear) + ",";
-  tail +=
-      "\"identity_refresh\":{\"operation_id\":" + std::to_string(s.identity_refresh.operation_id) +
-      ",\"state\":\"" + irk_capture::identity_refresh_state_name(s.identity_refresh.state) +
-      "\",\"cleanup_reason\":\"" + json_escape(s.identity_refresh.cleanup_reason) + "\"}";
-  tail += "}";
+  // Appended in place: chained + would build a temporary string for nearly
+  // every field, on every poll, for the life of the device.
+  const auto add_string = [](std::string& out, const char* key, const std::string& value) {
+    out += key;
+    out += json_escape(value);
+    out += '"';
+  };
+  const auto add_number = [](std::string& out, const char* key, uint32_t value) {
+    out += key;
+    out += std::to_string(value);
+  };
+  const auto add_bool = [](std::string& out, const char* key, bool value) {
+    out += key;
+    out += value ? "true" : "false";
+  };
+  std::string head;
+  head.reserve(384);
+  add_number(head, "{\"boot_id\":", s.capture_result.boot_id);
+  add_string(head, ",\"status\":\"", s.status);
+  add_string(head, ",\"next_capture_label\":\"", s.next_capture_label);
+  add_string(head, ",\"advertised_name\":\"", s.advertised_name);
+  add_string(head, ",\"profile\":\"", s.profile);
+  add_bool(head, ",\"advertising\":", s.advertising);
+  add_string(head, ",\"effective_mac\":\"", s.effective_mac);
+  add_string(head, ",\"device_mac\":\"", s.device_mac);
+  add_string(head, ",\"irk\":\"", s.irk);
+  add_bool(head, ",\"stop_after_capture\":", s.stop_after_capture);
+  head += ",\"history\":";
+
+  std::string tail;
+  tail.reserve(384);
+  add_number(tail, ",\"capture_result\":{\"boot_id\":", s.capture_result.boot_id);
+  add_number(tail, ",\"sequence\":", s.capture_result.sequence);
+  add_string(tail, ",\"irk\":\"", s.capture_result.irk);
+  add_string(tail, ",\"device_mac\":\"", s.capture_result.device_mac);
+  tail += ",\"verification\":\"";
+  tail += irk_capture::irk_check_name(s.capture_result.verification);
+  add_number(tail, "\"},\"capture_start\":{\"operation_id\":", s.capture_start.operation_id);
+  tail += ",\"state\":\"";
+  tail += capture_start_state_name(s.capture_start.state);
+  add_number(tail, "\",\"boot_id\":", s.capture_start.boot_id);
+  add_number(tail, ",\"sequence\":", s.capture_start.sequence);
+  tail += "},\"bond_clear\":";
+  tail += bond_clear_json(s.bond_clear);
+  add_number(tail, ",\"identity_refresh\":{\"operation_id\":", s.identity_refresh.operation_id);
+  tail += ",\"state\":\"";
+  tail += irk_capture::identity_refresh_state_name(s.identity_refresh.state);
+  add_string(tail, "\",\"cleanup_reason\":\"", s.identity_refresh.cleanup_reason);
+  tail += "}}";
 
   // Sent in pieces. The history can reach tens of kilobytes, and joining it
   // to the rest would need a second buffer of that size for every request. A
