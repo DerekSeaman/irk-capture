@@ -76,6 +76,15 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
     ESP_LOGD(TAG, "ble_gap_conn_find failed rc=%d (handle may be invalid)", rc);
     return false;
   }
+  {
+    // The caller sampled this handle without the lock. NimBLE reuses handles,
+    // so a replacement peer's descriptor must not be read, and published, under
+    // the earlier connection's generation and origin.
+    MutexGuard lock(state_mutex_);
+    if (!connected_ || conn_handle_ != conn_handle ||
+        connection_generation_ != connection_generation)
+      return false;
+  }
 
   ESP_LOGD(TAG, "Reading bond for peer: %s", addr_to_str(desc.peer_id_addr).c_str());
 
