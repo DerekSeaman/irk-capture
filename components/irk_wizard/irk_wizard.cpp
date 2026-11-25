@@ -387,7 +387,16 @@ static esp_err_t handle_post_stop_after_capture(httpd_req_t* req);
 // The wizard has no reason to be framed or to have its responses reinterpreted
 // as another type. Without these, a page on another origin could overlay the
 // wizard in a frame and trick a signed-in user into pressing its controls.
+// The page is one inline document that only fetches its own API, so the policy
+// allows exactly that; frame-ancestors is the modern form of X-Frame-Options,
+// which stays for older browsers. httpd keeps at most max_resp_headers (8)
+// extra headers per response; the busiest, a 429, sends 7.
 static void set_security_headers(httpd_req_t* req) {
+  httpd_resp_set_hdr(req, "Content-Security-Policy",
+                     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                     "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+                     "form-action 'none'");
+  httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
   httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
   httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
 }
