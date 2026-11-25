@@ -56,6 +56,9 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
     uint32_t connection_generation, bool force_pairing_publish, IrkCheck check) {
   using Reason = PublishDecision::Reason;
   PublishDecision decision;
+  // Nearly every path below changes an entry or the cache itself, so count
+  // every call rather than risk a stale history from a missed field.
+  history_changed_locked_();
   // 64-bit: a 32-bit difference wraps after 49.7 days, which would make a
   // device last published that long ago look as if it had just been published.
   const uint64_t now = (uint64_t) (esp_timer_get_time() / 1000ULL);
@@ -372,6 +375,7 @@ BondClearResult IRKCaptureComponent::request_bond_clear() {
       entry.in_history = false;
       entry.label.clear();
     }
+    history_changed_locked_();
     if (bond_clear_pending_) return bond_clear_result_;
     if (++bond_clear_result_.operation_id == 0) ++bond_clear_result_.operation_id;
     bond_clear_result_.history_cleared = true;

@@ -339,12 +339,19 @@ void IRKWizardComponent::refresh_snapshot_() {
   if (!irk_capture_) return;
   WizardSnapshot next;
   next.status = status_sensor_ ? status_sensor_->state : "idle";
-  // One lock on irk_capture's state for the whole snapshot.
-  irk_capture::SessionState core = irk_capture_->get_session_state();
-  // Shared, not copied. With a long history this is by far the largest value
-  // the wizard holds, and every status request used to copy it twice more.
-  if (core.history_json.empty()) core.history_json = "[]";
-  next.history_json = std::make_shared<const std::string>(std::move(core.history_json));
+  // One lock on irk_capture's state for the whole snapshot. An unchanged
+  // history comes back empty, so keep the one already shared.
+  irk_capture::SessionState core = irk_capture_->get_session_state(history_version_);
+  if (core.history_changed) {
+    // Shared, not copied. With a long history this is by far the largest value
+    // the wizard holds, and every status request used to copy it twice more.
+    if (core.history_json.empty()) core.history_json = "[]";
+    next.history_json = std::make_shared<const std::string>(std::move(core.history_json));
+  } else {
+    MutexGuard lock(snapshot_mutex_);
+    next.history_json = snapshot_.history_json;
+  }
+  history_version_ = core.history_version;
   next.irk = irk_sensor_ ? irk_sensor_->state : "";
   next.device_mac = device_mac_sensor_ ? device_mac_sensor_->state : "";
   next.effective_mac = effective_mac_sensor_ ? effective_mac_sensor_->state : "";
@@ -540,7 +547,8 @@ void IRKWizardComponent::loop() {
   }
 
   // Each refresh takes irk_capture's state_mutex_, which the NimBLE task also
-  // contends for during pairing, and copies the capture history. Poll briskly
+  // contends for during pairing, and copies the capture history whenever it
+  // has changed. Poll briskly
   // only while someone is actually using the wizard; otherwise back right off.
   uint32_t now = millis();
   const bool active = (now - last_request_ms_.load(std::memory_order_relaxed)) < 30000;

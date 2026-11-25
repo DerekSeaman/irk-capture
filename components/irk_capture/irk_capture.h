@@ -244,7 +244,11 @@ struct PublishDecision {
 
 // The session values a status page shows, copied under a single lock.
 struct SessionState {
+  // Left empty, with history_changed false, when the caller already holds
+  // the history for history_version.
   std::string history_json { "[]" };
+  uint32_t history_version { 0 };
+  bool history_changed { true };
   std::string next_capture_label;
   std::string advertised_name;
   BLEProfile profile { BLEProfile::KEYBOARD };
@@ -410,8 +414,10 @@ class IRKCaptureComponent : public Component {
   // Session captures as JSON [{mac, irk, label, reconnects, verification}].
   // Served over HTTP rather than an HA entity (HA caps entity states at 255 chars).
   std::string build_history_json();
-  // Thread-safe snapshot for a status page, including visible capture history JSON.
-  SessionState get_session_state();
+  // Thread-safe snapshot for a status page, including visible capture history
+  // JSON. Pass the history_version of the last state taken to skip copying and
+  // reformatting a history that has not changed since; 0 always builds it.
+  SessionState get_session_state(uint32_t known_history_version = 0);
 
  protected:
   // Configuration/state
@@ -503,6 +509,13 @@ class IRKCaptureComponent : public Component {
     IrkCheck verification { IrkCheck::UNCHECKED };
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
+  // Caller holds state_mutex_. Every change to irk_cache_ must call this so
+  // get_session_state() rebuilds the history. Never 0, which callers pass to
+  // mean "no history yet".
+  uint32_t history_version_ { 1 };
+  void history_changed_locked_() {
+    if (++history_version_ == 0) history_version_ = 1;
+  }
   // Most entries irk_cache_ holds before the oldest is evicted. The floor is
   // well above the default capture limit on purpose: advertising can be turned
   // back on after the limit is reached, and devices captured then must not

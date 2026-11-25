@@ -81,6 +81,7 @@ void IRKCaptureComponent::setup() {
   // which is called later during BLE stack initialization)
   irk_cache_.clear();
   irk_cache_.reserve(cache_limit_());
+  history_changed_locked_();
   capture_events_ = 0;
   unique_devices_ = 0;
   connection_generation_ = 0;
@@ -491,7 +492,7 @@ LabelUpdateResult IRKCaptureComponent::set_next_capture_label(const std::string&
   return { true, sanitized };
 }
 
-SessionState IRKCaptureComponent::get_session_state() {
+SessionState IRKCaptureComponent::get_session_state(uint32_t known_history_version) {
   // One lock for everything a status page shows. Reading the same values
   // through the individual getters takes state_mutex_ once per value, several
   // times a second, in competition with the NimBLE task during pairing.
@@ -499,7 +500,11 @@ SessionState IRKCaptureComponent::get_session_state() {
   std::vector<IRKCacheEntry> cache_copy;
   {
     MutexGuard lock(state_mutex_);
-    cache_copy = irk_cache_;
+    state.history_version = history_version_;
+    // An unchanged history needs neither the copy under the lock nor the
+    // formatting after it; the caller keeps the JSON it already has.
+    state.history_changed = known_history_version != history_version_;
+    if (state.history_changed) cache_copy = irk_cache_;
     state.next_capture_label = next_capture_label_;
     state.advertised_name = advertised_name_();
     state.profile = ble_profile_;
@@ -509,7 +514,10 @@ SessionState IRKCaptureComponent::get_session_state() {
     state.bond_clear = bond_clear_result_;
     state.identity_refresh = identity_refresh_result_;
   }
-  state.history_json = format_history_json_(cache_copy);
+  if (state.history_changed)
+    state.history_json = format_history_json_(cache_copy);
+  else
+    state.history_json.clear();
   return state;
 }
 

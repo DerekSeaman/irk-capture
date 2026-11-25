@@ -175,6 +175,9 @@ class IRKWizardComponent : public Component {
   WizardSnapshot snapshot_;
   CaptureStart capture_start_;  // Protected by snapshot_mutex_, including HTTP writes
   uint32_t last_snapshot_ms_ { 0 };
+  // Main-task-only: irk_capture's history version behind snapshot_.history_json.
+  // 0 until the first refresh, which therefore always builds the history.
+  uint32_t history_version_ { 0 };
   uint32_t last_start_attempt_ms_ { 0 };
   uint8_t start_attempts_ { 0 };
 
