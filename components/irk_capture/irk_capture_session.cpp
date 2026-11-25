@@ -710,7 +710,7 @@ void IRKCaptureComponent::handle_pending_termination_() {
       MutexGuard lock(state_mutex_);
       bool retry_scheduled = false;
       // Brief buffer contention in the host is not a reason to give up.
-      const bool transient = rc == BLE_HS_EBUSY || rc == BLE_HS_ENOMEM;
+      const bool transient = transient_terminate_error(rc);
       if (rotation_waiting && rc != 0 && rc != BLE_HS_EALREADY &&
           mac_rotation_state_ == MacRotationState::REQUESTED &&
           mac_rotation_generation_ == rotation_generation && conn_handle_ == handle &&

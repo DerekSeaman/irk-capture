@@ -384,7 +384,8 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   // Non-blocking disconnect from the NimBLE host task. When ble_op_mutex_ is
   // free this disconnects at once without a worker round-trip; when the main
   // task holds the lock it defers to terminate_bounded_() instead of blocking
-  // the host task.
+  // the host task. A transient failure is handed to the worker as well, whose
+  // retries keep the link from lasting until the 90 s pairing timeout.
   auto terminate_now_or_defer = [&](const char* context) {
     int term_rc = 0;
     bool acquired;
@@ -395,11 +396,10 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
         term_rc = ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
       }
     }
-    if (!acquired) {
+    if (acquired) log_terminate_result(term_rc, context);
+    if (!acquired || transient_terminate_error(term_rc)) {
       self->terminate_bounded_(ev->enc_change.conn_handle, connection_generation, context);
-      return;
     }
-    log_terminate_result(term_rc, context);
   };
 
   if (ev->enc_change.status == 0) {

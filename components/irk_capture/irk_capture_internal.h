@@ -241,6 +241,12 @@ static inline void log_mac(const char* prefix) {
 
 // ble_gap_terminate() returns EALREADY when a disconnect is already under way,
 // for example one started by a timeout or a MAC rotation. That is not a failure.
+// Host resource contention that clears by itself, so a disconnect is worth
+// retrying. ENOMEM_EVT means NimBLE ran out of HCI command buffers.
+static inline bool transient_terminate_error(int rc) {
+  return rc == BLE_HS_EBUSY || rc == BLE_HS_ENOMEM || rc == BLE_HS_ENOMEM_EVT;
+}
+
 static inline void log_terminate_result(int rc, const char* context) {
   if (rc == 0) {
     ESP_LOGD(TAG, "Disconnect %s requested", context);
