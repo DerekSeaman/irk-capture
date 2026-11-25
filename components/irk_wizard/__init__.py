@@ -1,11 +1,9 @@
 """On-device capture wizard: a small esp_http_server serving a guided UI.
 
-Runs on its own port (default 8080), separate from ESPHome's own
-`web_server:` (usually port 80), so it can be added alongside the stock
-entity UI without conflicting with it. Talks to an `irk_capture` instance
-and a handful of its text sensors directly - it does not duplicate any
-capture/BLE logic, only reads published entity state and calls the same
-public control methods the switch/button/text/select platforms use.
+Runs on its own port (default 8080), separate from ESPHome's `web_server:`
+(port 80), so it can coexist with the stock entity UI. Talks directly to an
+`irk_capture` instance and four of its text sensors, delegating all BLE and
+capture logic to `irk_capture`.
 """
 
 import gzip
@@ -19,9 +17,7 @@ from esphome.const import CONF_ID
 from esphome.core import EsphomeError
 
 CODEOWNERS = ["@davidcoulson"]
-# network: the server start waits for a connected network or an active AP, so the
-# network component must be pulled into the build even for a config that
-# does not otherwise declare wifi/ethernet.
+# network: server startup checks network::is_connected() (provided by wifi/ethernet).
 DEPENDENCIES = ["irk_capture", "network", "text_sensor"]
 
 CONF_PAGE_DATA_ID = "page_data_id"
@@ -35,11 +31,10 @@ CONF_EFFECTIVE_MAC_ID = "effective_mac_id"
 
 
 def validate_credential(value):
-    """Accept only credentials a browser sends back unchanged.
+    """Accept only non-empty printable ASCII credentials for HTTP Basic auth.
 
-    Browsers do not agree on how to encode characters outside ASCII for HTTP
-    Basic authentication (UTF-8 or Latin-1), so such a login could never match
-    the value compiled into the firmware.
+    Browsers disagree on non-ASCII Basic auth encoding (UTF-8 vs Latin-1), so
+    restricting to printable ASCII keeps logins consistent across browsers.
     """
     value = cv.string_strict(value)
     if not value:
@@ -77,10 +72,8 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.declare_id(IRKWizardComponent),
             cv.GenerateID(CONF_PAGE_DATA_ID): cv.declare_id(cg.uint8),
             cv.Required(CONF_IRK_CAPTURE_ID): cv.use_id(IRKCaptureComponent),
-            # The four text sensors the wizard displays. These must already be
-            # defined elsewhere in the device YAML (see irk-capture-base.yaml) -
-            # this component only reads their published state, it doesn't create
-            # them, so the same values stay visible in Home Assistant too.
+            # Existing irk_capture text sensors (see irk-capture-base.yaml); the wizard
+            # reads their published state rather than creating duplicate entities.
             cv.Required(CONF_STATUS_ID): cv.use_id(text_sensor.TextSensor),
             cv.Required(CONF_IRK_ID): cv.use_id(text_sensor.TextSensor),
             cv.Required(CONF_DEVICE_MAC_ID): cv.use_id(text_sensor.TextSensor),
@@ -114,15 +107,12 @@ async def to_code(config):
     cg.add(var.set_device_mac_sensor(device_mac))
     effective_mac = await cg.get_variable(config[CONF_EFFECTIVE_MAC_ID])
     cg.add(var.set_effective_mac_sensor(effective_mac))
-    # Gzip the page here rather than shipping it as source text: roughly a
-    # quarter of the flash, and the browser inflates it for free. mtime=0
-    # keeps the output byte-identical between builds.
+    # Gzip the page at build time to about 30% of its original HTML size.
+    # mtime=0 keeps the output byte-identical between builds.
     page_path = Path(__file__).parent / "wizard_page.html"
     try:
         page = page_path.read_bytes()
     except OSError as err:
-        # Without this the build stops on a bare traceback that does not say
-        # which component wanted the file.
         raise EsphomeError(
             f"irk_wizard cannot read its page {page_path}: {err}"
         ) from err
@@ -133,20 +123,13 @@ async def to_code(config):
     cg.add(var.set_port(config[CONF_PORT]))
     cg.add(var.set_auth(config[CONF_USERNAME], config[CONF_PASSWORD]))
 
-    # ESPHome 2026.9+ excludes most built-in ESP-IDF components from the
-    # build unless something asks for them (irk_capture does this for "bt";
-    # esp_http_server needs the same treatment and can't assume web_server:
-    # is configured to pull it in).
+    # ESPHome 2026.9+ excludes built-in ESP-IDF components unless requested
+    # (cannot assume web_server: is configured to pull in esp_http_server).
     if hasattr(esp32, "include_builtin_idf_component"):
         esp32.include_builtin_idf_component("esp_http_server")
 
-    # A second esp_http_server instance (this one) alongside ESPHome's own
-    # web_server: on port 80 - plus API, OTA and mDNS - exhausts the default
-    # LWIP socket ceiling before our server even opens its control socket
-    # (fails as "error in creating ctrl socket (112)" == EHOSTDOWN, LWIP's
-    # generic failure when a UDP connect() can't get a socket/route at all).
-    # web_server:'s own httpd alone can claim close to its max_open_sockets
-    # (default 7) plus control/listen sockets; 16 wasn't enough headroom on
-    # top of that plus API/OTA/mDNS/WiFi's own sockets. irk_wizard.cpp also
-    # trims its own max_open_sockets to keep its ask small.
+    # Running a second esp_http_server alongside ESPHome's web_server: (default
+    # max_open_sockets=7 plus listen/ctrl sockets), API, OTA, and mDNS can
+    # exhaust lwIP's default socket limit (16 was not enough headroom).
+    # irk_wizard.cpp also trims its own max_open_sockets to 4.
     esp32.add_idf_sdkconfig_option("CONFIG_LWIP_MAX_SOCKETS", 32)
