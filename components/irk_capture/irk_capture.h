@@ -503,7 +503,8 @@ class IRKCaptureComponent : public Component {
   uint8_t mac_rotation_retries_ { 0 };      // Retry counter for MAC rotation
   uint32_t mac_rotation_ready_time_ { 0 };  // Earliest next attempt (settle delay or retry backoff)
   uint32_t mac_rotation_generation_ { 0 };  // Invalidates work after reset or a new request
-  bool mac_rotation_prepared_ { false };    // Advertising stopped and bond cleanup attempted
+  bool mac_rotation_cleanup_pending_ { false };  // A host-task cleanup was requested
+  bool mac_rotation_prepared_ { false };         // Advertising stopped and bond cleanup attempted
   bool mac_rotation_cleanup_failed_ { false };
 
   // IRK capture tracking with deduplication and rate limiting
@@ -587,6 +588,7 @@ class IRKCaptureComponent : public Component {
   uint16_t pending_terminate_handle_ { BLE_HS_CONN_HANDLE_NONE };
   uint32_t pending_terminate_generation_ { 0 };
   const char* pending_terminate_context_ { nullptr };  // String literal only
+  bool pending_terminate_for_rotation_ { false };
   bool pending_terminate_busy_logged_ { false };
 
   // Wizard-facing session state (see README). The entity pointers are set
@@ -681,7 +683,8 @@ class IRKCaptureComponent : public Component {
   //           manufacturer_name_,
   //           mac_rotation_state_, pending_mac_,
   //           mac_rotation_retries_, mac_rotation_ready_time_, mac_rotation_generation_,
-  //           mac_rotation_prepared_, mac_rotation_cleanup_failed_, failed_generation_,
+  //           mac_rotation_cleanup_pending_, mac_rotation_prepared_, mac_rotation_cleanup_failed_,
+  //           failed_generation_,
   //           adv_restart_time_, capture_events_,
   //           unique_devices_, irk_cache_ (deduplication state),
   //           capture_result_, capture_result_generation_,
@@ -714,6 +717,7 @@ class IRKCaptureComponent : public Component {
                    uint32_t connection_generation, CaptureOrigin origin = CaptureOrigin::UNKNOWN,
                    ble_addr_t* connection_addr_out = nullptr);
   void setup_ble();
+  void setup_ble_worker_();
   bool register_gatt_services();
   std::string sanitize_ble_name(const std::string& name);
   std::string advertised_name_();                   // Caller holds state_mutex_
@@ -748,7 +752,8 @@ class IRKCaptureComponent : public Component {
   void close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
                            const char* context);
   // Queues a generation-checked disconnect on the host task without waiting.
-  void terminate_bounded_(uint16_t conn_handle, uint32_t generation, const char* context);
+  void terminate_bounded_(uint16_t conn_handle, uint32_t generation, const char* context,
+                          bool for_rotation = false);
   void handle_pending_termination_();  // NimBLE event task only
   // Shows Status "failed" for a pairing that ended without a result.
   void report_capture_failure_(uint32_t connection_generation);
@@ -788,6 +793,8 @@ class IRKCaptureComponent : public Component {
 
   // Loop helpers
   void handle_mac_rotation_(uint32_t now);
+  void handle_rotation_cleanup_();  // NimBLE event task only
+  void finish_rotation_cleanup_locked_(const char* failure_reason);
   void retry_security_if_needed(uint32_t now);
   bool handle_connection_timeout_(uint32_t now);
   // Caller holds state_mutex_. Reset is also used by connect/host reset;

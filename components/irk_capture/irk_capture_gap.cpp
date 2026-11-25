@@ -396,7 +396,21 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       connection_generation = self->connection_generation_;
       origin = self->connection_origin_;
       connected_since = self->pairing_start_time_;
+      if (ev->enc_change.status == 0) {
+        self->enc_ready_ = true;
+        self->enc_time_ = now_ms();
+        // Honor the polling interval before the first retry.
+        self->irk_last_try_ms_ = self->enc_time_;
+      }
     }
+  }
+  // Failed CONNECT events can leave an untracked link up briefly. The
+  // CONNECT handler owns its disconnect. Its encryption events must not
+  // publish a capture, schedule a check or change bonds or advertising.
+  if (connection_generation == 0) {
+    ESP_LOGD(TAG, "Ignoring ENC_CHANGE for non-active handle=%u (status=%d)",
+             ev->enc_change.conn_handle, ev->enc_change.status);
+    return 0;
   }
   // Time from connect to the encryption result, for tuning the pairing
   // timeouts against slow peers.
@@ -422,21 +436,6 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
 
   if (ev->enc_change.status == 0) {
     ESP_LOGI(TAG, "Encryption established; attempting immediate IRK capture");
-    {
-      MutexGuard lock(self->state_mutex_);
-      // Encryption on a link this component is not tracking (a failed CONNECT
-      // whose link stayed up) must not mark the active connection as secured.
-      if (self->connected_ && self->conn_handle_ == ev->enc_change.conn_handle) {
-        self->enc_ready_ = true;
-        self->enc_time_ = now_ms();
-        // Initialize irk_last_try_ms_ to now so the ENC_TRY_INTERVAL_MS
-        // guard in poll_irk_if_due() is correctly enforced on the first poll
-        // attempt. Without this, (now - 0) is huge and the interval check is
-        // bypassed immediately.
-        self->irk_last_try_ms_ = now_ms();
-      }
-    }
-
     // Immediate store read using identity address
     struct ble_gap_conn_desc d {};
     const int desc_rc = ble_gap_conn_find(ev->enc_change.conn_handle, &d);

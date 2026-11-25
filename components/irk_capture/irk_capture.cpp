@@ -11,7 +11,7 @@
 namespace esphome {
 namespace irk_capture {
 
-static constexpr char VERSION[] = "1.7.7";
+static constexpr char VERSION[] = "1.7.8";
 
 //======================== Component lifecycle ========================
 
@@ -100,6 +100,13 @@ void IRKCaptureComponent::setup() {
     }
   }
 
+  if (stop_after_capture_switch_) {
+    auto restored = stop_after_capture_switch_->get_initial_state_with_restore_mode();
+    if (restored.has_value()) {
+      stop_after_capture_ = restored.value() != stop_after_capture_switch_->is_inverted();
+    }
+  }
+
   // Start the host wait before setup_ble(). The host can sync while setup_ble()
   // is still running, and on_ble_host_synced() clears this value then. Setting
   // it afterwards would leave a synced host marked as never synced, and Status
@@ -112,34 +119,6 @@ void IRKCaptureComponent::setup() {
   if (this->is_failed()) {
     publish_setup_failure_();
     return;
-  }
-
-  ble_npl_event_init(
-      &bond_clear_event_,
-      [](struct ble_npl_event* event) {
-        auto* self = static_cast<IRKCaptureComponent*>(ble_npl_event_get_arg(event));
-        self->handle_pending_termination_();
-        self->handle_forget_bonds_();
-      },
-      this);
-
-  // Older NPL ports wait indefinitely for space in the host event queue. Keep
-  // that wait off both the ESPHome main task and the shared timer task. A
-  // notification bit coalesces retries while this single producer is blocked.
-  if (xTaskCreate(
-          [](void* arg) {
-            auto* self = static_cast<IRKCaptureComponent*>(arg);
-            for (;;) {
-              uint32_t notification;
-              xTaskNotifyWait(0, UINT32_MAX, &notification, portMAX_DELAY);
-              self->queue_bond_clear_();
-            }
-          },
-          "irk_bond_clear", 2048, this, tskIDLE_PRIORITY + 1, &bond_clear_task_) != pdPASS) {
-    bond_clear_task_ = nullptr;
-    ESP_LOGE(TAG,
-             "BLE worker allocation failed; bond clearing unavailable, disconnects use timeout "
-             "recovery");
   }
 
   // on_ble_host_synced() applies the resolved intent when NimBLE becomes ready.
@@ -161,14 +140,7 @@ void IRKCaptureComponent::setup() {
     advertising_switch_->publish_state(is_advertising_requested());
   }
   if (stop_after_capture_switch_) {
-    // Apply the switch's restore mode, the same way the advertising switch
-    // does. Without this the declared RESTORE_DEFAULT_OFF never takes effect
-    // and the setting silently reverts on every boot.
-    auto restored = stop_after_capture_switch_->get_initial_state_with_restore_mode();
-    if (restored.has_value()) {
-      stop_after_capture_ = restored.value() != stop_after_capture_switch_->is_inverted();
-    }
-    stop_after_capture_switch_->publish_state(stop_after_capture_);
+    stop_after_capture_switch_->publish_state(get_stop_after_capture());
   }
   if (status_sensor_) {
     last_status_value_ = "idle";

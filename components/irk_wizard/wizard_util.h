@@ -38,12 +38,20 @@ inline std::string base64_encode(const std::string& in) {
   return out;
 }
 
-// Length-independent compare so a wrong password can't be recovered by
-// timing how far the comparison got.
+// Compare that runs for the length of the expected secret `b` whatever `a`
+// holds, so neither a wrong password nor a wrong length can be recovered by
+// timing how far the comparison got. A length mismatch is folded into a
+// volatile accumulator so the compiler cannot short-circuit the loop, and
+// every iteration performs an unconditional load and XOR.
 inline bool secure_equals(const std::string& a, const std::string& b) {
-  if (a.size() != b.size()) return false;
-  uint8_t diff = 0;
-  for (size_t i = 0; i < a.size(); i++) diff |= (uint8_t) (a[i] ^ b[i]);
+  volatile uint8_t diff = (a.size() != b.size()) ? 1 : 0;
+  static const uint8_t kZero = 0;
+  const uint8_t* const ap = a.empty() ? &kZero : reinterpret_cast<const uint8_t*>(a.data());
+  const size_t alen = a.size();
+  for (size_t i = 0; i < b.size(); i++) {
+    const uint8_t av = ap[i < alen ? i : 0];
+    diff = static_cast<uint8_t>(diff | static_cast<uint8_t>(av ^ static_cast<uint8_t>(b[i])));
+  }
   return diff == 0;
 }
 

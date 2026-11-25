@@ -349,6 +349,37 @@ static int log_and_evict_bond(struct ble_store_status_event* event, void* arg) {
   return rc;
 }
 
+void IRKCaptureComponent::setup_ble_worker_() {
+  ble_npl_event_init(
+      &bond_clear_event_,
+      [](struct ble_npl_event* event) {
+        auto* self = static_cast<IRKCaptureComponent*>(ble_npl_event_get_arg(event));
+        self->handle_pending_termination_();
+        self->handle_forget_bonds_();
+        self->handle_rotation_cleanup_();
+      },
+      this);
+
+  // Older NPL ports wait indefinitely for space in the host event queue. Keep
+  // that wait off both the ESPHome main task and the shared timer task. A
+  // notification bit coalesces retries while this single producer is blocked.
+  if (xTaskCreate(
+          [](void* arg) {
+            auto* self = static_cast<IRKCaptureComponent*>(arg);
+            for (;;) {
+              uint32_t notification;
+              xTaskNotifyWait(0, UINT32_MAX, &notification, portMAX_DELAY);
+              self->queue_bond_clear_();
+            }
+          },
+          "irk_bond_clear", 2048, this, tskIDLE_PRIORITY + 1, &bond_clear_task_) != pdPASS) {
+    bond_clear_task_ = nullptr;
+    ESP_LOGE(TAG,
+             "BLE worker allocation failed; bond clearing unavailable, disconnects use timeout "
+             "recovery");
+  }
+}
+
 void IRKCaptureComponent::setup_ble() {
   // NVS holds the persisted BLE profile. Bonds are kept in RAM (see below).
   // ESPHome has already initialised NVS, so this normally just confirms it. If
@@ -418,6 +449,7 @@ void IRKCaptureComponent::setup_ble() {
     // disconnect callback that can no longer arrive.
     g_irk_instance->mac_rotation_generation_++;
     g_irk_instance->mac_rotation_state_ = MacRotationState::IDLE;
+    g_irk_instance->mac_rotation_cleanup_pending_ = false;
     g_irk_instance->mac_rotation_retries_ = 0;
     g_irk_instance->mac_rotation_ready_time_ = 0;
     g_irk_instance->identity_refresh_pending_ = false;
@@ -483,7 +515,9 @@ void IRKCaptureComponent::setup_ble() {
     return;
   }
 
-  // Host task
+  // Initialize the event after NimBLE's NPL port is ready, and publish the
+  // worker handle before the host can sync and dispatch connection callbacks.
+  setup_ble_worker_();
   nimble_port_freertos_init([](void*) {
     nimble_port_run();
     nimble_port_freertos_deinit();
