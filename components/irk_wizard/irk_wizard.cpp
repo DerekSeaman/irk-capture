@@ -148,8 +148,7 @@ static bool authorized(httpd_req_t* req) {
 // forces a preflight, which this server never answers, so a hostile page
 // can't reach these handlers even though the browser sends LAN requests.
 static bool json_request(httpd_req_t* req) {
-  // The buffer is sized from the header. A fixed 64 bytes rejected a valid
-  // JSON type as soon as its parameters ran past the end of the buffer.
+  // Cap header allocation while allowing long Content-Type parameters.
   static constexpr size_t MAX_CONTENT_TYPE = 256;
   const size_t len = httpd_req_get_hdr_value_len(req, "Content-Type");
   bool is_json = false;
@@ -253,10 +252,8 @@ void IRKWizardComponent::set_auth(const std::string& username, const std::string
 }
 
 void IRKWizardComponent::fresh_identity() {
-  // irk_capture owns the naming: it derives the name from the address that
-  // actually took effect, which only the rotation knows. Deferring keeps the
-  // BLE work off esp_http_server's task and lets this request answer first, so
-  // the page gets its response instead of the connection dropping mid-reply.
+  // Defer to the main task to keep BLE work off httpd's task and serialize
+  // identity refreshes with Home Assistant controls.
   this->defer([this]() {
     ESP_LOGI(TAG, "Wizard: refresh BLE identity requested");
     if (irk_capture_) irk_capture_->refresh_identity();
@@ -264,10 +261,8 @@ void IRKWizardComponent::fresh_identity() {
 }
 
 void IRKWizardComponent::set_profile(bool keyboard) {
-  // set_ble_profile() publishes the BLE Profile and BLE Device Name entities
-  // itself rather than staging them, and entity publishes belong on the main
-  // task. Deferring also lets this request answer before the reboot the
-  // switch schedules.
+  // set_ble_profile() publishes entities directly (main task only) and
+  // schedules a reboot; deferring keeps both off httpd's task.
   this->defer([this, keyboard]() {
     const auto requested =
         keyboard ? irk_capture::BLEProfile::KEYBOARD : irk_capture::BLEProfile::HEART_SENSOR;
@@ -356,10 +351,8 @@ void IRKWizardComponent::refresh_snapshot_() {
   next.next_capture_label = core.next_capture_label;
   const bool keyboard = core.profile == irk_capture::BLEProfile::KEYBOARD;
   next.profile = keyboard ? "Keyboard" : "Heart Sensor";
-  // get_ble_name() is the name on air, already accounting for the Keyboard
-  // profile's "Logitech K380" and for anything that has replaced it since
-  // boot. Deciding it here instead would send the user hunting for a name the
-  // device stopped advertising the moment the identity was refreshed.
+  // Capture owns the selected advertising name, including profile defaults,
+  // renames, and identity refreshes. It can select a name while the radio is off.
   next.advertised_name = core.advertised_name;
   next.advertising = core.advertising_requested;
   next.stop_after_capture = core.stop_after_capture;
@@ -395,10 +388,8 @@ static void set_security_headers(httpd_req_t* req) {
 static void set_json_headers(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
   set_security_headers(req);
-  // /api/status carries the captured IRK and the peer's identity address, which
-  // permanently deanonymize a phone. no-store keeps them out of the browser's
-  // disk cache and out of any intermediary, rather than merely requiring
-  // revalidation the way the page's no-cache does.
+  // /api/status returns sensitive IRKs and identity MACs; no-store prevents
+  // disk/proxy caching (unlike the HTML page's no-cache).
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 }
 
@@ -564,9 +555,8 @@ void IRKWizardComponent::dump_config() {
 }
 
 //======================== Page ========================
-// The page lives in wizard_page.html. __init__.py gzips it at build time and
-// hands it over as a flash array, so it costs about a quarter of its source
-// size and is sent as-is with Content-Encoding: gzip.
+// __init__.py gzips wizard_page.html at build time into a flash array.
+// The HTTP handler sends that array as-is with Content-Encoding: gzip.
 
 static esp_err_t handle_index(httpd_req_t* req) {
   if (!authorized(req) || !bodyless_request(req)) return unread_body_result(req);
