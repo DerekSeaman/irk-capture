@@ -37,7 +37,7 @@ static const ble_uuid16_t UUID_CHR_BATT_LVL = BLE_UUID16_INIT(UUID_CHR_BATTERY_L
 static const ble_uuid16_t UUID_SVC_HID_BLE = BLE_UUID16_INIT(UUID_SVC_HID);
 static const ble_uuid16_t UUID_CHR_HID_PROTO = BLE_UUID16_INIT(UUID_CHR_HID_PROTOCOL_MODE);
 
-// Optional protected service/characteristic to force pairing via READ_ENC
+// Encrypted-read test service/characteristic (pairing itself is initiated on connect).
 static const ble_uuid128_t UUID_SVC_PROT = BLE_UUID128_INIT(
     0x12, 0x34, 0x56, 0x78, 0x90, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x09, 0x87, 0x65, 0x43, 0x21);
 static const ble_uuid128_t UUID_CHR_PROT = BLE_UUID128_INIT(
