@@ -208,7 +208,9 @@ var wizStep = 0;          // 0 = panel view
 var lastData = null;
 var labelDirty = false;
 var wizLabelDirty = false;   // wizard label edited since it was last filled or saved
-var wizLabelSaving = false;
+var wizLabelEdit = 0;        // bumped on every wizard label edit or reset
+var wizLabelSave = null;     // {run, edit} of the save in flight
+var wizardRun = 0;           // bumped each time the wizard opens
 var labelEdit = 0;
 var pendingLabelSave = null;
 var awaitingCapture = false;
@@ -405,6 +407,8 @@ async function trackReboot(url,body,profile,fromWizard){
 function showPanel(){ cancelCapture(true); wizStep=0; el('wizView').classList.add('hide'); el('panelView').classList.remove('hide');
   window.scrollTo(0,0); refresh(); }
 function showWizard(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback();
+  // A save from an earlier run must neither block nor steer this one.
+  ++wizardRun; wizLabelSave=null;
   if(!pendingReboot) wizardProfileReady=false;
   // A new run starts from the device's pending label, not the last run's text.
   resetWizardLabel();
@@ -424,24 +428,31 @@ function wizGo(n){
 }
 
 /* ---------- wizard actions ---------- */
-function resetWizardLabel(){ wizLabelDirty=false; el('wizLabel').value=''; }
+function resetWizardLabel(){ wizLabelDirty=false; ++wizLabelEdit; el('wizLabel').value=''; }
 async function wizSaveLabel(){
-  if(wizLabelSaving) return;
-  wizLabelSaving=true;
-  try{
-    var saved=await action('/api/label',{label:el('wizLabel').value});
-    if(!saved) return;
-    // Show what the device stored, which may drop characters it rejects. The
-    // step change below renders the cached status, so it must agree, or a
-    // cleared label would be filled back in from it.
-    if(typeof saved.label==='string'){
-      el('wizLabel').value=saved.label;
-      if(lastData) lastData.next_capture_label=saved.label;
-    }
-    wizLabelDirty=false;
-    // Only move on from the step that asked; the user may have left it.
-    if(wizStep===2) wizGo(3);
-  }finally{ wizLabelSaving=false; }
+  if(wizLabelSave) return;
+  var request={run:wizardRun, edit:wizLabelEdit}; wizLabelSave=request;
+  var saved;
+  try{ saved=await action('/api/label',{label:el('wizLabel').value}); }
+  finally{ if(wizLabelSave===request) wizLabelSave=null; }
+  if(!saved) return;
+  // The device holds this label now, whatever the page does next.
+  if(typeof saved.label==='string' && lastData) lastData.next_capture_label=saved.label;
+  // A reply for an earlier wizard run must not touch this one.
+  if(request.run!==wizardRun) return;
+  // Text typed while this save was in flight is newer than what it stored.
+  // Next was already pressed, so save that text rather than discard it.
+  if(request.edit!==wizLabelEdit){
+    if(wizStep===2) return wizSaveLabel();
+    return;
+  }
+  // Show what the device stored, which may drop characters it rejects. The
+  // step change below renders the cached status, so it must agree, or a
+  // cleared label would be filled back in from it.
+  if(typeof saved.label==='string') el('wizLabel').value=saved.label;
+  wizLabelDirty=false;
+  // Only move on from the step that asked; the user may have left it.
+  if(wizStep===2) wizGo(3);
 }
 function hideClearMessage(id){
   el(id).textContent=''; el(id).classList.add('hide'); el(id).classList.remove('ok');
@@ -576,7 +587,7 @@ async function savePanelLabel(){
 }
 el('label').addEventListener('input',function(){labelDirty=true; ++labelEdit;});
 el('label').addEventListener('blur',savePanelLabel);
-el('wizLabel').addEventListener('input',function(){ wizLabelDirty=true; });
+el('wizLabel').addEventListener('input',function(){ wizLabelDirty=true; ++wizLabelEdit; });
 el('profile').addEventListener('change',function(){return changeProfile(el('profile').value)});
 el('wizProfile').addEventListener('change',function(){return changeProfile(el('wizProfile').value,true)});
 el('advBtn').addEventListener('click',function(){
