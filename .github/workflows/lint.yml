@@ -20,14 +20,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 1. YAML Linter
       - name: YAML Lint
         uses: ibiqlik/action-yamllint@v3
         with:
           file_or_dir: "."
           config_file: ".yamllint"
 
-      # 2. C++ Format Check
       - name: Install clang-format-18
         run: |
           sudo apt-get update -qq
@@ -38,14 +36,12 @@ jobs:
           find components -name '*.cpp' -o -name '*.h' | \
             xargs clang-format-18 --style=file --dry-run --Werror
 
-      # 3. Python Lint
       - name: Python Lint
         uses: psf/black@stable
         with:
           options: "--check --verbose"
           src: "./components"
 
-      # 4. Markdown Lint
       - name: Markdown Lint
         uses: DavidAnson/markdownlint-cli2-action@v22
         with:
@@ -322,8 +318,8 @@ jobs:
             "${RUNNER_TEMP}/${name}_test"
           done
 
-  # Compile the component so C++ API drift, invalid code generation, or ESP-IDF
-  # incompatibility fail CI (config/lint checks alone cannot catch these).
+  # Compile both components so C++ API drift, invalid code generation, or
+  # ESP-IDF incompatibility fail CI (config/lint checks cannot catch these).
   compile:
     name: ESPHome Compile (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -363,9 +359,8 @@ jobs:
       - name: Install ESPHome
         run: python -m pip install "${{ matrix.esphome }}"
 
-      # The compile config is generated here rather than committed, so the repo
-      # tree stays free of test scaffolding. It pulls the component from the
-      # checkout (external_components: local) and exercises every entity platform.
+      # Generated rather than committed so the repo stays free of test scaffolding.
+      # Pulls both components locally and exercises every entity platform.
       - name: Generate test configuration
         run: |
           cat > "${RUNNER_TEMP}/irk-capture-ci.yaml" <<'EOF'
