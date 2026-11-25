@@ -117,9 +117,10 @@ struct AuthThrottle {
 // Per-client throttle table so one guessing host locks out only itself.
 // Full table evicts the least recently seen idle client; recent failures keep
 // their slot for one lockout window. If all slots have recent failures, extra
-// clients share the overflow throttle.
+// clients share the overflow throttle. Eight 20-byte slots (80 bytes more than four) give a
+// LAN guesser more addresses to burn before new clients reach the overflow.
 struct ClientThrottles {
-  static constexpr size_t SLOTS = 4;
+  static constexpr size_t SLOTS = 8;
 
   struct Slot {
     bool used { false };
