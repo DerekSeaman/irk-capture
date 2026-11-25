@@ -1,5 +1,5 @@
-// Home Assistant entity glue: the switch, button, text, select and text
-// sensor classes that forward to IRKCaptureComponent.
+// Home Assistant entity glue: the switch, button, text, and select classes
+// that forward commands to IRKCaptureComponent.
 
 #include "irk_capture_internal.h"
 
