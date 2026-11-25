@@ -238,6 +238,22 @@ void IRKCaptureComponent::run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPAC
   }
 
   const ble_addr_t* connection_addr = due.has_connection_addr ? &due.connection_addr : nullptr;
+  // A final result closes the link only if the connection this check was
+  // scheduled for is still up. A post-disconnect check never is; a late
+  // encryption check may be, unless that peer left and another device
+  // connected during the delay.
+  auto live_handle = [&]() {
+    uint16_t handle = BLE_HS_CONN_HANDLE_NONE;
+    {
+      MutexGuard lock(state_mutex_);
+      if (connected_ && connection_generation_ == due.connection_generation) handle = conn_handle_;
+    }
+    struct ble_gap_conn_desc cur {};
+    if (handle != BLE_HS_CONN_HANDLE_NONE &&
+        (ble_gap_conn_find(handle, &cur) != 0 || !addr_equal(cur.peer_id_addr, due.peer_id)))
+      handle = BLE_HS_CONN_HANDLE_NONE;
+    return handle;
+  };
   struct ble_store_value_sec bond {};
   int rc = 0;
   const BondRead read = read_peer_irk_(due.peer_id, bond, &rc);
@@ -248,24 +264,20 @@ void IRKCaptureComponent::run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPAC
   } else if (read == BondRead::NO_IRK) {
     publish_no_irk_(due.peer_id, due.connection_generation, due.pairing_completed, due.origin,
                     connection_addr);
+    // publish_no_irk_() ends polling for this connection, so nothing else
+    // would close it before the pairing timeout.
+    const uint16_t handle = live_handle();
+    if (handle != BLE_HS_CONN_HANDLE_NONE) {
+      close_after_no_irk_(handle, due.connection_generation, "after late no-IRK result");
+    }
   } else if (read == BondRead::INVALID_IRK) {
     log_no_irk_for_peer(due.peer_id);
   } else {
     publish_and_log_irk(this, due.peer_id, to_hex_rev(bond.irk, sizeof(bond.irk)), context_tag,
                         due.connection_generation, due.origin,
                         check_irk_against_address(bond.irk, connection_addr));
-
-    // Terminate only if the connection this check was scheduled for is still
-    // up. A post-disconnect check never is; a late encryption check may be,
-    // unless that peer left and another device connected during the delay.
-    uint16_t handle = BLE_HS_CONN_HANDLE_NONE;
-    {
-      MutexGuard lock(state_mutex_);
-      if (connected_ && connection_generation_ == due.connection_generation) handle = conn_handle_;
-    }
-    struct ble_gap_conn_desc cur {};
-    if (handle != BLE_HS_CONN_HANDLE_NONE && ble_gap_conn_find(handle, &cur) == 0 &&
-        addr_equal(cur.peer_id_addr, due.peer_id)) {
+    const uint16_t handle = live_handle();
+    if (handle != BLE_HS_CONN_HANDLE_NONE) {
       terminate_bounded_(handle, due.connection_generation, "after late IRK capture");
     }
   }
