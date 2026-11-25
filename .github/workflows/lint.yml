@@ -54,7 +54,7 @@ jobs:
           # (never committed) and CI passes green, hiding real problems.
           globs: "**/*.md"
 
-  # Both headers are free of ESP-IDF includes precisely so they can be run
+  # These headers are free of ESP-IDF includes precisely so they can be run
   # here, where a failure is a plain assert rather than a device that quietly
   # misbehaves. Generated rather than committed, like the compile config.
   host-tests:
@@ -231,9 +231,89 @@ jobs:
             return 0;
           }
           EOF
+          cat > "${RUNNER_TEMP}/rpa_check_test.cpp" <<'EOF'
+          #include <cassert>
+          #include <cstdint>
+          #include <cstdio>
+          #include <cstring>
+          #include <string>
+
+          // Minimal NimBLE address definitions expected before rpa_check.h.
+          enum {
+            BLE_ADDR_PUBLIC = 0,
+            BLE_ADDR_RANDOM = 1,
+            BLE_ADDR_PUBLIC_ID = 2,
+            BLE_ADDR_RANDOM_ID = 3,
+          };
+          struct ble_addr_t {
+            uint8_t type;
+            uint8_t val[6];
+          };
+
+          #include "rpa_check.h"
+
+          namespace esphome::irk_capture {
+          static bool g_aes_fail = false;
+          // Core Spec Vol 3, Part H, D.7 known answer for ah(IRK, prand).
+          bool aes128_encrypt_be(const uint8_t key[16], const uint8_t plaintext[16], uint8_t out[16]) {
+            if (g_aes_fail) return false;
+            static const uint8_t spec_key[16] = { 0xec, 0x02, 0x34, 0xa3, 0x57, 0xc8, 0xad, 0x05,
+                                                  0x34, 0x10, 0x10, 0xa6, 0x0a, 0x39, 0x7d, 0x9b };
+            static const uint8_t spec_in[16] = { 0, 0, 0, 0, 0, 0, 0, 0,
+                                                 0, 0, 0, 0, 0, 0x70, 0x81, 0x94 };
+            static const uint8_t spec_out[16] = { 0x15, 0x9d, 0x5f, 0xb7, 0x2e, 0xbe, 0x23, 0x11,
+                                                  0xa4, 0x8c, 0x1b, 0xdc, 0xc4, 0x0d, 0xfb, 0xaa };
+            if (std::memcmp(key, spec_key, 16) == 0 && std::memcmp(plaintext, spec_in, 16) == 0) {
+              std::memcpy(out, spec_out, 16);
+            } else {
+              for (int i = 0; i < 16; ++i) out[i] = key[i] ^ plaintext[i] ^ 0x5a;
+            }
+            return true;
+          }
+          }  // namespace esphome::irk_capture
+
+          using namespace esphome::irk_capture;
+
+          int main() {
+            // Address classification: top two bits of val[5] for random addresses.
+            assert(classify_address({ BLE_ADDR_PUBLIC, { 0, 0, 0, 0, 0, 0x40 } }) == AddressKind::PUBLIC);
+            assert(classify_address({ BLE_ADDR_PUBLIC_ID, { 0, 0, 0, 0, 0, 0x00 } }) == AddressKind::PUBLIC);
+            assert(classify_address({ BLE_ADDR_RANDOM, { 0, 0, 0, 0, 0, 0xC0 } }) == AddressKind::STATIC_RANDOM);
+            assert(classify_address({ BLE_ADDR_RANDOM_ID, { 0, 0, 0, 0, 0, 0x40 } }) == AddressKind::RESOLVABLE_PRIVATE);
+            assert(classify_address({ BLE_ADDR_RANDOM, { 0, 0, 0, 0, 0, 0x00 } }) == AddressKind::NON_RESOLVABLE_PRIVATE);
+            assert(classify_address({ BLE_ADDR_RANDOM, { 0, 0, 0, 0, 0, 0x80 } }) == AddressKind::UNKNOWN);
+            assert(classify_address({ 99, { 0, 0, 0, 0, 0, 0x40 } }) == AddressKind::UNKNOWN);
+
+            // Core Spec Vol 3, Part H, D.7: IRK (LSB first) resolves RPA 70:81:94:0D:FB:AA.
+            const uint8_t irk_le[16] = { 0x9b, 0x7d, 0x39, 0x0a, 0xa6, 0x10, 0x10, 0x34,
+                                         0x05, 0xad, 0xc8, 0x57, 0xa3, 0x34, 0x02, 0xec };
+            const ble_addr_t rpa = { BLE_ADDR_RANDOM, { 0xaa, 0xfb, 0x0d, 0x94, 0x81, 0x70 } };
+            assert(check_irk_against_address(irk_le, &rpa) == IrkCheck::VERIFIED);
+
+            ble_addr_t wrong_rpa = rpa;
+            wrong_rpa.val[0] ^= 0x01;
+            assert(check_irk_against_address(irk_le, &wrong_rpa) == IrkCheck::MISMATCH);
+
+            const ble_addr_t pub = { BLE_ADDR_PUBLIC, { 1, 2, 3, 4, 5, 6 } };
+            assert(check_irk_against_address(irk_le, &pub) == IrkCheck::NOT_RESOLVABLE);
+            assert(check_irk_against_address(irk_le, nullptr) == IrkCheck::UNCHECKED);
+
+            g_aes_fail = true;
+            assert(check_irk_against_address(irk_le, &rpa) == IrkCheck::UNCHECKED);
+            g_aes_fail = false;
+
+            assert(std::string(irk_check_name(IrkCheck::VERIFIED)) == "verified");
+            assert(std::string(irk_check_name(IrkCheck::MISMATCH)) == "mismatch");
+            assert(std::string(irk_check_name(IrkCheck::NOT_RESOLVABLE)) == "unverified");
+            assert(std::string(irk_check_name(IrkCheck::UNCHECKED)) == "unverified");
+
+            printf("rpa_check: all assertions passed\n");
+            return 0;
+          }
+          EOF
       - name: Build and run
         run: |
-          for t in identity_name:irk_capture wizard_util:irk_wizard; do
+          for t in identity_name:irk_capture rpa_check:irk_capture wizard_util:irk_wizard; do
             name="${t%%:*}"
             component="${t##*:}"
             g++ -std=c++17 -Wall -Wextra -Werror \
@@ -252,7 +332,7 @@ jobs:
       matrix:
         include:
           - name: minimum / ESP32
-            esphome: esphome==2026.7.4
+            esphome: esphome==2026.9.0
             board: esp32dev
             variant: esp32
           - name: latest / ESP32
@@ -267,6 +347,10 @@ jobs:
             esphome: esphome
             board: esp32-c6-devkitc-1
             variant: esp32c6
+          - name: latest / ESP32-S3
+            esphome: esphome
+            board: esp32-s3-devkitc-1
+            variant: esp32s3
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5
