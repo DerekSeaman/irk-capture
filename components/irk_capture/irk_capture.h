@@ -259,6 +259,15 @@ struct SessionState {
   IdentityRefreshResult identity_refresh;
 };
 
+// The controls a status request overlays on the wizard's periodic snapshot,
+// read under one lock so they agree with each other.
+struct LiveControls {
+  std::string next_capture_label;
+  BLEProfile profile { BLEProfile::KEYBOARD };
+  bool advertising_requested { false };
+  bool stop_after_capture { false };
+};
+
 // GAP event handlers (irk_capture_gap.cpp) and IRK output helper (irk_capture_history.cpp).
 int handle_gap_connect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
 int handle_gap_disconnect(class IRKCaptureComponent* self, struct ble_gap_event* ev);
@@ -418,6 +427,7 @@ class IRKCaptureComponent : public Component {
   // JSON. Pass the history_version of the last state taken to skip copying and
   // reformatting a history that has not changed since; 0 always builds it.
   SessionState get_session_state(uint32_t known_history_version = 0);
+  LiveControls get_live_controls();
 
  protected:
   // Configuration/state

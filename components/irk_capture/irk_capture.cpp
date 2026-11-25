@@ -521,6 +521,16 @@ SessionState IRKCaptureComponent::get_session_state(uint32_t known_history_versi
   return state;
 }
 
+LiveControls IRKCaptureComponent::get_live_controls() {
+  MutexGuard lock(state_mutex_);
+  LiveControls controls;
+  controls.next_capture_label = next_capture_label_;
+  controls.profile = ble_profile_;
+  controls.advertising_requested = advertising_requested_;
+  controls.stop_after_capture = stop_after_capture_;
+  return controls;
+}
+
 const char* IRKCaptureComponent::status_value_locked_(uint32_t now) {
   // Caller holds state_mutex_ while also snapshotting the pending IRK/MAC.
   // Retire expired deadlines permanently: signed wrap-safe comparisons only

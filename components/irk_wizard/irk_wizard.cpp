@@ -591,12 +591,11 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   // a start acknowledged as ready next to stale advertising=false would tell
   // the user that advertising is off.
   if (self->irk_capture()) {
-    s.next_capture_label = self->irk_capture()->get_next_capture_label();
-    s.profile = self->irk_capture()->get_ble_profile() == irk_capture::BLEProfile::KEYBOARD
-                    ? "Keyboard"
-                    : "Heart Sensor";
-    s.advertising = self->irk_capture()->is_advertising_requested();
-    s.stop_after_capture = self->irk_capture()->get_stop_after_capture();
+    irk_capture::LiveControls live = self->irk_capture()->get_live_controls();
+    s.next_capture_label = std::move(live.next_capture_label);
+    s.profile = live.profile == irk_capture::BLEProfile::KEYBOARD ? "Keyboard" : "Heart Sensor";
+    s.advertising = live.advertising_requested;
+    s.stop_after_capture = live.stop_after_capture;
   }
 
   std::string head = "{";
