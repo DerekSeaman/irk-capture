@@ -709,6 +709,8 @@ void IRKCaptureComponent::handle_pending_termination_() {
     {
       MutexGuard lock(state_mutex_);
       bool retry_scheduled = false;
+      // Brief buffer contention in the host is not a reason to give up.
+      const bool transient = rc == BLE_HS_EBUSY || rc == BLE_HS_ENOMEM;
       if (rotation_waiting && rc != 0 && rc != BLE_HS_EALREADY &&
           mac_rotation_state_ == MacRotationState::REQUESTED &&
           mac_rotation_generation_ == rotation_generation && conn_handle_ == handle &&
@@ -719,9 +721,7 @@ void IRKCaptureComponent::handle_pending_termination_() {
         if (rc == BLE_HS_ENOTCONN) {
           finish_disconnect_(now_ms());
         } else if (rotation_owned) {
-          // Brief buffer contention in the host is not a reason to give up the
-          // refresh. Retry on the same budget the timeout recovery uses.
-          const bool transient = rc == BLE_HS_EBUSY || rc == BLE_HS_ENOMEM;
+          // Retry the refresh on the same budget the timeout recovery uses.
           if (transient && pending_terminate_retries_ + 1 < TimingConfig::TERMINATE_MAX_ATTEMPTS) {
             ++pending_terminate_retries_;
             pending_terminate_handle_ = handle;
@@ -735,6 +735,21 @@ void IRKCaptureComponent::handle_pending_termination_() {
             abort_rotation_locked_();
           }
         }
+      }
+      // Closes after a capture or a no-IRK result end polling, so nothing else
+      // would close the link before the 90 s pairing timeout, which would also
+      // delete the bond. Retry them on the same budget. Leave a request queued
+      // meanwhile in charge of the next attempt.
+      if (!retry_scheduled && !rotation_owned && transient && connected_ &&
+          conn_handle_ == handle && connection_generation_ == connection_generation &&
+          pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE &&
+          pending_terminate_retries_ + 1 < TimingConfig::TERMINATE_MAX_ATTEMPTS) {
+        ++pending_terminate_retries_;
+        pending_terminate_handle_ = handle;
+        pending_terminate_generation_ = connection_generation;
+        pending_terminate_context_ = context;
+        pending_terminate_retry_time_ = deadline_after(now_ms(), TimingConfig::TERMINATE_RETRY_MS);
+        retry_scheduled = true;
       }
       if (!retry_scheduled) pending_terminate_retries_ = 0;
     }
