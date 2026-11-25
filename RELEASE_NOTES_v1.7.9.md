@@ -23,5 +23,5 @@ IRK Capture v1.7.9 is a reliability release. It makes Refresh BLE Identity ride 
 - **Rebuild as usual.** Devices that track `main` pick up this version on their next build.
 - **Using the shipped packages:** no YAML changes are needed.
 - **Using your own YAML:** no changes are needed. Existing `on_capture` automations, entities and Home Assistant events work as before.
-- **Copying the README example:** its `ota:` block uses `encryption:`, which needs ESPHome 2026.9.0 or newer. On ESPHome 2026.7.x or 2026.8.x, give `ota:` a `password:` instead. The README now says so.
+- **ESPHome 2026.9.0 or newer.** IRK Capture is now tested with ESPHome 2026.9.0 and newer, up from 2026.7.4. If your ESPHome is older, update it before rebuilding. 2026.9.0 is also the first release that accepts the README example's encrypted OTA (`encryption:` under `ota:`).
 - **Scripts that call the wizard API:** no changes. Endpoints and responses are the same.
