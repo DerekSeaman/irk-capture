@@ -211,6 +211,7 @@ var wizLabelDirty = false;   // wizard label edited since it was last filled or 
 var wizLabelEdit = 0;        // bumped on every wizard label edit or reset
 var wizLabelSave = null;     // {run, edit} of the save in flight
 var wizardRun = 0;           // bumped each time the wizard opens
+var wizLabelVisit = 0;       // bumped each time step 2 is entered
 var labelEdit = 0;
 var pendingLabelSave = null;
 var awaitingCapture = false;
@@ -416,6 +417,8 @@ function showWizard(){ cancelCapture(true); acceptedCapture=null; resetWizardCle
   window.scrollTo(0,0); }
 function wizGo(n){
   if(wizStep===4 && n!==4 && n!==5) cancelCapture(true);
+  // A label save from an earlier visit to step 2 must not steer this one.
+  if(n===2 && wizStep!==2){ ++wizLabelVisit; wizLabelSave=null; }
   wizStep=n;
   for(var i=1;i<=5;i++) el('step'+i).classList.toggle('hide', i!==n);
   document.querySelectorAll('.steps .s').forEach(function(s){
@@ -431,15 +434,19 @@ function wizGo(n){
 function resetWizardLabel(){ wizLabelDirty=false; ++wizLabelEdit; el('wizLabel').value=''; }
 async function wizSaveLabel(){
   if(wizLabelSave) return;
-  var request={run:wizardRun, edit:wizLabelEdit}; wizLabelSave=request;
-  var saved;
-  try{ saved=await action('/api/label',{label:el('wizLabel').value}); }
+  var request={run:wizardRun, visit:wizLabelVisit, edit:wizLabelEdit}; wizLabelSave=request;
+  // Only a reply to the step the user is still on may show an error or move
+  // the wizard: they may have left it, gone Back, or started a new run.
+  var current=function(){ return request.run===wizardRun && request.visit===wizLabelVisit; };
+  var saved=null;
+  clearError();
+  try{ saved=await post('/api/label',{label:el('wizLabel').value}); refresh(); }
+  catch(e){ if(current()) showError(e); }
   finally{ if(wizLabelSave===request) wizLabelSave=null; }
   if(!saved) return;
   // The device holds this label now, whatever the page does next.
   if(typeof saved.label==='string' && lastData) lastData.next_capture_label=saved.label;
-  // A reply for an earlier wizard run must not touch this one.
-  if(request.run!==wizardRun) return;
+  if(!current()) return;
   // Text typed while this save was in flight is newer than what it stored.
   // Next was already pressed, so save that text rather than discard it.
   if(request.edit!==wizLabelEdit){
