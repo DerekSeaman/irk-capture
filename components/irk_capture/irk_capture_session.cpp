@@ -340,6 +340,8 @@ void IRKCaptureComponent::reset_connection_state_() {
   // on_connect() advances it before the next peer can become active.
   pending_terminate_handle_ = BLE_HS_CONN_HANDLE_NONE;
   pending_terminate_for_rotation_ = false;
+  pending_terminate_retries_ = 0;
+  pending_terminate_retry_time_ = 0;
   pending_terminate_busy_logged_ = false;
   connected_ = false;
   conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
@@ -650,6 +652,8 @@ void IRKCaptureComponent::terminate_bounded_(uint16_t conn_handle, uint32_t gene
     if (pending_terminate_handle_ != conn_handle || pending_terminate_generation_ != generation) {
       pending_terminate_busy_logged_ = false;
       pending_terminate_for_rotation_ = false;
+      pending_terminate_retries_ = 0;
+      pending_terminate_retry_time_ = 0;
     }
     pending_terminate_handle_ = conn_handle;
     pending_terminate_generation_ = generation;
@@ -667,6 +671,11 @@ void IRKCaptureComponent::handle_pending_termination_() {
   {
     MutexGuard lock(state_mutex_);
     if (pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE) return;
+    // After a transient failure the request waits out its backoff. loop() keeps
+    // waking the worker, so this check costs one lock per wake-up.
+    if (pending_terminate_retry_time_ != 0 &&
+        !deadline_reached(now_ms(), pending_terminate_retry_time_))
+      return;
   }
   int rc;
   const char* context;
@@ -704,24 +713,46 @@ void IRKCaptureComponent::handle_pending_termination_() {
                            connection_generation_ == connection_generation;
       pending_terminate_handle_ = BLE_HS_CONN_HANDLE_NONE;
       pending_terminate_for_rotation_ = false;
-      if (!current) return;
+      pending_terminate_retry_time_ = 0;
+      if (!current) {
+        pending_terminate_retries_ = 0;
+        return;
+      }
       rotation_waiting = mac_rotation_state_ == MacRotationState::REQUESTED;
       rotation_generation = mac_rotation_generation_;
     }
     rc = ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
-    if (rotation_waiting && rc != 0 && rc != BLE_HS_EALREADY) {
+    {
       MutexGuard lock(state_mutex_);
-      if (mac_rotation_state_ == MacRotationState::REQUESTED &&
+      bool retry_scheduled = false;
+      if (rotation_waiting && rc != 0 && rc != BLE_HS_EALREADY &&
+          mac_rotation_state_ == MacRotationState::REQUESTED &&
           mac_rotation_generation_ == rotation_generation && conn_handle_ == handle &&
           connection_generation_ == connection_generation) {
         // The host callback is serialized with GAP. ENOTCONN here means the
         // tracked descriptor is already gone, so finish the disconnect. Only a
-        // termination initiated for the rotation aborts it on other errors.
-        if (rc == BLE_HS_ENOTCONN)
+        // termination initiated for the rotation can abort it on other errors.
+        if (rc == BLE_HS_ENOTCONN) {
           finish_disconnect_(now_ms());
-        else if (rotation_owned)
-          abort_rotation_locked_();
+        } else if (rotation_owned) {
+          // Brief buffer contention in the host is not a reason to give up the
+          // refresh. Retry on the same budget the timeout recovery uses.
+          const bool transient = rc == BLE_HS_EBUSY || rc == BLE_HS_ENOMEM;
+          if (transient && pending_terminate_retries_ + 1 < TimingConfig::TERMINATE_MAX_ATTEMPTS) {
+            ++pending_terminate_retries_;
+            pending_terminate_handle_ = handle;
+            pending_terminate_generation_ = connection_generation;
+            pending_terminate_context_ = context;
+            pending_terminate_for_rotation_ = true;
+            pending_terminate_retry_time_ =
+                deadline_after(now_ms(), TimingConfig::TERMINATE_RETRY_MS);
+            retry_scheduled = true;
+          } else {
+            abort_rotation_locked_();
+          }
+        }
       }
+      if (!retry_scheduled) pending_terminate_retries_ = 0;
     }
   }
   log_terminate_result(rc, context);

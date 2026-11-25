@@ -589,6 +589,8 @@ class IRKCaptureComponent : public Component {
   uint32_t pending_terminate_generation_ { 0 };
   const char* pending_terminate_context_ { nullptr };  // String literal only
   bool pending_terminate_for_rotation_ { false };
+  uint8_t pending_terminate_retries_ { 0 };      // Failed attempts of a rotation disconnect
+  uint32_t pending_terminate_retry_time_ { 0 };  // Earliest retry after a transient failure
   bool pending_terminate_busy_logged_ { false };
 
   // Wizard-facing session state (see README). The entity pointers are set
