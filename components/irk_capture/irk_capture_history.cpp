@@ -493,6 +493,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   // start pairing until this callback returns. The pending flag also blocks
   // main-task advertising starts and MAC rotation throughout the store wipe.
   bool can_clear = false;
+  bool lock_busy = false;
   bool stopped_advertising = false;
   int stop_rc = BLE_HS_EBUSY;
   uint32_t operation_id;
@@ -514,6 +515,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   {
     // Do not block the host behind a main-task operation that may need it.
     BleOpGuard ble_lock(ble_op_mutex_, 0);
+    lock_busy = !ble_lock.acquired();
     if (ble_lock.acquired()) {
       {
         MutexGuard lock(state_mutex_);
@@ -566,12 +568,18 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   } else {
     ESP_LOGW(TAG, "Forget All Bonds: history cleared; pairings may remain. %s", reason.c_str());
   }
-  // Only resume advertising when this handler stopped the radio or ran a clear
-  // (which blocked concurrent starts). Skipping on lock contention avoids
-  // stalling the NimBLE host task behind the operation that held ble_op_mutex_.
-  if (stopped_advertising || can_clear) {
-    start_advertising();
+  // While the request was pending, start_advertising() deferred every start to
+  // this point, so it must run whatever the outcome: an OFF request or capture
+  // limit reached meanwhile is re-evaluated there. With the BLE lock busy, the
+  // start would wait for that lock on the host task; hand it to the main loop.
+  if (lock_busy) {
+    MutexGuard lock(state_mutex_);
+    if (advertising_requested_ && !advertising_ && adv_restart_time_ == 0) {
+      adv_restart_time_ = deadline_after(now_ms(), TimingConfig::ADV_RETRY_MS);
+    }
+    return;
   }
+  start_advertising();
 }
 
 std::string IRKCaptureComponent::build_history_json() {
