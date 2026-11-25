@@ -454,13 +454,24 @@ LabelUpdateResult IRKCaptureComponent::set_next_capture_label(const std::string&
   // the 12-byte BLE-name cap, and an apostrophe for names like "Dave's iPhone".
   // Everything kept is safe unescaped inside build_history_json()'s strings.
   std::string sanitized;
-  sanitized.reserve(CAPTURE_LABEL_MAX_LEN);
+  sanitized.reserve(value.size());
   for (char c : value) {
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' ||
         c == '-' || c == '_' || c == '\'') {
       sanitized += c;
     }
-    if (sanitized.length() >= CAPTURE_LABEL_MAX_LEN) break;
+  }
+  // Trim surrounding spaces before truncating so leading spaces do not eat into
+  // the length budget and space-only text is rejected instead of stored.
+  const size_t start = sanitized.find_first_not_of(' ');
+  if (start == std::string::npos) {
+    sanitized.clear();
+  } else {
+    sanitized = sanitized.substr(start, sanitized.find_last_not_of(' ') - start + 1);
+    if (sanitized.length() > CAPTURE_LABEL_MAX_LEN) {
+      sanitized.resize(CAPTURE_LABEL_MAX_LEN);
+      sanitized.erase(sanitized.find_last_not_of(' ') + 1);
+    }
   }
   if (sanitized.empty() && !value.empty()) {
     // Only an empty value clears the label. Text with no supported characters
