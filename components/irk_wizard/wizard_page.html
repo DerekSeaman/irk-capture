@@ -498,8 +498,9 @@ async function wizStart(){
   }catch(e){
     if(attempt.run!==captureRun) return;
     captureFailed('Could not start capture. Go back a step and try again.');
-    // A lost response may still have delivered START. Queue OFF to cancel it.
-    action('/api/advertising',{on:false});
+    // A lost response may still have delivered START. Queue OFF to cancel it,
+    // but skip when an HTTP rejection proves START was refused.
+    if(!e.httpStatus) action('/api/advertising',{on:false});
     showError(e); if(lastData) render(lastData);
   }
 }
@@ -510,16 +511,29 @@ function wizStop(){
 }
 function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizardProfileReady=false; resetWizardLabel(); wizGo(1); }
 
+function copyViaTextarea(txt){
+  var ta=document.createElement('textarea');
+  try{
+    ta.value=txt; ta.setAttribute('readonly','');
+    ta.style.position='fixed'; ta.style.top='0'; ta.style.left='0';
+    ta.style.opacity='0'; ta.style.pointerEvents='none';
+    document.body.appendChild(ta);
+    ta.select();
+    if(ta.setSelectionRange) ta.setSelectionRange(0, txt.length);
+    return !!document.execCommand('copy');
+  }catch(e){ return false; }
+  finally{ if(ta.parentNode) document.body.removeChild(ta); }
+}
 function copyText(txt, done){
   // navigator.clipboard is unavailable over plain HTTP, so fall back.
   if(navigator.clipboard && window.isSecureContext){
-    navigator.clipboard.writeText(txt).then(function(){done(true)},function(){done(false)});
+    navigator.clipboard.writeText(txt).then(
+      function(){done(true)},
+      function(){done(copyViaTextarea(txt))}
+    );
     return;
   }
-  try{
-    var ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta);
-    ta.select(); var ok=document.execCommand('copy'); document.body.removeChild(ta); done(ok);
-  }catch(e){ done(false); }
+  done(copyViaTextarea(txt));
 }
 function copyIrk(){
   if(!acceptedCapture) return;
