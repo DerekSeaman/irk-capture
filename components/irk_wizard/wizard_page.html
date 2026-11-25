@@ -203,7 +203,7 @@ ol.pair li{margin-bottom:5px}
 </div>
 <script>
 function el(id){return document.getElementById(id)}
-var lastHistKey = null;   // history last rendered, see render()
+var lastHistKey = null;   // history last rendered, see renderHistory()
 var wizStep = 0;          // 0 = panel view
 var lastData = null;
 var labelDirty = false;
@@ -639,7 +639,6 @@ function reportIdentityFailure(d){
 }
 function renderHistory(d){
   var history=[];
-  // The device sends history as a real JSON array, not a string.
   if(Array.isArray(d.history)) history=d.history;
   // Rebuild only when the list changes, so a Copy button's "Copied" state
   // survives the next status poll.
@@ -689,8 +688,8 @@ function advanceCapture(d){
         var result=d.capture_result;
         if(result && result.boot_id===attempt.boot_id && newer(result.sequence,attempt.baseline) &&
            /^[0-9a-f]{32}$/i.test(result.irk || '')){
-          // Freeze the accepted key and MAC; later captures and failures belong
-          // to subsequent runs, even when the browser missed the status hold.
+          // Freeze the accepted capture; later captures/failures belong to
+          // subsequent runs, even if the browser missed the status hold.
           acceptedCapture={boot_id:result.boot_id,sequence:result.sequence,irk:result.irk,
             device_mac:result.device_mac,verification:result.verification};
           cancelCapture(false); return true;
@@ -827,7 +826,7 @@ function refresh(){
         // request that got no answer counts toward the reconnecting banner.
         failCount=0; showStatusError(e.message);
       }else{
-        // A profile change reboots the device; say so instead of going silent.
+        // Count consecutive unreachable polls for the offline/reconnecting banner.
         ++failCount;
       }
     }finally{
