@@ -375,8 +375,8 @@ void IRKCaptureComponent::setup_ble_worker_() {
           "irk_bond_clear", 2048, this, tskIDLE_PRIORITY + 1, &bond_clear_task_) != pdPASS) {
     bond_clear_task_ = nullptr;
     ESP_LOGE(TAG,
-             "BLE worker allocation failed; bond clearing unavailable, disconnects use timeout "
-             "recovery");
+             "BLE worker allocation failed; forgetting bonds is unavailable, Refresh BLE Identity "
+             "cannot clear old pairings, and disconnects use timeout recovery. Restart the ESP32");
   }
 }
 
