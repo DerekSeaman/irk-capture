@@ -14,6 +14,7 @@ IRK Capture v1.7.8 is a reliability release. It makes Refresh BLE Identity more 
 - **You see the real error.** If Bluetooth capture failed to start, the wizard is meant to tell you to check the device log and reboot. In some browsers that message was lost, and the page showed only a generic connection failure. The wizard now reads your request first, so the message arrives.
 - **Rejected requests are closed cleanly.** A request that is refused for a wrong password, a lockout, a wrong content type, a request that is too large or one that is too slow now ends its connection, and the wizard tells the browser so.
 - **A harder-to-guess password check.** The wizard's sign-in check now takes the same time whatever you type, including a password of the wrong length. Before, the time it took could hint at how long the real password was.
+- **The Stop After Capture toggle works from the keyboard.** The toggle can now be reached with the Tab key and switched with Space or Enter, and screen readers announce it as an on/off switch. It looks the same as before.
 
 ## Upgrading
 
