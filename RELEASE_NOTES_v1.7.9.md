@@ -17,6 +17,8 @@ IRK Capture v1.7.9 is a reliability release. It makes Refresh BLE Identity ride 
 - **A name you clear stays cleared.** Emptying the name box no longer brings the old name back a second later.
 - **You see the name as it was saved.** If the device drops characters it doesn't allow, the box now shows the name as it was saved.
 - **Tapping Next twice is harmless.** A double tap on Next in the name step saves once. A late reply can no longer pull you back from pairing to the previous step and stop the capture.
+- **A refused Start no longer sends a Stop.** If the device turns down Next: Start Pairing, for example after a wrong password or too many attempts, the wizard used to follow up with a request to stop advertising. That extra request could use up another sign-in attempt and replace the real error message. The wizard now sends it only when it can't tell whether the start went through.
+- **Copying the key works better over a home network.** The wizard is usually opened over plain `http://`, where browsers limit copying. Copy now works more reliably there. On iPhone, it no longer scrolls the page or briefly brings up the keyboard.
 
 ## Upgrading
 
