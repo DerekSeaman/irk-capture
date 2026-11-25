@@ -15,8 +15,8 @@ namespace irk_capture {
 //======================== IRK address check ========================
 
 bool aes128_encrypt_be(const uint8_t key[16], const uint8_t plaintext[16], uint8_t out[16]) {
-  // Runs on the NimBLE task for one block per capture; ESP-IDF's mbedTLS uses
-  // the AES hardware where the chip has it.
+  // One AES-128 block per RPA check, on the NimBLE or main task. ESP-IDF
+  // mbedTLS can use hardware AES when enabled.
   mbedtls_aes_context ctx;
   mbedtls_aes_init(&ctx);
   int rc = mbedtls_aes_setkey_enc(&ctx, key, 128);
@@ -31,12 +31,6 @@ bool aes128_encrypt_be(const uint8_t key[16], const uint8_t plaintext[16], uint8
 
 //======================== IRK Validation ========================
 
-/**
- * @brief Validates that an IRK is not all-zero or all-FF
- * (invalid/uninitialized)
- * @param irk 16-byte IRK array
- * @return true if IRK is valid, false if invalid
- */
 bool IRKCaptureComponent::is_valid_irk(const uint8_t irk[16]) {
   // All-zero is invalid and all-FF is erased flash; both are one repeated byte.
   const bool uniform = std::all_of(irk + 1, irk + 16, [irk](uint8_t b) { return b == irk[0]; });
@@ -77,9 +71,8 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
     return false;
   }
   {
-    // The caller sampled this handle without the lock. NimBLE reuses handles,
-    // so a replacement peer's descriptor must not be read, and published, under
-    // the earlier connection's generation and origin.
+    // Caller released state_mutex_ before this call; NimBLE reuses handles, so
+    // reject a stale descriptor before reading or publishing a peer's bond.
     MutexGuard lock(state_mutex_);
     if (!connected_ || conn_handle_ != conn_handle ||
         connection_generation_ != connection_generation)
@@ -106,7 +99,6 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
     return false;
   }
 
-  // Detailed bond information for debugging
   ESP_LOGD(TAG,
            "Bond found: ediv=%u rand=%llu irk_present=%d ltk_present=%d "
            "csrk_present=%d",
@@ -127,8 +119,6 @@ bool IRKCaptureComponent::try_get_irk(uint16_t conn_handle, uint8_t irk_out[16],
     return false;
   }
 
-  // Return raw IRK bytes (16 bytes guaranteed by NimBLE) and peer identity
-  // address
   std::memcpy(irk_out, bond.irk, 16);
   peer_id_out = desc.peer_id_addr;
   if (connection_addr_out != nullptr) *connection_addr_out = desc.peer_ota_addr;
@@ -172,8 +162,7 @@ bool IRKCaptureComponent::enqueue_peer_timer_(std::array<PeerTimer, PEER_TIMER_C
       oldest = &timer;
     }
   }
-  // Losing the oldest fallback read is preferable to rebooting and clearing
-  // every bond and capture in the current session. Prefer a free slot first.
+  // Evict the oldest fallback check when full rather than failing or allocating.
   PeerTimer* target = available ? available : oldest;
   *target = { due_ms,
               peer_id,
@@ -238,10 +227,8 @@ void IRKCaptureComponent::run_peer_timer_(std::array<PeerTimer, PEER_TIMER_CAPAC
   }
 
   const ble_addr_t* connection_addr = due.has_connection_addr ? &due.connection_addr : nullptr;
-  // A final result closes the link only if the connection this check was
-  // scheduled for is still up. A post-disconnect check never is; a late
-  // encryption check may be, unless that peer left and another device
-  // connected during the delay.
+  // Close the link only if this timer's original connection is still active
+  // (possible for late-ENC, never for post-disconnect).
   auto live_handle = [&]() {
     uint16_t handle = BLE_HS_CONN_HANDLE_NONE;
     {
@@ -305,8 +292,7 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
     if (!is_connected || connection_timeout_.reason != TimeoutReason::NONE) return;
   }
 
-  // Tested working behavior: one retry after SEC_RETRY_DELAY_MS from the
-  // initial security request.
+  // One retry after SEC_RETRY_DELAY_MS if encryption has not completed.
   if (is_connected && !enc_ready_copy) {
     if (sec_init_time_copy == 0) {
       MutexGuard lock(state_mutex_);
@@ -317,17 +303,13 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
       if (sec_init_time_ms_ == 0) {
         sec_init_time_ms_ = now;
       }
-      // Update the local copy too so the retry check uses the new baseline.
       sec_init_time_copy = sec_init_time_ms_;
     }
 
-    // Retry security after configured delay
     if (!sec_retry_done_copy && (now - sec_init_time_copy) > TimingConfig::SEC_RETRY_DELAY_MS) {
       uint32_t elapsed = now - sec_init_time_copy;
-      // Set sec_retry_done_ under mutex BEFORE calling
-      // ble_gap_security_initiate(). Writing it after the BLE call is a race: a
-      // NimBLE callback could fire during the call and read sec_retry_done_ as
-      // false, causing a double retry.
+      // Claim sec_retry_done_ under the generation check before the BLE call so
+      // a reconnect during ble_gap_security_initiate() cannot have its flag clobbered.
       bool retry_current_connection = false;
       {
         MutexGuard lock(state_mutex_);
@@ -339,10 +321,8 @@ void IRKCaptureComponent::retry_security_if_needed(uint32_t now) {
       }
       if (!retry_current_connection) return;
       int rc = ble_gap_security_initiate(conn_handle_copy);
-      // rc==0 (started) and EALREADY (a security procedure is already running,
-      // started by either side) are benign; only a genuine error is a warning.
-      // Logged after the call: only rc says whether a retry really happened.
-      // EALREADY means pairing is still running, which is normal for slow peers.
+      // rc==0 and EALREADY (pairing already running, normal for slow peers) are
+      // benign; only genuine errors warn.
       if (rc == 0) {
         ESP_LOGI(TAG, "Security not started after %" PRIu32 " ms; retried security initiate",
                  elapsed);
@@ -392,16 +372,10 @@ void IRKCaptureComponent::finish_disconnect_(uint32_t now) {
   }
 }
 
-// Once either deadline latches a reason, recovery owns the link until it closes.
-// Encryption completing afterwards does NOT cancel it: the termination may
-// already be in flight, and a half-cancelled teardown is harder to reason about
-// than always finishing it. This is safe for capture because a successful IRK is
-// never lost to the teardown - publish_irk_to_sensors() records the generation in
-// last_result_generation_, publish_no_irk_() refuses to overwrite a result already
-// recorded for that generation, and the disconnect path skips its fallback read
-// once the IRK has been observed. A late capture therefore survives, and at worst
-// key distribution that is still in progress is cut short and retried on the next
-// pairing attempt.
+// Once either deadline latches a reason, recovery owns the link until close;
+// late encryption does not cancel an in-flight teardown. Any IRK captured
+// before disconnect still survives (last_result_generation_ protects it from
+// overwrites, and disconnect skips fallback reads once observed).
 bool IRKCaptureComponent::handle_connection_timeout_(uint32_t now) {
   uint16_t handle;
   uint32_t generation;
@@ -510,7 +484,6 @@ bool IRKCaptureComponent::handle_connection_timeout_(uint32_t now) {
 }
 
 void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
-  // THREAD-SAFE: Snapshot polling state under mutex for main-loop reads
   bool enc_ready_copy;
   bool irk_gave_up_copy;
   uint32_t enc_time_copy;
@@ -547,11 +520,8 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
     std::string irk_hex = to_hex_rev(irk_bytes, sizeof(irk_bytes));
     publish_and_log_irk(this, peer_id, irk_hex, "POLL_CONNECTED", connection_generation_copy,
                         origin, check_irk_against_address(irk_bytes, &connection_addr));
-    // The store read and publish above ran without the lock. If the peer
-    // disconnected meanwhile, NimBLE can hand the same handle to a replacement
-    // connection, so terminating it now would drop an unrelated device and mark
-    // that new connection as finished polling. Re-validate the generation and
-    // claim the completion flag atomically before touching the link.
+    // Store read/publish ran unlocked; NimBLE may have reused conn_handle_ for
+    // a new peer. Re-check generation before setting irk_gave_up_ or terminating.
     bool still_current;
     {
       MutexGuard lock(state_mutex_);
@@ -582,7 +552,7 @@ void IRKCaptureComponent::poll_irk_if_due(uint32_t now) {
   }
 }
 
-//======================== Public publish utility ========================
+//======================== Capture outcomes & teardown ========================
 
 void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t connection_generation,
                                           bool pairing_completed, CaptureOrigin origin,
@@ -596,11 +566,8 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
     if (connection_generation != connection_generation_) return;
     if (connected_) irk_gave_up_ = true;
     cancel_peer_timers_(peer_id, connection_generation);
-    // Never replace this connection's successful result or repeat a failure.
-    // Re-encrypting an existing bond is not a new pairing attempt. Preserve the
-    // user's last result, while still allowing the first observation to fill
-    // an empty display. UNKNOWN is intentionally not treated as BONDED: a failed
-    // initial store read does not prove that this was a background reconnect.
+    // Never overwrite this connection's result or let a bonded reconnect
+    // replace an existing display (UNKNOWN still writes since bond state is unproved).
     if (last_result_generation_ == connection_generation ||
         (origin == CaptureOrigin::BONDED && last_result_generation_ != 0))
       return;
@@ -644,11 +611,8 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
 
 void IRKCaptureComponent::close_after_no_irk_(uint16_t conn_handle, uint32_t connection_generation,
                                               const char* context) {
-  // A completed pairing without an IRK is as final as a capture. Leaving the
-  // link up would hold the only connection slot until the 90 s pairing timeout
-  // and then report a timeout that never happened. The bond is still stored,
-  // so the peer may reconnect at once and reach the same outcome: hold
-  // advertising off briefly so that cannot become a tight reconnect loop.
+  // No-IRK is terminal; leaving the link up would trigger a bogus 90s pairing
+  // timeout. Because the bond stays stored, hold adv off briefly to avoid a loop.
   {
     MutexGuard lock(state_mutex_);
     // The store read ran unlocked. Never close a replacement connection that
@@ -692,8 +656,7 @@ void IRKCaptureComponent::handle_pending_termination_() {
   {
     MutexGuard lock(state_mutex_);
     if (pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE) return;
-    // After a transient failure the request waits out its backoff. loop() keeps
-    // waking the worker, so this check costs one lock per wake-up.
+    // Honor retry backoff if another maintenance wake-up runs early.
     if (pending_terminate_retry_time_ != 0 &&
         !deadline_reached(now_ms(), pending_terminate_retry_time_))
       return;
@@ -780,8 +743,7 @@ void IRKCaptureComponent::handle_pending_termination_() {
 }
 
 void IRKCaptureComponent::report_capture_failure_(uint32_t connection_generation) {
-  // A pairing that ended without a result used to be visible only in the log:
-  // Status went straight back to "advertising" and the wizard kept waiting.
+  // Surface failed pairings to Status/wizard for STATUS_RESULT_HOLD_MS.
   MutexGuard lock(state_mutex_);
   // Ignore links this component is not tracking, and never replace a result
   // this connection has already produced.
