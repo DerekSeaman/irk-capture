@@ -337,19 +337,13 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
                                          origin, &d.peer_ota_addr);
   }
 
-  // Thread-safe advertising state update
-  {
-    MutexGuard lock(self->state_mutex_);
-    self->advertising_ = false;
-  }
-
-  // Check if we should stop advertising
-  // THREAD-SAFE: Snapshot capture counts and restart schedule under mutex
+  // Update advertising state and snapshot restart conditions in one lock.
   bool should_stop_adv = false;
   bool requested;
   bool restart_scheduled;
   {
     MutexGuard lock(self->state_mutex_);
+    self->advertising_ = false;
     should_stop_adv = self->capture_limit_reached_locked_();
     requested = self->advertising_requested_;
     restart_scheduled = self->adv_restart_time_ != 0;
