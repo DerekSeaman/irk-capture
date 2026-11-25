@@ -265,6 +265,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   // descriptor). The post-disconnect timer's peer is set by
   // schedule_post_disconnect_check() below, so no separate cache is needed here.
   const struct ble_gap_conn_desc& d = ev->disconnect.conn;
+  const std::string peer_addr = addr_to_str(d.peer_id_addr);
   uint32_t connection_generation = 0;
   bool already_observed = false;
   bool pairing_completed = false;
@@ -277,7 +278,6 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       connected_since = self->pairing_start_time_;
       pairing_completed = self->enc_ready_;
       origin = self->connection_origin_;
-      const std::string peer_addr = addr_to_str(d.peer_id_addr);
       for (const auto& entry : self->irk_cache_) {
         if (entry.mac_addr == peer_addr && entry.addr_type == d.peer_id_addr.type &&
             entry.last_observed_generation == connection_generation) {

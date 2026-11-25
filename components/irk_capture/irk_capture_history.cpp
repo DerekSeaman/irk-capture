@@ -493,6 +493,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   // start pairing until this callback returns. The pending flag also blocks
   // main-task advertising starts and MAC rotation throughout the store wipe.
   bool can_clear = false;
+  bool stopped_advertising = false;
   int stop_rc = BLE_HS_EBUSY;
   uint32_t operation_id;
   uint32_t host_generation;
@@ -521,11 +522,10 @@ void IRKCaptureComponent::handle_forget_bonds_() {
         if (connected_) reason = "A device is connected; disconnect it and retry.";
       }
       if (can_clear) {
-        stop_rc = ble_gap_adv_stop();
+        const bool was_active = ble_gap_adv_active() != 0;
+        stop_rc = was_active ? ble_gap_adv_stop() : BLE_HS_EALREADY;
         const bool active = ble_gap_adv_active() != 0;
-        // Logged here: the stop is not visible in the requester's log, and it
-        // is the advertising change a bond clear makes.
-        ESP_LOGI(TAG, "Advertising stopped to clear bonds");
+        stopped_advertising = was_active && !active;
         MutexGuard lock(state_mutex_);
         if (!still_current()) return;
         advertising_ = active;
@@ -541,6 +541,11 @@ void IRKCaptureComponent::handle_forget_bonds_() {
         }
       }
     }
+  }
+  if (stopped_advertising) {
+    // Logged outside ble_op_mutex_ and only when this handler actually stopped
+    // the radio.
+    ESP_LOGI(TAG, "Advertising stopped to clear bonds");
   }
 
   if (can_clear) {
@@ -561,9 +566,12 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   } else {
     ESP_LOGW(TAG, "Forget All Bonds: history cleared; pairings may remain. %s", reason.c_str());
   }
-  // Re-evaluate current intent: an OFF request or capture limit reached while
-  // the event was queued must not be undone by restoring an old snapshot.
-  start_advertising();
+  // Only resume advertising when this handler stopped the radio or ran a clear
+  // (which blocked concurrent starts). Skipping on lock contention avoids
+  // stalling the NimBLE host task behind the operation that held ble_op_mutex_.
+  if (stopped_advertising || can_clear) {
+    start_advertising();
+  }
 }
 
 std::string IRKCaptureComponent::build_history_json() {
