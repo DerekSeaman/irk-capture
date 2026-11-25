@@ -207,6 +207,7 @@ var lastHistKey = null;   // history last rendered, see render()
 var wizStep = 0;          // 0 = panel view
 var lastData = null;
 var labelDirty = false;
+var wizLabelSaving = false;
 var labelEdit = 0;
 var pendingLabelSave = null;
 var awaitingCapture = false;
@@ -421,7 +422,12 @@ function wizGo(n){
 
 /* ---------- wizard actions ---------- */
 async function wizSaveLabel(){
-  if(await action('/api/label',{label:el('wizLabel').value})) wizGo(3);
+  if(wizLabelSaving) return;
+  wizLabelSaving=true;
+  try{
+    // Only move on from the step that asked; the user may have left it.
+    if(await action('/api/label',{label:el('wizLabel').value}) && wizStep===2) wizGo(3);
+  }finally{ wizLabelSaving=false; }
 }
 function hideClearMessage(id){
   el(id).textContent=''; el(id).classList.add('hide'); el(id).classList.remove('ok');
