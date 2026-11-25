@@ -47,11 +47,9 @@ struct CaptureStart {
   uint32_t sequence { 0 };
 };
 
-// A point-in-time copy of everything the wizard UI needs to render. Built on
-// the ESPHome main task (see loop()) and read by esp_http_server's own
-// request-handling task, so it is copied under snapshot_mutex_ on both ends
-// rather than handing the httpd task raw TextSensor pointers to read from a
-// different task than the one that publishes them.
+// Cached UI state built on the main task and copied under snapshot_mutex_
+// by httpd. The status handler refreshes live controls separately, keeping
+// TextSensor::state reads on the main task.
 struct WizardSnapshot {
   std::string status { "idle" };
   // Shared so that copying a snapshot for a request does not copy the history,
@@ -60,9 +58,8 @@ struct WizardSnapshot {
   std::string irk;
   std::string device_mac;
   std::string effective_mac;
-  // What the phone shows in its Bluetooth list: the Keyboard profile's
-  // "Logitech K380", or whatever a rename or an identity refresh replaced it
-  // with since boot.
+  // Name selected for advertising: Keyboard default, configured name,
+  // or a name set by a rename or identity refresh.
   std::string advertised_name;
   std::string next_capture_label;
   std::string profile { "Heart Sensor" };
@@ -125,11 +122,8 @@ class IRKWizardComponent : public Component {
   void set_port(uint16_t port) {
     port_ = port;
   }
-  // HTTP Basic auth, required by the config schema. The expected header value
-  // is precomputed once here so request handling is a constant-time string
-  // compare with no base64 decoding. This is not secrecy at rest: base64 is
-  // reversible, and the username and password are compiled into the firmware
-  // image as the arguments to this call.
+  // Precomputes "Basic <base64>" for header comparisons without decoding.
+  // The original credentials are embedded in the firmware.
   void set_auth(const std::string& username, const std::string& password);
 
   irk_capture::IRKCaptureComponent* irk_capture() {
