@@ -42,107 +42,22 @@ namespace irk_capture {
 static const char* const TAG = "irk_capture";
 static constexpr char HEX[] = "0123456789abcdef";
 
-//======================== NAMING CONVENTIONS ========================
-/*
-This codebase follows ESPHome style guidelines:
--    Member variables: trailing underscore (conn_handle_, advertising_)
--    Local variables/parameters: snake_case (conn_handle, peer_id)
--    Functions: snake_case (try_get_irk, start_advertising)
--    Constants: UPPER_SNAKE_CASE or constexpr with descriptive names
--    Classes: PascalCase (IRKCaptureComponent)
-*/
-
-//======================== THREADING MODEL ========================
-/*
-CRITICAL: This component runs in a multi-threaded environment:
-1. NimBLE task: Executes all GAP event callbacks (connect, disconnect,
-enc_change, etc.)
-2. ESPHome main task: Executes loop(), setup(), and UI callbacks (switch,
-button, text)
-3. Bond-clear worker: Enqueues NimBLE wake-ups; may wait for queue capacity,
-but never holds a component mutex while doing so or deletes bonds itself. The
-worker also queues generation-checked completion disconnects on the host task.
-4. esp_http_server task (only with irk_wizard): calls the thread-safe getters,
-set_next_capture_label(), set_stop_after_capture() and request_bond_clear().
-Everything else the wizard does is deferred to the main task.
-
-THREAD SAFETY RULES:
--    ALL reads/writes to shared state MUST use state_mutex_
--    The state it protects is listed next to state_mutex_ in irk_capture.h
--    RAII MutexGuard class ensures exception-safe lock/unlock
--    Mutex MUST be released before calling BLE stack APIs (prevents deadlock)
--    Entity publish_state() is NOT safe to call from the NimBLE task. BLE-context
-     code stages values into the pending_* fields (under state_mutex_) and the
-     ESPHome main loop() publishes them via flush_pending_publishes_()
--    host_synced_ uses std::atomic<bool> (writes from NimBLE reset/sync callbacks,
-     reads from the main loop)
-
-IMPORTANT: Do NOT rely on "aligned writes are atomic" - always use mutex for
-shared state to ensure:
-  1. Memory barriers (visibility across cores)
-  2. Compiler optimization safety (prevents register caching)
-  3. Consistent threading model (easier maintenance)
-
-ESPHome component lifecycle guarantees:
--    setup() completes before loop() starts
--    All set_*() configuration calls complete before setup()
--    Parent pointers (IRKCaptureText, IRKCaptureSwitch, etc.) are always valid
-     after setup() IF those optional components are configured in YAML
-*/
-
-//======================== ERROR HANDLING STRATEGY ========================
-/*
-Logging severity levels used throughout:
--    ESP_LOGE: Critical failures that prevent IRK capture (NimBLE init fails,
-store errors)
--    ESP_LOGW: Recoverable issues or unexpected states (pairing retry, IRK not
-yet available)
--    ESP_LOGI: Normal operational events (connection, disconnection, IRK
-captured)
--    ESP_LOGD: Detailed debugging (GAP events, state transitions, timer
-scheduling)
-
-Philosophy: Log enough to debug pairing issues remotely, but avoid spam during
-normal operation.
-*/
-
-//======================== STATE MACHINE OVERVIEW ========================
-/*
-Component operates as a state machine with these primary states:
-
-1. IDLE (advertising_ = false, connected_ = false)
-   - Waiting for user to enable advertising switch
-   - Transitions to ADVERTISING when start_advertising() called
-
-2. ADVERTISING (advertising_ = true, connected_ = false)
-   - Broadcasting BLE advertisements with current MAC and device name
-   - Transitions to CONNECTED on BLE_GAP_EVENT_CONNECT
-
-3. CONNECTED (connected_ = true, advertising_ = false)
-   - Peer device connected, initiating security/pairing
-   - Transitions to ENCRYPTED when BLE_GAP_EVENT_ENC_CHANGE succeeds
-
-4. ENCRYPTED (connected_ = true, enc_ready_ = true)
-   - Secure connection established, polling NimBLE's bond store for the IRK
-   - Stops IRK polling after 45s; transitions to DISCONNECTING when an IRK is
-     captured, when the bond turns out to hold no IRK, or when the global 90s
-     pairing timeout terminates the link
-
-5. DISCONNECTING (connected_ = false, adv_restart_time_ may be set)
-   - IRK retrieval attempts continue via timers after disconnect
-   - Transitions back to ADVERTISING at once, or when adv_restart_time_ expires
-
-Key flags:
--    advertising_: BLE stack is actively advertising
--    connected_: Peer is currently connected
--    enc_ready_: Encryption/pairing completed successfully
--    irk_gave_up_: Exceeded 45s timeout without capturing IRK
--    adv_restart_time_: Nonzero while a restart of advertising is being held
-off (reconnect-loop defense, DHKey failure, no-IRK result, timeout cooldown,
-start retry)
--    sec_retry_done_: The one security retry for this connection has been used
-(it fires when encryption has not completed ~2s after connect)
-*/
+//======================== Threading model ========================
+// Tasks touching this component:
+// 1. NimBLE host task: GAP/GATT/reset/sync callbacks and queued host work
+//    (pending disconnects, bond clears, MAC-rotation cleanup).
+// 2. ESPHome main task: setup(), loop(), HA entity callbacks, deferred wizard ops.
+// 3. Maintenance worker ("irk_bond_clear"): puts bond_clear_event_ onto NimBLE's
+//    queue (may block on older NPL ports) without holding any component mutex.
+// 4. esp_http_server task (irk_wizard): thread-safe getters,
+//    set_next_capture_label(), set_stop_after_capture(), request_bond_clear().
+//
+// Rules:
+// - Guard all mutable shared state with state_mutex_ (see irk_capture.h).
+//   host_synced_ is std::atomic<bool>.
+// - Release state_mutex_ before calling BLE stack, NVS, or logging APIs.
+// - Entity publish_state() is main-task only; other contexts stage pending_*
+//   fields for flush_pending_publishes_() in loop().
 
 // Timing configuration (all values in ms)
 struct TimingConfig {
@@ -150,8 +65,7 @@ struct TimingConfig {
   static constexpr uint32_t HR_NOTIFY_INTERVAL_MS =
       1000;  // Heart rate notification interval (keeps connection alive)
   static constexpr uint32_t ENC_TO_FIRST_TRY_DELAY_MS =
-      1000;  // Delay from encryption to first IRK poll (NimBLE stores the
-             // keys after it reports ENC_CHANGE)
+      1000;  // Delay after ENC_CHANGE before first fallback IRK poll
   static constexpr uint32_t ENC_TRY_INTERVAL_MS =
       1000;  // Interval between IRK polling attempts while connected
   static constexpr uint32_t ENC_GIVE_UP_AFTER_MS =
@@ -169,7 +83,7 @@ struct TimingConfig {
   static constexpr uint32_t ADV_SUPPRESS_RESTART_DELAY_MS =
       5000;  // Delay before auto-restarting advertising after a hold-off
              // (reconnect-loop defense, DHKey failure, no-IRK result)
-  static constexpr uint32_t ADV_RETRY_MS = 1000;  // Backoff after advertising start contention
+  static constexpr uint32_t ADV_RETRY_MS = 1000;  // Base backoff for advertising start/stop retries
   static constexpr uint8_t ADV_FAST_ATTEMPTS = 5;
   static constexpr uint32_t ADV_SLOW_RETRY_MS = 60000;
   static constexpr uint32_t ADV_FAILURE_LOG_INTERVAL_MS = 300000;
@@ -194,36 +108,26 @@ struct TimingConfig {
   static constexpr uint32_t HOST_SYNC_REBOOT_MS =
       300000;  // Unsynced this long with nothing captured: reboot to recover
   static constexpr uint32_t BLE_OP_LOCK_WAIT_MS =
-      200;  // Longest the main loop waits for ble_op_mutex_ before retrying later
+      200;  // Bounded wait for ble_op_mutex_ before deferring/retrying
   static constexpr uint32_t STATUS_RESULT_HOLD_MS =
       4000;  // How long the status sensor holds "captured" / "no_irk" / "failed"
 };
 
-//======================== IRK lifecycle (for readers) ========================
-/*
-Connect → Initiate security
-ENC_CHANGE (success) → immediate IRK read from store; if available: publish &
-disconnect (tested working behavior); otherwise schedule a late read at +5s.
-A stored bond with no IRK is also a final outcome: publish "no IRK", disconnect,
-and hold advertising off briefly so a bonded peer cannot reconnect in a loop.
-ENC_CHANGE (failure) → delete the failing peer's bond and terminate the
-connection to force fresh pairing on reconnect; on a DHKey check failure,
-additionally suppress the next advertising cycle to prod the peer into resetting.
-(Separately, retry_security_if_needed() initiates security once more if
-encryption has not completed ~2s after connect — this is timeout-driven, not a
-response to an ENC_CHANGE failure.)
-DISCONNECT → if this connection has not produced a result yet: immediate store
-read, and a delayed read at +800ms if that is inconclusive. Then restart
-advertising unless a hold-off is pending or the capture limit was reached.
-While connected (post ENC) → poll every 1s starting at +1s, stop polling after
-45s, and disconnect immediately whenever an IRK is captured.
-All address reporting uses the peer identity address; IRK hex is reversed for
-parity with Arduino output.
-
-Why this lifecycle: Maintains compatibility (immediate disconnect after capture)
-while adding robustness for timing variations across different BLE peer
-implementations.
-*/
+//======================== IRK lifecycle ========================
+// States: IDLE -> ADVERTISING -> CONNECTED -> ENCRYPTED -> IDLE/ADVERTISING.
+// Connect -> initiate security, with one retry after 2 s if encryption is pending.
+// ENC_CHANGE (ok) -> read the peer's bond immediately. An IRK or confirmed no-IRK
+//   result requests disconnect. A no-IRK result also holds off advertising.
+//   If the read is inconclusive, check again at +5 s and poll once a second,
+//   starting at +1 s and giving up after about 45 s.
+// ENC_CHANGE (fail) -> delete only this peer's bond, report failure, and request
+//   disconnect. DHKey failure also delays the next advertising restart.
+// Polling queues disconnects. ENC_CHANGE can defer termination if the BLE lock is busy.
+// Timeout recovery starts if encryption is still pending 20 s after security
+//   initiation, or if the link remains open 90 s after connection.
+// DISCONNECT -> if no IRK was observed, read the bond immediately and retry at
+//   +800 ms if inconclusive. Restart advertising unless limited, OFF, or held off.
+// Report the peer's identity address and reverse IRK hex for Arduino parity.
 
 //======================== Forward decls ========================
 
@@ -235,15 +139,14 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
 // Defined in irk_capture_identity.cpp.
 bool persist_ble_profile(BLEProfile profile);
 
-//======================== Small utilities (readability only)
-//========================
+//======================== Utilities ========================
 
 static inline uint32_t now_ms() {
   return (uint32_t) (esp_timer_get_time() / 1000ULL);
 }
 
 // Wraparound-safe "has deadline passed?" check for 32-bit ms timestamps.
-// Returns true when `now` is at or past `deadline` (handles 49.5-day overflow).
+// Returns true when `now` is at or past `deadline` (handles 49.7-day overflow).
 // IMPORTANT: Only valid when deadline was set within the last ~24.8 days.
 static inline bool deadline_reached(uint32_t now, uint32_t deadline) {
   return (int32_t) (now - deadline) >= 0;
@@ -304,12 +207,10 @@ static inline bool addr_equal(const ble_addr_t& lhs, const ble_addr_t& rhs) {
   return lhs.type == rhs.type && std::memcmp(lhs.val, rhs.val, sizeof(lhs.val)) == 0;
 }
 
-// Serializes BLE host control operations across the ESPHome and NimBLE tasks.
-// The same guard as MutexGuard; the name says which lock is being taken.
-//
-//   BleOpGuard g(ble_op_mutex_);            // waits without limit (NimBLE callbacks)
-//   BleOpGuard g(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));  // bounded
-//   if (!g.acquired()) { ...; return; }     // bail on timeout
+// MutexGuard alias for ble_op_mutex_. Queued host work and direct ENC_CHANGE disconnects use
+// a zero-timeout acquisition and defer on contention. Advertising start/stop can
+// run on either task and use the bounded BLE_OP_LOCK_WAIT_MS wait. Failed
+// CONNECT and extra-link teardown still wait without a timeout.
 using BleOpGuard = MutexGuard;
 
 void log_sm_config(const char* label = "SM config");
