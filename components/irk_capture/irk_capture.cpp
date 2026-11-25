@@ -23,7 +23,6 @@ void IRKCaptureComponent::setup() {
   ble_name_ = sanitize_ble_name(ble_name_);
   if (ble_name_.empty()) ble_name_ = DEFAULT_BLE_NAME;
 
-  // Initialize mutex for thread-safe access to shared state
   state_mutex_ = xSemaphoreCreateMutex();
   if (!state_mutex_) {
     ESP_LOGE(TAG, "CRITICAL: Failed to create state mutex - thread safety compromised!");
@@ -132,7 +131,6 @@ void IRKCaptureComponent::setup() {
     ble_name_text_->publish_state(name);
   }
   if (ble_profile_select_) {
-    // Initialize select to persisted profile
     ble_profile_select_->publish_state(ble_profile_ == BLEProfile::KEYBOARD ? "Keyboard"
                                                                             : "Heart Sensor");
   }
@@ -157,7 +155,6 @@ void IRKCaptureComponent::publish_setup_failure_() {
 }
 
 void IRKCaptureComponent::dump_config() {
-  // THREAD-SAFE: Copy state before logging
   std::string name_copy;
   bool adv_state;
   BLEProfile current_profile;
@@ -201,7 +198,7 @@ void IRKCaptureComponent::loop() {
   handle_mac_rotation_(now);
   uint16_t conn_handle_copy;
 
-  // Auto-restart advertising once a scheduled hold-off or retry delay expires
+  // Reconcile unwanted advertising and scheduled advertising restarts.
   bool should_restart_adv = false;
   bool should_stop_unwanted_adv = false;
   {
@@ -232,12 +229,9 @@ void IRKCaptureComponent::loop() {
 
   // Encryption and overall pairing deadlines share termination, retry, and
   // cleanup. Once recovery starts, leave the link to that handler until closed.
-  // Security initiation can dispatch a new connection while this loop is in
-  // progress. Sample time again so its start cannot appear newer than "now".
+  // Earlier loop work can let NimBLE accept a new connection; re-sample now_ms().
   if (handle_connection_timeout_(now_ms())) return;
 
-  // THREAD-SAFE: Check connection state before proceeding with
-  // connection-specific work
   bool is_connected;
   {
     MutexGuard lock(state_mutex_);
@@ -431,7 +425,7 @@ void IRKCaptureComponent::flush_pending_publishes_() {
   }
 }
 
-//======================== Wizard-facing controls (1.7.0) ========================
+//======================== Session controls and status ========================
 
 void IRKCaptureComponent::set_stop_after_capture(bool enabled) {
   MutexGuard lock(state_mutex_);
