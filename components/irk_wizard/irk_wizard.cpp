@@ -598,34 +598,55 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
     s.stop_after_capture = live.stop_after_capture;
   }
 
-  std::string head = "{";
-  head += "\"boot_id\":" + std::to_string(s.capture_result.boot_id) + ",";
-  head += "\"status\":\"" + json_escape(s.status) + "\",";
-  head += "\"next_capture_label\":\"" + json_escape(s.next_capture_label) + "\",";
-  head += "\"advertised_name\":\"" + json_escape(s.advertised_name) + "\",";
-  head += "\"profile\":\"" + json_escape(s.profile) + "\",";
-  head += "\"advertising\":" + std::string(s.advertising ? "true" : "false") + ",";
-  head += "\"effective_mac\":\"" + json_escape(s.effective_mac) + "\",";
-  head += "\"device_mac\":\"" + json_escape(s.device_mac) + "\",";
-  head += "\"irk\":\"" + json_escape(s.irk) + "\",";
-  head += "\"stop_after_capture\":" + std::string(s.stop_after_capture ? "true" : "false") + ",";
-  head += "\"history\":";
-  std::string tail =
-      ",\"capture_result\":{\"boot_id\":" + std::to_string(s.capture_result.boot_id) +
-      ",\"sequence\":" + std::to_string(s.capture_result.sequence) + ",\"irk\":\"" +
-      json_escape(s.capture_result.irk) + "\",\"device_mac\":\"" +
-      json_escape(s.capture_result.device_mac) + "\",\"verification\":\"" +
-      irk_capture::irk_check_name(s.capture_result.verification) + "\"},";
-  tail += "\"capture_start\":{\"operation_id\":" + std::to_string(s.capture_start.operation_id) +
-          ",\"state\":\"" + capture_start_state_name(s.capture_start.state) +
-          "\",\"boot_id\":" + std::to_string(s.capture_start.boot_id) +
-          ",\"sequence\":" + std::to_string(s.capture_start.sequence) + "},";
-  tail += "\"bond_clear\":" + bond_clear_json(s.bond_clear) + ",";
-  tail +=
-      "\"identity_refresh\":{\"operation_id\":" + std::to_string(s.identity_refresh.operation_id) +
-      ",\"state\":\"" + irk_capture::identity_refresh_state_name(s.identity_refresh.state) +
-      "\",\"cleanup_reason\":\"" + json_escape(s.identity_refresh.cleanup_reason) + "\"}";
-  tail += "}";
+  // Appended in place: chained + would build a temporary string for nearly
+  // every field, on every poll, for the life of the device.
+  const auto add_string = [](std::string& out, const char* key, const std::string& value) {
+    out += key;
+    out += json_escape(value);
+    out += '"';
+  };
+  const auto add_number = [](std::string& out, const char* key, uint32_t value) {
+    out += key;
+    out += std::to_string(value);
+  };
+  const auto add_bool = [](std::string& out, const char* key, bool value) {
+    out += key;
+    out += value ? "true" : "false";
+  };
+  std::string head;
+  head.reserve(384);
+  add_number(head, "{\"boot_id\":", s.capture_result.boot_id);
+  add_string(head, ",\"status\":\"", s.status);
+  add_string(head, ",\"next_capture_label\":\"", s.next_capture_label);
+  add_string(head, ",\"advertised_name\":\"", s.advertised_name);
+  add_string(head, ",\"profile\":\"", s.profile);
+  add_bool(head, ",\"advertising\":", s.advertising);
+  add_string(head, ",\"effective_mac\":\"", s.effective_mac);
+  add_string(head, ",\"device_mac\":\"", s.device_mac);
+  add_string(head, ",\"irk\":\"", s.irk);
+  add_bool(head, ",\"stop_after_capture\":", s.stop_after_capture);
+  head += ",\"history\":";
+
+  std::string tail;
+  tail.reserve(384);
+  add_number(tail, ",\"capture_result\":{\"boot_id\":", s.capture_result.boot_id);
+  add_number(tail, ",\"sequence\":", s.capture_result.sequence);
+  add_string(tail, ",\"irk\":\"", s.capture_result.irk);
+  add_string(tail, ",\"device_mac\":\"", s.capture_result.device_mac);
+  tail += ",\"verification\":\"";
+  tail += irk_capture::irk_check_name(s.capture_result.verification);
+  add_number(tail, "\"},\"capture_start\":{\"operation_id\":", s.capture_start.operation_id);
+  tail += ",\"state\":\"";
+  tail += capture_start_state_name(s.capture_start.state);
+  add_number(tail, "\",\"boot_id\":", s.capture_start.boot_id);
+  add_number(tail, ",\"sequence\":", s.capture_start.sequence);
+  tail += "},\"bond_clear\":";
+  tail += bond_clear_json(s.bond_clear);
+  add_number(tail, ",\"identity_refresh\":{\"operation_id\":", s.identity_refresh.operation_id);
+  tail += ",\"state\":\"";
+  tail += irk_capture::identity_refresh_state_name(s.identity_refresh.state);
+  add_string(tail, "\",\"cleanup_reason\":\"", s.identity_refresh.cleanup_reason);
+  tail += "}}";
 
   // Sent in pieces. The history can reach tens of kilobytes, and joining it
   // to the rest would need a second buffer of that size for every request. A
