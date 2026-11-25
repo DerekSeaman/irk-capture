@@ -1,6 +1,6 @@
 #pragma once
 
-// Pure helpers for the wizard's HTTP layer: base64, a constant-time compare,
+// Pure helpers for the wizard's HTTP layer: base64, credential comparison,
 // and just enough JSON handling for the short, flat bodies the page sends.
 // Deliberately free of ESP-IDF and ESPHome includes so the same code can be
 // compiled and exercised on a host (see the workflow's host test job).
@@ -38,11 +38,9 @@ inline std::string base64_encode(const std::string& in) {
   return out;
 }
 
-// Compare that runs for the length of the expected secret `b` whatever `a`
-// holds, so neither a wrong password nor a wrong length can be recovered by
-// timing how far the comparison got. A length mismatch is folded into a
-// volatile accumulator so the compiler cannot short-circuit the loop, and
-// every iteration performs an unconditional load and XOR.
+// Accumulate differences across the full expected credential length without
+// stopping at the first mismatch. Fold a length mismatch into the volatile
+// accumulator and use a safe fallback byte past the supplied input's end.
 inline bool secure_equals(const std::string& a, const std::string& b) {
   volatile uint8_t diff = (a.size() != b.size()) ? 1 : 0;
   static const uint8_t kZero = 0;
@@ -71,10 +69,8 @@ inline bool is_json_content_type(const char* value) {
   return value[i] == '\0' || value[i] == ';';
 }
 
-// Maps a profile name from the page to whether it is the Keyboard profile.
-// Anything else is rejected rather than defaulted: a profile switch reboots the
-// device and discards the capture session, so a typo, or a newer page talking
-// to an older device, must never switch profiles by falling through.
+// Parses "Keyboard" or "Heart Sensor"; rejects unknown values instead of
+// defaulting because a wrong profile switch triggers a reboot and loses the session.
 inline bool parse_profile_name(const std::string& name, bool& keyboard) {
   if (name == "Keyboard") {
     keyboard = true;
@@ -118,14 +114,10 @@ struct AuthThrottle {
   }
 };
 
-// One throttle per client address, so a host guessing passwords locks out only
-// itself. A single shared throttle let any host on the network keep everyone
-// out indefinitely with five bad requests every thirty seconds.
-//
-// The table is small on purpose. When it is full, the least recently seen
-// client with no recent failures gives up its slot. Failed attempts survive
-// address churn until the client has been idle for a full lockout interval.
-// When every slot has recent failures, new addresses share the overflow budget.
+// Per-client throttle table so one guessing host locks out only itself.
+// Full table evicts the least recently seen idle client; recent failures keep
+// their slot for one lockout window. If all slots have recent failures, extra
+// clients share the overflow throttle.
 struct ClientThrottles {
   static constexpr size_t SLOTS = 4;
 
@@ -171,11 +163,9 @@ struct ClientThrottles {
 };
 
 //======================== Minimal JSON ========================
-// The page sends one small, flat JSON object per request, and these helpers
-// read one top-level member of it. They walk the object instead of searching
-// the text, so a key name inside another member's value is never mistaken for
-// a member. Anything malformed before or at the requested value is rejected
-// rather than guessed at: a wrong guess here becomes a wrong command.
+// Validate the entire JSON object, then find the requested top-level member.
+// Lookup ignores key-like strings inside values and rejects duplicates of
+// the requested key.
 
 inline void json_skip_ws(const std::string& body, size_t& pos) {
   while (pos < body.size() &&
@@ -222,11 +212,9 @@ inline void json_append_utf8(uint32_t code_point, std::string& out) {
   }
 }
 
-// Reads the string whose opening quote is at pos and leaves pos just after its
-// closing quote. Pass a null out to skip the string. Every JSON escape is
-// decoded; reducing an escape to its letter would turn a pasted tab ("\t")
-// into a stray "t". Returns false for a string that never closes, an unknown
-// escape, a lone surrogate or a raw control character.
+// Parses a JSON string at pos (leaving pos past the closing quote); pass
+// out=nullptr to skip. Decodes all JSON escapes (including surrogate pairs)
+// and rejects unclosed strings, unknown escapes, lone surrogates, and <0x20.
 inline bool json_read_string(const std::string& body, size_t& pos, std::string* out) {
   if (pos >= body.size() || body[pos] != '"') return false;
   pos++;
@@ -405,9 +393,8 @@ inline bool json_extract_bool(const std::string& body, const char* key, bool& ou
   return false;
 }
 
-// Extracts a complete, quoted string value. Values are re-sanitized on the
-// irk_capture side before they are stored or echoed back. out is left
-// untouched unless the whole value is valid.
+// Extracts a complete quoted string for key; leaves out untouched on failure.
+// Callers validate/sanitize the decoded value before use.
 inline bool json_extract_string(const std::string& body, const char* key, std::string& out) {
   size_t pos;
   if (!json_find_value_start(body, key, pos)) return false;
@@ -417,9 +404,8 @@ inline bool json_extract_string(const std::string& body, const char* key, std::s
   return true;
 }
 
-// Escapes a value for a JSON string. Control characters are escaped as well:
-// one raw control character makes the whole status response unparseable, which
-// the page can only report as the device being unreachable.
+// Escapes quotes, backslashes, and control chars (<0x20) so a raw control
+// character cannot make a JSON response unparseable.
 inline std::string json_escape(const std::string& in) {
   static const char* const HEX_DIGITS = "0123456789abcdef";
   std::string out;
