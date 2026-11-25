@@ -47,37 +47,13 @@ static void log_banner(const char* context_tag) {
 
 //======================== IRK Deduplication ========================
 
-/**
- * @brief Records one IRK observation and decides whether to publish it
- * (deduplication + rate limiting)
- *
- * CRITICAL: Caller MUST hold state_mutex_ before calling this function.
- * This function modifies irk_cache_: entries, reconnect counters, timestamps
- * and visible history. It therefore does not log: it returns what it
- * decided, and the caller reports that with
- * log_publish_decision() once the lock is released.
- *
- * MEMORY SAFETY: This function prevents duplicate entries in irk_cache_ by
- * checking if the identity address already exists before adding. Even if the
- * same device reconnects 100 times, it will only have ONE entry in the cache
- * (updated in-place). cache_limit_() caps the cache, so memory stays bounded
- * on ESP32-C3 even when max_captures is 0 (unlimited).
- *
- * @param irk_hex IRK in hex string format
- * @param addr MAC address string
- * @param addr_type NimBLE identity-address type
- * @param connection_generation Monotonic connection identifier used to coalesce
- * extraction paths from the same connection
- * @param force_pairing_publish True for an explicit pairing or REPEAT_PAIRING;
- * bypasses rate limiting
- * @param check This observation's address check, kept with the entry
- * @return The outcome and the details needed to log it; publish is false for a
- * duplicate path, stale connection, rate-limited or over-limit reconnect
- */
+// Caller holds state_mutex_. Updates irk_cache_ (dedup by identity address,
+// bounded by cache_limit_()) and returns a PublishDecision to log after
+// unlocking. force_pairing_publish (fresh/re-pair) bypasses both the
+// reconnect limit and rate limit and resets reconnect_count.
 PublishDecision IRKCaptureComponent::record_observation_locked_(
     const std::string& irk_hex, const std::string& addr, uint8_t addr_type,
     uint32_t connection_generation, bool force_pairing_publish, IrkCheck check) {
-  // PRECONDITION: Caller holds state_mutex_
   using Reason = PublishDecision::Reason;
   PublishDecision decision;
   // 64-bit: a 32-bit difference wraps after 49.7 days, which would make a
@@ -105,10 +81,8 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
         entry.last_observed_generation = connection_generation;
       }
 
-      // A changed IRK for a known identity is security-significant and should
-      // always be shown, but it is still the same unique device. A fresh
-      // pairing or REPEAT_PAIRING is an explicit user action: always surface
-      // its IRK, even when unchanged and inside the normal interval.
+      // Always publish a changed IRK or an explicit (re)pairing, bypassing
+      // reconnect/rate limits while keeping the single cache entry.
       const bool key_changed = entry.irk_hex != irk_hex;
       // A new key starts with this observation's check. For the same key, a
       // check that could not run must not hide an earlier result.
@@ -157,12 +131,9 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
     }
   }
 
-  // New IRK - add to cache with FIFO eviction. cache_limit_() bounds memory,
-  // including in unlimited mode.
+  // New device: FIFO eviction keeps memory bounded even when max_captures == 0.
   const size_t cache_limit = cache_limit_();
   if (irk_cache_.size() >= cache_limit) {
-    // Evict oldest (FIFO). Note: documented behavior; intentional to cap memory
-    // and keep UX predictable.
     irk_cache_.erase(irk_cache_.begin());
     decision.evicted_oldest = true;
   }
@@ -270,35 +241,17 @@ static void log_irk_check(IrkCheck check) {
   }
 }
 
-/**
- * @brief Centralized IRK output helper - logs and publishes IRK to Home
- * Assistant sensors
- * @param self Pointer to IRKCaptureComponent instance (null is ignored)
- * @param peer_id_addr Peer's identity address (stable across reconnections)
- * @param irk_hex IRK in hex string format (already reversed for output
- * compatibility)
- * @param context_tag Read path, for the log: "ENC_CHANGE", "DISC_IMMEDIATE",
- * "POLL_CONNECTED", "DISC_DELAYED" or "ENC_LATE"
- * @param connection_generation Monotonic connection identifier
- * @param origin How the connection began; a fresh pairing or re-pair is always
- * published, a bonded reconnect is rate-limited
- * @param check Whether the IRK resolves the address the peer connected from
- *
- * This is the single point of IRK output, ensuring consistent formatting across
- * all capture paths. Called from ENC_CHANGE, DISCONNECT, the polling loop and
- * both delayed-read timers (post-disconnect and late-encryption).
- */
+// Single IRK output path across ENC_CHANGE, DISC_IMMEDIATE, POLL_CONNECTED,
+// DISC_DELAYED, and ENC_LATE. Deduplicates/rate-limits under state_mutex_,
+// stages sensor/automation publishing, and logs the capture.
 void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                          const std::string& irk_hex, const char* context_tag,
                          uint32_t connection_generation, CaptureOrigin origin, IrkCheck check) {
-  if (!self) return;  // Early return if no component instance
+  if (!self) return;
 
   const std::string addr_str = addr_to_str(peer_id_addr);
 
-  // THREAD-SAFE: Check deduplication AND increment counter under mutex
-  // CRITICAL: record_observation_locked_() assumes caller holds mutex (non-recursive
-  // mutex!) All irk_cache_ operations, counter increments, and advertising
-  // checks happen atomically
+  // Deduplicate, update counters, and check capture limits atomically.
   uint32_t current_events = 0;
   uint32_t current_unique = 0;
   bool max_reached = false;
@@ -340,10 +293,8 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
       // reconnect republishing a key it already gave us is not one.
       capture_event = is_new_device || key_changed || force_pairing_publish;
 
-      // Wizard "one-shot" mode: independent of continuous_mode/max_captures,
-      // stop advertising after a capture so the flow can hand off to
-      // confirmation. An earlier device reconnecting in the background must
-      // not turn advertising off before the intended device has paired.
+      // Stop-after-capture only triggers on a genuine capture, not a
+      // background reconnect from an already-bonded device.
       stop_after_capture_hit = self->stop_after_capture_ && capture_event;
     }
   }  // Release mutex before slow logging/publishing operations
@@ -361,11 +312,8 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
             deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
       }
     }
-    // stop_advertising() checks GAP itself and stages no Home Assistant
-    // update, so the guard is not about double stops. It skips the BLE lock
-    // wait, and the deferred-stop retry and warning a lock timeout would arm,
-    // when the radio is already known to be off (as on a live link, or from
-    // delayed-read timers such as DISC_DELAYED).
+    // Skip stop_advertising() when already off (e.g. on a live link) to avoid
+    // an unnecessary ble_op_mutex_ wait and deferred-stop retry on contention.
     if (self->is_advertising()) {
       self->stop_advertising();
     }
@@ -380,7 +328,6 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   self->publish_irk_to_sensors(irk_hex, addr_str, connection_generation, capture_event,
                                should_publish && (max_reached || stop_after_capture_hit), check);
 
-  // Skip duplicate capture logs (deduplication happened under mutex).
   if (!should_publish) {
     return;
   }
@@ -491,7 +438,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   // Runs on the same NimBLE event queue as connect/security callbacks. A peer
   // arriving before this event is checked here; one arriving afterwards cannot
   // start pairing until this callback returns. The pending flag also blocks
-  // main-task advertising starts and MAC rotation throughout the store wipe.
+  // advertising starts and MAC rotation throughout the store wipe.
   bool can_clear = false;
   bool lock_busy = false;
   bool stopped_advertising = false;
@@ -502,7 +449,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   std::string reason = "Bluetooth maintenance is busy; retry once idle.";
   {
     MutexGuard lock(state_mutex_);
-    if (!bond_clear_pending_) return;  // A loop retry may have queued a duplicate.
+    if (!bond_clear_pending_) return;  // Duplicate wake-up, reset, or other maintenance work.
     operation_id = bond_clear_result_.operation_id;
     host_generation = bond_clear_host_generation_;
   }
@@ -594,9 +541,8 @@ std::string IRKCaptureComponent::build_history_json() {
 }
 
 std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCacheEntry>& cache) {
-  // {"mac":"<17>","irk":"<32>","label":"<up to 24>","reconnects":<up to 5>,
-  // "verification":"<up to 10>"}, is 94 bytes of framing and fixed-width values
-  // plus the label, count and check.
+  // Worst-case entry (151 B): 94 B for framing, separator, MAC and IRK,
+  // up to 24 for the label, 5 for reconnects, and 28 for verification.
   static constexpr size_t ENTRY_RESERVE = 94 + CAPTURE_LABEL_MAX_LEN + 5 + 28;
   std::string json;
   json.reserve(cache.size() * ENTRY_RESERVE + 2);
