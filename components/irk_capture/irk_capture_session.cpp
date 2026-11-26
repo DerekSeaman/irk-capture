@@ -7,7 +7,13 @@
 // ESP32-only implementation - requires Bluetooth hardware
 #ifdef USE_ESP32
 
+// ESP-IDF 6 ships mbedTLS 4, which dropped the legacy mbedtls/aes.h; use PSA there.
+#if __has_include(<mbedtls/aes.h>)
 #include <mbedtls/aes.h>
+#else
+#define IRK_CAPTURE_USE_PSA_AES
+#include <psa/crypto.h>
+#endif
 
 namespace esphome {
 namespace irk_capture {
@@ -17,11 +23,32 @@ namespace irk_capture {
 bool aes128_encrypt_be(const uint8_t key[16], const uint8_t plaintext[16], uint8_t out[16]) {
   // One AES-128 block per RPA check, on the NimBLE or main task. ESP-IDF
   // mbedTLS can use hardware AES when enabled.
+#ifdef IRK_CAPTURE_USE_PSA_AES
+  // psa_crypto_init() is idempotent; the stack may or may not have run it already.
+  int rc = psa_crypto_init();
+  psa_key_id_t key_id = 0;
+  if (rc == PSA_SUCCESS) {
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&attr, 128);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECB_NO_PADDING);
+    rc = psa_import_key(&attr, key, 16, &key_id);
+    psa_reset_key_attributes(&attr);
+  }
+  if (rc == PSA_SUCCESS) {
+    size_t out_len = 0;
+    rc = psa_cipher_encrypt(key_id, PSA_ALG_ECB_NO_PADDING, plaintext, 16, out, 16, &out_len);
+    if (rc == PSA_SUCCESS && out_len != 16) rc = PSA_ERROR_GENERIC_ERROR;
+    psa_destroy_key(key_id);
+  }
+#else
   mbedtls_aes_context ctx;
   mbedtls_aes_init(&ctx);
   int rc = mbedtls_aes_setkey_enc(&ctx, key, 128);
   if (rc == 0) rc = mbedtls_aes_crypt_ecb(&ctx, MBEDTLS_AES_ENCRYPT, plaintext, out);
   mbedtls_aes_free(&ctx);
+#endif
   if (rc != 0) {
     ESP_LOGW(TAG, "AES for the IRK address check failed rc=%d; IRK left unverified", rc);
     return false;
