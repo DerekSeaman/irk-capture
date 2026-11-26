@@ -17,7 +17,8 @@ esphome:
 
 esp32:
   # The device YAML selects an ESP32 board with BLE and usable Wi-Fi.
-  # This package uses ESP-IDF/NimBLE. CI builds ESP32, C3, C6, and S3.
+  # This package uses ESP-IDF/NimBLE. CI builds ESP32, C3, C6, and S3 on
+  # ESP-IDF 5.x and 6.x.
   # Do NOT declare Bluetooth/NimBLE sdkconfig_options here:
   # components/irk_capture/__init__.py sets them afterwards and wins.
   framework:
