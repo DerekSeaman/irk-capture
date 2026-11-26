@@ -327,25 +327,54 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Every board builds with the newest ESP-IDF 5.x and 6.x, pinned rather than
+        # left to ESPHome's default so neither line drops out of CI when that
+        # default moves. ESP-IDF 6 ships mbedTLS 4, which changes the crypto API
+        # the IRK check uses. The minimum ESPHome keeps its own default IDF.
         include:
           - name: minimum / ESP32
             esphome: esphome==2026.9.0
+            idf: recommended
             board: esp32dev
             variant: esp32
-          - name: latest / ESP32
+          - name: latest / IDF 5.5.6 / ESP32
             esphome: esphome
+            idf: 5.5.6
             board: esp32dev
             variant: esp32
-          - name: latest / ESP32-C3
+          - name: latest / IDF 5.5.6 / ESP32-C3
             esphome: esphome
+            idf: 5.5.6
             board: esp32-c3-devkitm-1
             variant: esp32c3
-          - name: latest / ESP32-C6
+          - name: latest / IDF 5.5.6 / ESP32-C6
             esphome: esphome
+            idf: 5.5.6
             board: esp32-c6-devkitc-1
             variant: esp32c6
-          - name: latest / ESP32-S3
+          - name: latest / IDF 5.5.6 / ESP32-S3
             esphome: esphome
+            idf: 5.5.6
+            board: esp32-s3-devkitc-1
+            variant: esp32s3
+          - name: latest / IDF 6.1.1 / ESP32
+            esphome: esphome
+            idf: 6.1.1
+            board: esp32dev
+            variant: esp32
+          - name: latest / IDF 6.1.1 / ESP32-C3
+            esphome: esphome
+            idf: 6.1.1
+            board: esp32-c3-devkitm-1
+            variant: esp32c3
+          - name: latest / IDF 6.1.1 / ESP32-C6
+            esphome: esphome
+            idf: 6.1.1
+            board: esp32-c6-devkitc-1
+            variant: esp32c6
+          - name: latest / IDF 6.1.1 / ESP32-S3
+            esphome: esphome
+            idf: 6.1.1
             board: esp32-s3-devkitc-1
             variant: esp32s3
     steps:
@@ -372,6 +401,7 @@ jobs:
             variant: ${{ matrix.variant }}
             framework:
               type: esp-idf
+              version: ${{ matrix.idf }}
           logger:
           # The wizard serves over the network, so it declares a dependency on
           # the network component the same way mqtt does. A real device always
