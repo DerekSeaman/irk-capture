@@ -53,7 +53,7 @@ std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
 
 BLEProfile IRKCaptureComponent::get_ble_profile() {
   MutexGuard lock(state_mutex_);
-  return ble_profile_;
+  return selected_profile_();
 }
 
 std::string IRKCaptureComponent::get_ble_name() {
@@ -504,8 +504,7 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
   std::string current_name;
   {
     MutexGuard lock(state_mutex_);
-    old_profile = ble_profile_;
-    ble_profile_ = profile;
+    old_profile = selected_profile_();
     current_name = ble_name_;
   }
 
@@ -513,20 +512,24 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
   ESP_LOGI(TAG, "BLE profile changed to: %s", profile_name);
 
   if (old_profile != profile) {
+    // The GATT table is fixed until reboot, so the running profile never
+    // changes here: an advertising restart while this saves, or before the
+    // reboot, must still describe the services this boot registered.
     const bool persisted = persist_ble_profile(profile);
 
     // Rebooting without a saved profile would revert on boot and lose the
-    // session; roll back instead.
+    // session; keep the current selection instead.
     if (!persisted) {
-      {
-        MutexGuard lock(state_mutex_);
-        ble_profile_ = old_profile;
-      }
       const char* old_name =
           (old_profile == BLEProfile::HEART_SENSOR) ? "Heart Sensor" : "Keyboard";
       ESP_LOGE(TAG, "BLE profile change not saved; staying on %s and skipping reboot", old_name);
       if (ble_profile_select_) ble_profile_select_->publish_state(old_name);
       return;
+    }
+    {
+      MutexGuard lock(state_mutex_);
+      next_profile_ = profile;
+      profile_change_saved_ = true;
     }
 
     if (profile == BLEProfile::KEYBOARD) {

@@ -459,7 +459,14 @@ class IRKCaptureComponent : public Component {
   IRKCaptureButton* refresh_identity_button_ { nullptr };
   IRKCaptureText* ble_name_text_ { nullptr };
   IRKCaptureSelect* ble_profile_select_ { nullptr };
-  BLEProfile ble_profile_ { BLEProfile::KEYBOARD };  // Default to Keyboard profile
+  // The profile this boot registered in GATT and advertises. A change takes
+  // effect only at the next boot, so a saved request waits in next_profile_.
+  BLEProfile ble_profile_ { BLEProfile::KEYBOARD };   // Default to Keyboard profile
+  BLEProfile next_profile_ { BLEProfile::KEYBOARD };  // Valid while profile_change_saved_
+  bool profile_change_saved_ { false };               // Saved for the next boot
+  BLEProfile selected_profile_() const {              // Caller holds state_mutex_
+    return profile_change_saved_ ? next_profile_ : ble_profile_;
+  }
 
   // Connection state
   uint16_t conn_handle_ { BLE_HS_CONN_HANDLE_NONE };

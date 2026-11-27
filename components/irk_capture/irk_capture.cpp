@@ -510,7 +510,7 @@ SessionState IRKCaptureComponent::get_session_state(uint32_t known_history_versi
     if (state.history_changed) cache_copy = irk_cache_;
     state.next_capture_label = next_capture_label_;
     state.advertised_name = advertised_name_();
-    state.profile = ble_profile_;
+    state.profile = selected_profile_();
     state.advertising_requested = advertising_requested_;
     state.stop_after_capture = stop_after_capture_;
     state.capture_result = capture_result_;
@@ -528,7 +528,7 @@ LiveControls IRKCaptureComponent::get_live_controls() {
   MutexGuard lock(state_mutex_);
   LiveControls controls;
   controls.next_capture_label = next_capture_label_;
-  controls.profile = ble_profile_;
+  controls.profile = selected_profile_();
   controls.advertising_requested = advertising_requested_;
   controls.stop_after_capture = stop_after_capture_;
   return controls;
