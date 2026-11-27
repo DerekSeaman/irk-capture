@@ -42,7 +42,7 @@ The MAC address is a **random static address** that is regenerated each time the
 
 The name changes along with the address because devices may hide an accessory whose name they've already seen, even on a new MAC address. If the ESP32 doesn't show up on your phone or watch, turn Bluetooth off and back on there. Because the suffix matches the end of ESP32 BLE MAC, you can tell which entry on your phone is the current one.
 
-**Custom names.** You can also change the advertising name yourself, in either profile. Type a new name into **BLE Device Name** and press Enter, and the ESP32 starts advertising it immediately. Custom names are limited to 12 characters; letters, numbers, spaces, `-` and `_` are kept and anything else is removed. In Keyboard mode, you can also enter the exact default `Logitech K380` to restore it. Saving the current name leaves an active pairing connected.
+**Custom names.** You can also change the advertising name yourself, in either profile. Type a new name into **BLE Device Name** and press Enter, and the ESP32 switches to it with a new MAC address, as a refresh does. It advertises the new name only while **BLE Advertising** is on, so turn the switch on when you're ready to pair. Custom names are limited to 12 characters; letters, numbers, spaces, `-` and `_` are kept and anything else is removed. In Keyboard mode, you can also enter the exact default `Logitech K380` to restore it. Saving the current name leaves an active pairing connected.
 
 **After a reboot**, whether from Restart Device, a power cycle, or changing the BLE profile, the ESP32 goes back to the default name for its profile and a new random MAC address. A refreshed or custom name only lasts until then.
 
