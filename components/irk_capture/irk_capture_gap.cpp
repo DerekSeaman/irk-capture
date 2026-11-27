@@ -734,6 +734,9 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
       was_advertising = advertising_;
       advertising_ = false;
       pairing_start_time_ = now_ms();
+      // Zero means no connection is timing; a link accepted as the clock
+      // wraps would otherwise lose its overall pairing timeout.
+      if (pairing_start_time_ == 0) pairing_start_time_ = 1;
     }
   }
 
