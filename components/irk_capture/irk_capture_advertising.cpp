@@ -371,6 +371,12 @@ CaptureResult IRKCaptureComponent::begin_capture() {
     baseline = capture_result_;
     // Only a connection made after this start counts for the wizard.
     baseline.connection_generation = connection_generation_;
+    // An earlier attempt's outcome, held so it stays visible for a few
+    // seconds, would otherwise open this attempt with its "failed" or
+    // "no_irk". The wizard tells the user to go back and retry, which is
+    // often quicker than the hold.
+    capture_status_ = CaptureStatus::NONE;
+    status_result_hold_until_ = 0;
     set_advertising_intent_locked_(true);
   }
   // A capture between this transaction and the BLE call can request OFF.
