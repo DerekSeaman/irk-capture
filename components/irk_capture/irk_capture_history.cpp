@@ -414,8 +414,9 @@ void IRKCaptureComponent::notify_bond_clear_() {
     const bool terminate_due = pending_terminate_handle_ != BLE_HS_CONN_HANDLE_NONE &&
                                (pending_terminate_retry_time_ == 0 ||
                                 deadline_reached(now_ms(), pending_terminate_retry_time_));
-    if (!bond_clear_task_ ||
-        (!bond_clear_pending_ && !mac_rotation_cleanup_pending_ && !terminate_due))
+    const bool untracked_due = untracked_terminate_handle_ != BLE_HS_CONN_HANDLE_NONE;
+    if (!bond_clear_task_ || (!bond_clear_pending_ && !mac_rotation_cleanup_pending_ &&
+                              !terminate_due && !untracked_due))
       return;
   }
   // Task notifications do not wait for queue capacity. A reset racing this
@@ -430,7 +431,8 @@ void IRKCaptureComponent::queue_bond_clear_() {
     const bool clear_current =
         bond_clear_pending_ && host_generation_ == bond_clear_host_generation_;
     if (!clear_current && !mac_rotation_cleanup_pending_ &&
-        pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE)
+        pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE &&
+        untracked_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE)
       return;
   }
   // Worker task only, with neither component mutex held. This can block on

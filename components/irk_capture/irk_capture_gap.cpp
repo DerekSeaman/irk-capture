@@ -134,18 +134,7 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     struct ble_gap_conn_desc desc {};
     if (ev->connect.status != BLE_HS_EAGAIN &&
         ble_gap_conn_find(ev->connect.conn_handle, &desc) == 0) {
-      int term_rc;
-      {
-        BleOpGuard ble_lock(self->ble_op_mutex_);
-        term_rc = ble_gap_terminate(ev->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-      }
-      if (term_rc == 0 || term_rc == BLE_HS_EALREADY) {
-        ESP_LOGW(TAG, "Failed connection handle=%u is still up; disconnecting it",
-                 ev->connect.conn_handle);
-      } else {
-        ESP_LOGW(TAG, "Failed connection handle=%u is still up and could not be closed rc=%d",
-                 ev->connect.conn_handle, term_rc);
-      }
+      self->terminate_untracked_(ev->connect.conn_handle, false, "of failed connection");
     }
 
     {
@@ -770,19 +759,8 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   if (reject_extra_connection) {
     ESP_LOGE(TAG, "Rejecting unexpected second BLE connection handle=%u (active=%u)", conn_handle,
              existing_handle);
-    bool terminate_failed;
-    {
-      BleOpGuard ble_lock(ble_op_mutex_);
-      int rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-      terminate_failed = rc != 0 && rc != BLE_HS_EALREADY;
-      if (terminate_failed) {
-        ESP_LOGE(TAG, "Failed to terminate unexpected second connection rc=%d; rebooting", rc);
-      }
-    }
-    if (terminate_failed) {
-      // Defer reboot to the main loop: on_connect() runs on the NimBLE host task.
-      request_reboot_();
-    }
+    // A link that cannot be closed would block the slot, so reboot instead.
+    terminate_untracked_(conn_handle, true, "of unexpected second connection");
     return;
   }
 

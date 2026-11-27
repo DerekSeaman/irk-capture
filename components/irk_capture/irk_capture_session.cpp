@@ -687,6 +687,74 @@ void IRKCaptureComponent::terminate_bounded_(uint16_t conn_handle, uint32_t gene
   notify_bond_clear_();
 }
 
+void IRKCaptureComponent::terminate_untracked_(uint16_t conn_handle, bool reboot_on_failure,
+                                               const char* context) {
+  int rc = 0;
+  bool acquired;
+  {
+    // The host task never waits for a main-task BLE call to finish.
+    BleOpGuard ble_lock(ble_op_mutex_, 0);
+    acquired = ble_lock.acquired();
+    if (acquired) rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+  }
+  if (!acquired) {
+    {
+      MutexGuard lock(state_mutex_);
+      untracked_terminate_handle_ = conn_handle;
+      untracked_terminate_context_ = context;
+      untracked_terminate_reboot_ = reboot_on_failure;
+    }
+    ESP_LOGW(TAG, "Disconnect %s handle=%u deferred: BLE operation lock busy", context,
+             conn_handle);
+    notify_bond_clear_();
+    return;
+  }
+  finish_untracked_terminate_(conn_handle, rc, reboot_on_failure, context);
+}
+
+void IRKCaptureComponent::handle_untracked_termination_() {
+  {
+    MutexGuard lock(state_mutex_);
+    if (untracked_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE) return;
+  }
+  uint16_t handle;
+  const char* context;
+  bool reboot_on_failure;
+  int rc;
+  {
+    // Still busy: loop() wakes the worker again.
+    BleOpGuard ble_lock(ble_op_mutex_, 0);
+    if (!ble_lock.acquired()) return;
+    {
+      MutexGuard lock(state_mutex_);
+      handle = untracked_terminate_handle_;
+      context = untracked_terminate_context_;
+      reboot_on_failure = untracked_terminate_reboot_;
+      untracked_terminate_handle_ = BLE_HS_CONN_HANDLE_NONE;
+      // The link went down and a tracked connection now has its handle. Host
+      // callbacks run serially, so a new link is tracked before this runs.
+      if (handle == BLE_HS_CONN_HANDLE_NONE || (connected_ && conn_handle_ == handle)) return;
+    }
+    struct ble_gap_conn_desc desc {};
+    if (ble_gap_conn_find(handle, &desc) != 0) return;  // Already down
+    rc = ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
+  }
+  finish_untracked_terminate_(handle, rc, reboot_on_failure, context);
+}
+
+void IRKCaptureComponent::finish_untracked_terminate_(uint16_t conn_handle, int rc,
+                                                      bool reboot_on_failure, const char* context) {
+  if (rc == 0 || rc == BLE_HS_EALREADY) {
+    ESP_LOGW(TAG, "Disconnecting %s handle=%u", context, conn_handle);
+  } else if (reboot_on_failure) {
+    ESP_LOGE(TAG, "Failed to disconnect %s handle=%u rc=%d; rebooting", context, conn_handle, rc);
+    // Reboot from the main loop: this runs on the NimBLE host task.
+    request_reboot_();
+  } else {
+    ESP_LOGW(TAG, "Could not disconnect %s handle=%u rc=%d", context, conn_handle, rc);
+  }
+}
+
 void IRKCaptureComponent::handle_pending_termination_() {
   // Only the NimBLE task runs this callback, serially with connect/disconnect.
   // A busy control lock leaves the request pending for the next worker wake-up.

@@ -620,6 +620,12 @@ class IRKCaptureComponent : public Component {
   uint8_t pending_terminate_retries_ { 0 };      // Failed attempts of a rotation disconnect
   uint32_t pending_terminate_retry_time_ { 0 };  // Earliest retry after a transient failure
   bool pending_terminate_busy_logged_ { false };
+  // A link nothing tracks (a failed CONNECT left up, or a second connection)
+  // that the host task could not close because ble_op_mutex_ was busy. With
+  // one connection configured, a newer such link replaces an older one.
+  uint16_t untracked_terminate_handle_ { BLE_HS_CONN_HANDLE_NONE };
+  const char* untracked_terminate_context_ { nullptr };  // String literal only
+  bool untracked_terminate_reboot_ { false };            // Reboot if it cannot be closed
 
   // Wizard-facing session state (see README). The entity pointers are set
   // once before setup(); the rest is protected by state_mutex_ unless noted.
@@ -759,6 +765,13 @@ class IRKCaptureComponent : public Component {
   void terminate_bounded_(uint16_t conn_handle, uint32_t generation, const char* context,
                           bool for_rotation = false);
   void handle_pending_termination_();  // NimBLE event task only
+  // Disconnects a link the component does not track, without waiting for
+  // ble_op_mutex_: when it is busy, the worker callback retries. NimBLE host
+  // task only.
+  void terminate_untracked_(uint16_t conn_handle, bool reboot_on_failure, const char* context);
+  void handle_untracked_termination_();  // NimBLE event task only
+  void finish_untracked_terminate_(uint16_t conn_handle, int rc, bool reboot_on_failure,
+                                   const char* context);
   // Shows Status "failed" for a pairing that ended without a result.
   void report_capture_failure_(uint32_t connection_generation);
   void report_host_stall_(uint32_t now);  // Main task only

@@ -348,6 +348,7 @@ void IRKCaptureComponent::setup_ble_worker_() {
       [](struct ble_npl_event* event) {
         auto* self = static_cast<IRKCaptureComponent*>(ble_npl_event_get_arg(event));
         self->handle_pending_termination_();
+        self->handle_untracked_termination_();
         self->handle_forget_bonds_();
         self->handle_rotation_cleanup_();
       },
@@ -427,6 +428,8 @@ void IRKCaptureComponent::setup_ble() {
     g_irk_instance->advertising_failure_log_time_ = 0;
     g_irk_instance->advertising_ = false;
     g_irk_instance->reset_connection_state_();
+    // Old handles mean nothing to the new host.
+    g_irk_instance->untracked_terminate_handle_ = BLE_HS_CONN_HANDLE_NONE;
     g_irk_instance->adv_restart_time_ = 0;
     // Cancel the request without relying on the old host event being serviced.
     // Leave its event object intact: a delayed wake-up checks current state.
