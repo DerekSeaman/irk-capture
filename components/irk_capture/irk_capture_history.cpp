@@ -304,16 +304,16 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
       current_events = self->capture_events_;
       current_unique = self->unique_devices_;
 
-      // max_captures limits unique devices. Re-pairing the same device remains
-      // visible without consuming another slot.
-      max_reached = self->capture_limit_reached_locked_();
-
       // A genuine capture: a new device, changed key, or explicit (re)pairing. A bonded
       // reconnect republishing a key it already gave us is not one.
       capture_event = is_new_device || key_changed || force_pairing_publish;
 
-      // Stop-after-capture only triggers on a genuine capture, not a
-      // background reconnect from an already-bonded device.
+      // Both automatic stops trigger only on a genuine capture, not a
+      // background reconnect from an already-bonded device: advertising turned
+      // back on past the limit must stay on when such a device republishes.
+      // max_captures limits unique devices. Re-pairing the same device remains
+      // visible without consuming another slot.
+      max_reached = capture_event && self->capture_limit_reached_locked_();
       stop_after_capture_hit = self->stop_after_capture_ && capture_event;
     }
   }  // Release mutex before slow logging/publishing operations
