@@ -138,7 +138,7 @@ static bool authorized(httpd_req_t* req) {
     send_unauthorized(req);
     return false;
   }
-  throttle.ok();
+  self->client_throttles().succeeded(throttle, now);
   self->note_request();
   return true;
 }

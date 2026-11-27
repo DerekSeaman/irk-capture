@@ -115,21 +115,26 @@ struct AuthThrottle {
 };
 
 // Per-client throttle table so one guessing host locks out only itself.
-// Full table evicts the least recently seen idle client; recent failures keep
-// their slot for one lockout window. If all slots have recent failures, extra
-// clients share the overflow throttle. Eight 20-byte slots (80 bytes more than four) give a
-// LAN guesser more addresses to burn before new clients reach the overflow.
+// Full table evicts the least recently seen idle client; recent failures and
+// recent successful logins keep their slot for one lockout window, so a
+// guesser cannot push a signed-in client onto the overflow. If no slot can be
+// given up, extra clients share the overflow throttle, whose count only a
+// lockout or an idle window clears: one client's login must not erase
+// another's failures.
 struct ClientThrottles {
   static constexpr size_t SLOTS = 8;
 
   struct Slot {
     bool used { false };
+    bool signed_in { false };  // A login succeeded at ok_at
     uint32_t key { 0 };
     uint32_t last_seen { 0 };
+    uint32_t ok_at { 0 };
     AuthThrottle throttle;
   };
   Slot slots[SLOTS];
   AuthThrottle overflow;
+  uint32_t overflow_seen { 0 };
 
   AuthThrottle& for_client(uint32_t key, uint32_t now) {
     Slot* target = nullptr;
@@ -143,6 +148,7 @@ struct ClientThrottles {
     if (target == nullptr) {
       for (auto& slot : slots) {
         if (slot.throttle.locked(now)) continue;
+        if (slot.signed_in && (uint32_t) (now - slot.ok_at) < AuthThrottle::LOCKOUT_MS) continue;
         if (slot.throttle.failures != 0) {
           if ((uint32_t) (now - slot.last_seen) < AuthThrottle::LOCKOUT_MS) continue;
           slot.throttle.ok();
@@ -154,12 +160,33 @@ struct ClientThrottles {
         }
       }
     }
-    if (target == nullptr) return overflow;
+    if (target == nullptr) {
+      // Partial failures expire after an idle window, as a slot's do.
+      if (!overflow.locked(now) && overflow.failures != 0 &&
+          (uint32_t) (now - overflow_seen) >= AuthThrottle::LOCKOUT_MS) {
+        overflow.ok();
+      }
+      overflow_seen = now;
+      return overflow;
+    }
     *target = Slot {};
     target->used = true;
     target->key = key;
     target->last_seen = now;
     return target->throttle;
+  }
+
+  // Records a successful login on the throttle for_client() returned.
+  void succeeded(AuthThrottle& throttle, uint32_t now) {
+    for (auto& slot : slots) {
+      if (&slot.throttle == &throttle) {
+        throttle.ok();
+        slot.signed_in = true;
+        slot.ok_at = now;
+        return;
+      }
+    }
+    // The overflow is shared: leave its count to the lockout and idle window.
   }
 };
 
