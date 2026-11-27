@@ -258,7 +258,7 @@ If advertising fails to start, the ESP32 keeps retrying on its own, quickly at f
 Some restarts happen on their own. A restart clears the session history and all pairings, and the ESP32 comes back with the default name and a new random MAC address.
 
 - **No Home Assistant connection.** The ESP32 does not restart for lack of a Home Assistant connection, so the wizard keeps its session when Home Assistant is not connected.
-- **Bluetooth never starts.** If Bluetooth hasn't started 5 minutes after boot and nothing has been captured, the ESP32 restarts to try again. It repeats while the problem persists. See [Status shows failed](#status-shows-failed).
+- **Bluetooth never starts.** If the Bluetooth host starts but hasn't synchronised 5 minutes after boot, and nothing has been captured, the ESP32 restarts to try again. It repeats while the problem persists. If Bluetooth fails during setup instead, the ESP32 doesn't restart by itself. See [Status shows failed](#status-shows-failed).
 - **Connection that won't close.** If a connected device can't be disconnected after several attempts, the ESP32 restarts. This is rare.
 
 It also restarts when you change the **BLE Profile**, press **Restart Device**, or press **Reboot ESP32** in the wizard.
@@ -477,7 +477,9 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 `failed` means one of two things. Check the device log to see which.
 
 - **A pairing ended without a result.** The log shows `ENC_CHANGE failed`, `IRK not found`, or `Encryption timeout` / `Pairing timeout` when the device connected but never finished pairing. See [IRK Not Captured After Pairing](#irk-not-captured-after-pairing).
-- **Bluetooth didn't start.** After 30 seconds the log shows `Bluetooth host has not synchronised`. Status stays `failed` until Bluetooth starts. The ESP32 restarts by itself after 5 minutes if nothing has been captured. If the restarts continue, check the Bluetooth configuration in your build, and do a clean build.
+- **Bluetooth didn't start.** The log shows one of two things:
+  - `Bluetooth host has not synchronised`, after 30 seconds. Status stays `failed` until Bluetooth starts. The ESP32 restarts by itself after 5 minutes if nothing has been captured. If the restarts continue, check the Bluetooth configuration in your build, and do a clean build.
+  - An error during setup, such as `nimble_port_init failed` or `nvs_flash_init failed`. Status shows `failed` straight away and the component stops, so the ESP32 doesn't restart by itself. Fix the error the log names, usually the Bluetooth configuration in your build, then do a clean build and restart the ESP32.
 
 ### Checking a captured IRK
 
