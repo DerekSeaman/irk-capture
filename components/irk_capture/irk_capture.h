@@ -281,7 +281,7 @@ void publish_and_log_irk(class IRKCaptureComponent* self, const ble_addr_t& peer
                          const std::string& irk_hex, const char* context_tag,
                          uint32_t connection_generation,
                          CaptureOrigin origin = CaptureOrigin::UNKNOWN,
-                         IrkCheck check = IrkCheck::UNCHECKED);
+                         IrkCheck check = IrkCheck::UNCHECKED, bool host_task = false);
 
 // Main component
 class IRKCaptureComponent : public Component {
@@ -306,7 +306,7 @@ class IRKCaptureComponent : public Component {
   friend void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                                   const std::string& irk_hex, const char* context_tag,
                                   uint32_t connection_generation, CaptureOrigin origin,
-                                  IrkCheck check);
+                                  IrkCheck check, bool host_task);
 
   // The Device Information read callback copies names under state_mutex_.
   friend int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle,
@@ -378,9 +378,13 @@ class IRKCaptureComponent : public Component {
   // Returns false when the device rejected the change (name left unchanged).
   bool update_ble_name(const std::string& name);
   std::string get_ble_name();
-  void start_advertising();
+  // host_task: the caller is the NimBLE host task, which never waits for
+  // ble_op_mutex_. A busy lock then hands the start to loop() through
+  // adv_restart_time_, keeping any hold-off deadline already set.
+  void start_advertising(bool host_task = false);
   // True only after verifying that GAP advertising is inactive under the BLE lock.
-  bool stop_advertising();
+  // host_task as for start_advertising(); a busy lock leaves the stop to loop().
+  bool stop_advertising(bool host_task = false);
   void set_advertising_requested(bool requested);
   CaptureResult get_capture_result();
   // Main-task wizard action: claim a baseline and request advertising in the
@@ -495,6 +499,10 @@ class IRKCaptureComponent : public Component {
   uint32_t adv_restart_time_ { 0 };  // When to restart advertising after a hold-off; 0 = none
   // When to retry an unsuccessful stop (lock busy or radio still active); 0 = none.
   uint32_t adv_stop_retry_time_ { 0 };
+  // The host task could not stop advertising for a hold-off (reconnect-loop
+  // defense) while advertising stays requested. loop() retries that stop too;
+  // cleared once the radio is off, advertising restarts, or intent changes.
+  bool adv_holdoff_stop_ { false };
   // When the Bluetooth host began to be unsynced (boot or a host reset); 0 once
   // it syncs. Lets a host that never comes up be reported instead of ignored.
   uint32_t host_wait_since_ { 0 };
