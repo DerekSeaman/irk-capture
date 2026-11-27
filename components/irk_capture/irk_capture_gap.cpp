@@ -306,21 +306,20 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   }
 
   // Update advertising state and snapshot restart conditions in one lock.
-  bool should_stop_adv = false;
+  // The capture that reaches the limit turns advertising off with its result
+  // (publish_irk_to_sensors()), so this follows the intent. Rechecking the
+  // limit here would also turn off advertising the user re-enabled after the
+  // limit, on any later disconnect that captured nothing.
   bool requested;
   bool restart_scheduled;
   {
     MutexGuard lock(self->state_mutex_);
     self->advertising_ = false;
-    should_stop_adv = self->capture_limit_reached_locked_();
     requested = self->advertising_requested_;
     restart_scheduled = self->adv_restart_time_ != 0;
   }
 
-  if (should_stop_adv) {
-    ESP_LOGI(TAG, "Unique-device limit reached - stopping advertising");
-    self->set_advertising_requested(false);
-  } else if (!requested) {
+  if (!requested) {
     ESP_LOGD(TAG, "Advertising remains off by user request");
   } else if (restart_scheduled) {
     ESP_LOGI(TAG, "Advertising restart already scheduled after a hold-off");
