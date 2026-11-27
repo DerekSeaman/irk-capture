@@ -179,6 +179,9 @@ class IRKWizardComponent : public Component {
   std::atomic<bool> profile_change_pending_ { false };
 
   httpd_handle_t server_ { nullptr };
+  // Lock order: snapshot_mutex_, then irk_capture's state_mutex_ (the
+  // deferred START arms capture under it). Never take this one while holding
+  // state_mutex_, and never make a BLE call under it.
   SemaphoreHandle_t snapshot_mutex_ { nullptr };
   WizardSnapshot snapshot_;
   CaptureStart capture_start_;  // Protected by snapshot_mutex_, including HTTP writes

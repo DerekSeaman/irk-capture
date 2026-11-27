@@ -391,8 +391,14 @@ class IRKCaptureComponent : public Component {
   void set_advertising_requested(bool requested);
   CaptureResult get_capture_result();
   // Main-task wizard action: claim a baseline and request advertising in the
-  // same state transaction, then let the normal BLE start gates run.
+  // same state transaction, then let the normal BLE start gates run. It is
+  // arm_capture() followed by start_advertising().
   CaptureResult begin_capture();
+  // The state transaction alone: takes only state_mutex_ and makes no BLE
+  // call, so a caller may hold its own lock across it (the wizard holds
+  // snapshot_mutex_, giving the order snapshot_mutex_ -> state_mutex_).
+  // Follow it with start_advertising() once that lock is released.
+  CaptureResult arm_capture();
   // Wizard cancellation can run on the HTTP task. BLE termination is queued
   // on the host task and the wizard defers the advertising stop to the main task.
   void cancel_capture();

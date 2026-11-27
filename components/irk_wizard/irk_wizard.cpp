@@ -317,13 +317,21 @@ void IRKWizardComponent::set_advertising(bool on) {
 }
 
 bool IRKWizardComponent::stop_capture(uint32_t operation_id, uint32_t boot_id) {
-  if (operation_id != 0) {
+  {
     // A tab whose run another tab replaced must not cancel the newer run or
     // close its peer. Start and stop both run on the single httpd task, so no
     // new start can land between this check and the cancellation below.
     MutexGuard lock(snapshot_mutex_);
-    if (capture_start_.operation_id != operation_id || capture_start_.boot_id != boot_id)
+    if (operation_id != 0 &&
+        (capture_start_.operation_id != operation_id || capture_start_.boot_id != boot_id))
       return false;
+    // Cancel the run in the same lock scope as the check, named or not. The
+    // deferred START checks and arms under this lock too, so it either armed
+    // already, and cancel_capture() below undoes that, or it sees CANCELLED
+    // and never arms. Either way it cannot re-arm after this stop replies.
+    if (capture_start_.state == CaptureStartState::PENDING ||
+        capture_start_.state == CaptureStartState::READY)
+      capture_start_.state = CaptureStartState::CANCELLED;
   }
   // Cancel the result before acknowledging the stop. The next label can
   // arrive before the NimBLE host has finished closing the old link.
@@ -345,15 +353,22 @@ CaptureStart IRKWizardComponent::start_capture() {
   }
   this->defer([this, id = request.operation_id]() {
     ESP_LOGI(TAG, "Wizard: capture start requested");
+    const bool available = irk_capture_ && !irk_capture_->is_failed();
+    irk_capture::CaptureResult baseline;
     {
+      // Check the run and arm capture as one step: stop_capture() cancels
+      // under this lock, so it cannot land between them. The core takes the
+      // baseline and installs ON intent in one state lock, with no BLE call,
+      // so this holds snapshot_mutex_ -> state_mutex_ for microseconds. A
+      // cached status response could predate a capture by several seconds.
       MutexGuard lock(snapshot_mutex_);
       if (capture_start_.operation_id != id || capture_start_.state != CaptureStartState::PENDING)
         return;
+      if (available) baseline = irk_capture_->arm_capture();
     }
-    const bool available = irk_capture_ && !irk_capture_->is_failed();
-    // The core takes the baseline and installs ON intent in one state lock.
-    // A cached status response could predate a capture by several seconds.
-    const auto baseline = available ? irk_capture_->begin_capture() : irk_capture::CaptureResult {};
+    // Outside the lock: the start can wait for the BLE lock. A stop that lands
+    // now has set intent OFF, which start_advertising() checks first.
+    if (available) irk_capture_->start_advertising();
     MutexGuard lock(snapshot_mutex_);
     // OFF or another start can arrive while the radio operation runs. Its
     // queued main-task command still owns the final intent and acknowledgement.

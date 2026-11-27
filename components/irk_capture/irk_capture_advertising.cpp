@@ -394,6 +394,14 @@ CaptureResult IRKCaptureComponent::get_capture_result() {
 }
 
 CaptureResult IRKCaptureComponent::begin_capture() {
+  const CaptureResult baseline = arm_capture();
+  // A capture between this transaction and the BLE call can request OFF.
+  // start_advertising() rechecks intent so one-shot auto-stop still wins.
+  start_advertising();
+  return baseline;
+}
+
+CaptureResult IRKCaptureComponent::arm_capture() {
   CaptureResult baseline;
   {
     MutexGuard lock(state_mutex_);
@@ -408,9 +416,6 @@ CaptureResult IRKCaptureComponent::begin_capture() {
     status_result_hold_until_ = 0;
     set_advertising_intent_locked_(true);
   }
-  // A capture between this transaction and the BLE call can request OFF.
-  // start_advertising() rechecks intent so one-shot auto-stop still wins.
-  start_advertising();
   return baseline;
 }
 
