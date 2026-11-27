@@ -174,6 +174,8 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   uint8_t retries;
   uint8_t mac[6];
   uint16_t waiting_handle = BLE_HS_CONN_HANDLE_NONE;
+  uint32_t waiting_generation = 0;
+  bool can_terminate = false;
   {
     MutexGuard lock(state_mutex_);
     if (!host_synced_ || bond_clear_pending_ || mac_rotation_cleanup_pending_ ||
@@ -181,9 +183,12 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
       return;
     generation = mac_rotation_generation_;
     if (conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
-      // Log once for this connection, then wait for on_disconnect() to make
-      // the rotation ready again. The rest of loop() still services the link.
+      // A peer connected after the request (typically while advertising was
+      // stopping). Close it as a request on an open link would, then wait
+      // for on_disconnect() to make the rotation ready again.
       waiting_handle = conn_handle_;
+      waiting_generation = connection_generation_;
+      can_terminate = bond_clear_task_ != nullptr;
       mac_rotation_state_ = MacRotationState::REQUESTED;
     }
     ready_time = mac_rotation_ready_time_;
@@ -192,6 +197,9 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   }
   if (waiting_handle != BLE_HS_CONN_HANDLE_NONE) {
     ESP_LOGW(TAG, "MAC rotation: waiting for connection handle=%u to close", waiting_handle);
+    // Without the worker, the pairing watchdog still bounds the wait.
+    if (can_terminate)
+      terminate_bounded_(waiting_handle, waiting_generation, "for MAC rotation", true);
     return;
   }
   if (ready_time != 0 && !deadline_reached(now, ready_time)) return;
