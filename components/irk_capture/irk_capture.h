@@ -427,8 +427,9 @@ class IRKCaptureComponent : public Component {
   void set_stop_after_capture(bool enabled);
   bool get_stop_after_capture();
   std::string get_next_capture_label();
-  // Longest capture label kept; text.py gives the Home Assistant entity the
-  // same limit.
+  // Longest capture label kept. text.py and irk_wizard/__init__.py parse this
+  // declaration, so the Home Assistant entity and the wizard's inputs enforce
+  // the same limit.
   static constexpr size_t CAPTURE_LABEL_MAX_LEN = 24;
   // Sanitizes, trims, stores, and returns the label for the next device added
   // or restored to visible history (consumed once). Keeps [A-Za-z0-9 _-'] up

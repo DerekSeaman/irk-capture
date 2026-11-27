@@ -744,8 +744,8 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   add_string(tail, "\",\"cleanup_reason\":\"", s.identity_refresh.cleanup_reason);
   tail += "}}";
 
-  // Sent in pieces. The history can reach tens of kilobytes, and joining it
-  // to the rest would need a second buffer of that size for every request. A
+  // Sent in pieces. A full 64-row history is about 10 KB, and joining it to
+  // the rest would need a second buffer of that size for every request. A
   // zero-length chunk ends the response, so no piece may be empty.
   static const std::string EMPTY_HISTORY = "[]";
   const std::string& history =

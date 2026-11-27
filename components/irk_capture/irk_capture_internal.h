@@ -58,6 +58,9 @@ static constexpr char HEX[] = "0123456789abcdef";
 // - Release state_mutex_ before calling BLE stack, NVS, or logging APIs.
 // - Entity publish_state() is main-task only; other contexts stage pending_*
 //   fields for flush_pending_publishes_() in loop().
+// - Lock order: ble_op_mutex_ before state_mutex_, and the wizard's
+//   snapshot_mutex_ before state_mutex_. The NimBLE host task takes
+//   ble_op_mutex_ only with a zero timeout.
 
 // Timing configuration (all values in ms)
 struct TimingConfig {
