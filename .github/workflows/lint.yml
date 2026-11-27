@@ -357,6 +357,12 @@ jobs:
             idf: 5.5.6
             board: esp32-s3-devkitc-1
             variant: esp32s3
+          # The README links a C5 configuration.
+          - name: latest / IDF 5.5.6 / ESP32-C5
+            esphome: esphome
+            idf: 5.5.6
+            board: esp32-c5-devkitc-1
+            variant: esp32c5
           - name: latest / IDF 6.1.1 / ESP32
             esphome: esphome
             idf: 6.1.1
@@ -377,6 +383,12 @@ jobs:
             idf: 6.1.1
             board: esp32-s3-devkitc-1
             variant: esp32s3
+          # The README links a C5 configuration.
+          - name: latest / IDF 6.1.1 / ESP32-C5
+            esphome: esphome
+            idf: 6.1.1
+            board: esp32-c5-devkitc-1
+            variant: esp32c5
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5
@@ -547,7 +559,7 @@ jobs:
               key: "{key}"
           ota:
             - platform: esphome
-              password: "ci-ota-password"
+              encryption:
           wifi:
             ssid: "ci-ssid"
             password: "ci-password"
