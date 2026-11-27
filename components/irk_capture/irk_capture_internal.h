@@ -126,7 +126,7 @@ struct TimingConfig {
 // Timeout recovery starts if encryption is still pending 20 s after security
 //   initiation, or if the link remains open 90 s after connection.
 // DISCONNECT -> if no IRK was observed, read the bond immediately and retry at
-//   +800 ms if inconclusive. Restart advertising unless limited, OFF, or held off.
+//   +800 ms if inconclusive. Restart advertising per current intent and any hold-off.
 // Report the peer's identity address and reverse IRK hex for Arduino parity.
 
 //======================== Forward decls ========================

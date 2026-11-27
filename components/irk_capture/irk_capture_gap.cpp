@@ -215,7 +215,8 @@ static const char* disconnect_reason_str(int reason) {
 
 // BLE_GAP_EVENT_DISCONNECT: if no result was observed yet, run a fallback bond
 // read (and schedule a +800 ms check if inconclusive), then restart advertising
-// unless limited, OFF, or held off.
+// according to the current intent and any hold-off. The capture limit is
+// applied when a capture is recorded, not here.
 int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   // Use the event's embedded descriptor; NimBLE has already removed it from ble_gap_conn_find().
   const struct ble_gap_conn_desc& d = ev->disconnect.conn;
