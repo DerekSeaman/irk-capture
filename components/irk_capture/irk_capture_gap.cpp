@@ -243,7 +243,13 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       connected_since = self->pairing_start_time_;
       pairing_completed = self->enc_ready_;
       origin = self->connection_origin_;
-      skip_fallback = self->capture_cancelled_locked_(connection_generation);
+      // Skip a read that cannot help: a cancelled link, one whose encryption
+      // failed (its bond is stale or being deleted), and one that already
+      // has a result, including no-IRK, which is conclusive.
+      skip_fallback =
+          self->capture_cancelled_locked_(connection_generation) ||
+          (connection_generation != 0 && (self->enc_failed_generation_ == connection_generation ||
+                                          self->last_result_generation_ == connection_generation));
       if (!skip_fallback) {
         for (const auto& entry : self->irk_cache_) {
           if (entry.mac_addr == peer_addr && entry.addr_type == d.peer_id_addr.type &&
@@ -475,6 +481,11 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     } else {
       ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; conn desc not found, no bond cleared",
                ev->enc_change.status);
+    }
+    {
+      MutexGuard lock(self->state_mutex_);
+      if (self->connected_ && self->connection_generation_ == connection_generation)
+        self->enc_failed_generation_ = connection_generation;
     }
     self->report_capture_failure_(connection_generation);
     terminate_now_or_defer("after ENC failure");
