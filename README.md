@@ -230,7 +230,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Wi-Fi Disconnects (since boot)** | Sensor | Number of Wi-Fi disconnections since boot (diagnostic) |
 | **Wi-Fi Signal** | Sensor | Wi-Fi signal strength in dBm (diagnostic) |
 
-**BLE Advertising switch.** This switch controls whether the ESP32 advertises so devices can find it. It's ON after every boot by default. While a device is connected, the ESP32 pauses advertising but the switch stays ON, and advertising resumes when the device disconnects.
+**BLE Advertising switch.** This switch controls whether the ESP32 advertises so devices can find it. It's ON after every boot by default. By default, advertising turns off by itself after 10 different devices have been captured since boot. Turn the switch back on to capture more; devices you already captured reconnecting in the background don't turn it off again. While a device is connected, the ESP32 pauses advertising but the switch stays ON, and advertising resumes when the device disconnects.
 
 If advertising fails to start, the ESP32 keeps retrying on its own, quickly at first and then once a minute, for as long as the switch is ON. It doesn't reboot or lose your captures while it does. Turning the switch off stops the retries, and turning it back on tries again right away.
 
@@ -370,7 +370,7 @@ packages:
     refresh: always
 ```
 
-Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock out that client address for 30 seconds. The device tracks eight addresses separately; when all eight have recent failures, new addresses share an overflow limit and a legitimate new client may also be temporarily locked out. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
+Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock out that client address for 30 seconds. The device tracks eight addresses separately; when all eight have recent failures or a recent sign-in, new addresses share an overflow limit and a legitimate new client may also be temporarily locked out. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
 
 The UI offers two workflows:
 
