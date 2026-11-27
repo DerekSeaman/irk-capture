@@ -391,6 +391,7 @@ void IRKWizardComponent::refresh_snapshot_() {
     next.history_json = snapshot_.history_json;
   }
   history_version_ = core.history_version;
+  next.history_version = core.history_version;
   next.irk = irk_sensor_ ? irk_sensor_->state : "";
   next.device_mac = device_mac_sensor_ ? device_mac_sensor_->state : "";
   next.effective_mac = effective_mac_sensor_ ? effective_mac_sensor_->state : "";
@@ -622,6 +623,33 @@ static esp_err_t handle_index(httpd_req_t* req) {
   return httpd_resp_send(req, reinterpret_cast<const char*>(self->page_data()), self->page_size());
 }
 
+// True when the page's ?history=<boot_id>.<version> names the history this
+// snapshot holds, so the response can leave it out. Anything else, including
+// a token from before a reboot, gets the full history.
+static bool history_unchanged(httpd_req_t* req, const WizardSnapshot& s) {
+  if (!s.history_json) return false;
+  char query[64];
+  const size_t len = httpd_req_get_url_query_len(req);
+  if (len == 0 || len >= sizeof(query)) return false;
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) return false;
+  char token[24];
+  if (httpd_query_key_value(query, "history", token, sizeof(token)) != ESP_OK) return false;
+  // Digits, one dot, digits: strtoul alone would also accept signs and spaces.
+  const auto number = [](const char* p, char stop, const char** end, uint32_t& out) {
+    if (*p < '0' || *p > '9') return false;
+    char* e;
+    const unsigned long long value = std::strtoull(p, &e, 10);
+    if (*e != stop || value > UINT32_MAX) return false;
+    out = static_cast<uint32_t>(value);
+    *end = e;
+    return true;
+  };
+  const char* p = token;
+  uint32_t boot_id, version;
+  if (!number(p, '.', &p, boot_id) || !number(p + 1, '\0', &p, version)) return false;
+  return boot_id == s.capture_result.boot_id && version == s.history_version;
+}
+
 static esp_err_t handle_get_status(httpd_req_t* req) {
   if (!authorized(req) || !bodyless_request(req)) return unread_body_result(req);
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
@@ -654,8 +682,9 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
     out += key;
     out += value ? "true" : "false";
   };
+  const bool skip_history = history_unchanged(req, s);
   std::string head;
-  head.reserve(384);
+  head.reserve(416);
   add_number(head, "{\"boot_id\":", s.capture_result.boot_id);
   add_string(head, ",\"status\":\"", s.status);
   add_string(head, ",\"next_capture_label\":\"", s.next_capture_label);
@@ -666,7 +695,10 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   add_string(head, ",\"device_mac\":\"", s.device_mac);
   add_string(head, ",\"irk\":\"", s.irk);
   add_bool(head, ",\"stop_after_capture\":", s.stop_after_capture);
-  head += ",\"history\":";
+  // The page sends this back as ?history=; see history_unchanged().
+  add_number(head, ",\"history_version\":\"", s.capture_result.boot_id);
+  add_number(head, ".", s.history_version);
+  head += skip_history ? "\",\"history_unchanged\":true" : "\",\"history\":";
 
   // 526 bytes with every ID at 10 digits, a full IRK and MAC, and the longest
   // state names; the two reasons are the only variable-length values. Sized
@@ -705,7 +737,8 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
       s.history_json && !s.history_json->empty() ? *s.history_json : EMPTY_HISTORY;
   set_json_headers(req);
   esp_err_t err = httpd_resp_send_chunk(req, head.c_str(), head.size());
-  if (err == ESP_OK) err = httpd_resp_send_chunk(req, history.c_str(), history.size());
+  if (err == ESP_OK && !skip_history)
+    err = httpd_resp_send_chunk(req, history.c_str(), history.size());
   if (err == ESP_OK) err = httpd_resp_send_chunk(req, tail.c_str(), tail.size());
   if (err == ESP_OK) err = httpd_resp_send_chunk(req, nullptr, 0);
   // A failed send returns an error so the server closes the connection; the

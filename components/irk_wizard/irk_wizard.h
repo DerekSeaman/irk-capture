@@ -56,6 +56,9 @@ struct WizardSnapshot {
   // Shared so that copying a snapshot for a request does not copy the history,
   // its only large value. Null until the first refresh; read it as "[]".
   std::shared_ptr<const std::string> history_json;
+  // irk_capture's version of history_json; with the boot ID it lets a page
+  // skip a history it already has. 0 until the first refresh.
+  uint32_t history_version { 0 };
   std::string irk;
   std::string device_mac;
   std::string effective_mac;

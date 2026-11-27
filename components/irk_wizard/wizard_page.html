@@ -204,6 +204,9 @@ ol.pair li{margin-bottom:5px}
 <script>
 function el(id){return document.getElementById(id)}
 var lastHistKey = null;   // history last rendered, see renderHistory()
+// The history the device last sent, and its token. Polls send the token back,
+// and the device leaves out a history that has not changed since.
+var lastHistory = null, historyToken = null;
 var wizStep = 0;          // 0 = panel view
 var lastData = null;
 var labelDirty = false;
@@ -883,9 +886,20 @@ function refresh(){
   var epoch=statusEpoch;
   refreshInFlight=(async function(){
     try{
-      var d=await requestJson('/api/status');
+      var d=await requestJson('/api/status'+
+        (historyToken!==null ? '?history='+encodeURIComponent(historyToken) : ''));
       if(epoch!==statusEpoch) return;
       if(!validStatus(d)) throw unreadable('status');
+      if(d.history_unchanged===true && lastHistory!==null){
+        d.history=lastHistory;
+      }else if(d.history_unchanged===true){
+        historyToken=null;  // Nothing kept to stand in for it; ask in full.
+      }else{
+        lastHistory=Array.isArray(d.history) ? d.history : [];
+      }
+      if(lastHistory!==null) historyToken=
+        typeof d.history_version==='string' && /^[0-9]+\.[0-9]+$/.test(d.history_version)
+          ? d.history_version : null;
       if(lastData && d.boot_id!==lastData.boot_id){
         hideClearMessage('forgetDone'); hideClearMessage('panelForgetDone');
         if(!pendingReboot) wizardProfileReady=false;
