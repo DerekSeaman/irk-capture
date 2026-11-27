@@ -557,13 +557,18 @@ class IRKCaptureComponent : public Component {
     IrkCheck verification { IrkCheck::UNCHECKED };
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
-  // Caller holds state_mutex_. Every change to irk_cache_ must call this so
-  // get_session_state() rebuilds the history. Never 0, which callers pass to
-  // mean "no history yet".
+  // Caller holds state_mutex_. Every change the history shows (a row added,
+  // removed, hidden or restored, or a field format_history_json_() writes) must
+  // call this so get_session_state() rebuilds the history. Bookkeeping it does
+  // not show, and hidden rows, need not. Never 0, which callers pass to mean
+  // "no history yet".
   uint32_t history_version_ { 1 };
   void history_changed_locked_() {
     if (++history_version_ == 0) history_version_ = 1;
   }
+  // Caller holds state_mutex_. The rows the history shows, copied so they can
+  // be formatted after the lock is released. Hidden rows are left behind.
+  std::vector<IRKCacheEntry> visible_history_locked_() const;
   // Most entries irk_cache_ holds before the oldest is evicted. The floor is
   // well above the default capture limit on purpose: advertising can be turned
   // back on after the limit is reached, and devices captured then must not

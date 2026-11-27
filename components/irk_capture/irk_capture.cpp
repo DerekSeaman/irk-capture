@@ -517,7 +517,7 @@ SessionState IRKCaptureComponent::get_session_state(uint32_t known_history_versi
     // An unchanged history needs neither the copy under the lock nor the
     // formatting after it; the caller keeps the JSON it already has.
     state.history_changed = known_history_version != history_version_;
-    if (state.history_changed) cache_copy = irk_cache_;
+    if (state.history_changed) cache_copy = visible_history_locked_();
     state.next_capture_label = next_capture_label_;
     state.advertised_name = advertised_name_();
     state.profile = selected_profile_();

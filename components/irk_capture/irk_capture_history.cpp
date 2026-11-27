@@ -56,9 +56,16 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
     uint32_t connection_generation, bool force_pairing_publish, IrkCheck check) {
   using Reason = PublishDecision::Reason;
   PublishDecision decision;
-  // Nearly every path below changes an entry or the cache itself, so count
-  // every call rather than risk a stale history from a missed field.
-  history_changed_locked_();
+  // Count only changes the history shows. Duplicate paths for one connection
+  // (ENC_CHANGE, DISCONNECT, delayed polls) and hidden rows change nothing
+  // there, and each count makes the wizard copy and reformat the history.
+  struct HistoryChange {
+    IRKCaptureComponent* self;
+    bool changed { false };
+    ~HistoryChange() {
+      if (changed) self->history_changed_locked_();
+    }
+  } history { this };
   // 64-bit: a 32-bit difference wraps after 49.7 days, which would make a
   // device last published that long ago look as if it had just been published.
   const uint64_t now = (uint64_t) (esp_timer_get_time() / 1000ULL);
@@ -89,10 +96,14 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
       const bool key_changed = entry.irk_hex != irk_hex;
       // A new key starts with this observation's check. For the same key, a
       // check that could not run must not hide an earlier result.
-      if (key_changed || check == IrkCheck::VERIFIED || check == IrkCheck::MISMATCH) {
+      if ((key_changed || check == IrkCheck::VERIFIED || check == IrkCheck::MISMATCH) &&
+          entry.verification != check) {
         entry.verification = check;
+        if (entry.in_history) history.changed = true;
       }
       if (key_changed || force_pairing_publish) {
+        // Restored if hidden; a new key, and its reset count, show either way.
+        history.changed = true;
         entry.irk_hex = irk_hex;
         entry.reconnect_count = 0;
         entry.reconnect_limit_reported = false;
@@ -105,6 +116,7 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
 
       if (entry.reconnect_count < std::numeric_limits<uint16_t>::max()) {
         entry.reconnect_count++;
+        if (entry.in_history) history.changed = true;
       }
       decision.reconnect_count = entry.reconnect_count;
 
@@ -127,6 +139,7 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
       }
 
       entry.last_published_ms = now;
+      if (!entry.in_history) history.changed = true;  // Restored below.
       restore_capture_history_(entry, decision);
       decision.reason = Reason::RECONNECT;
       decision.publish = true;
@@ -135,6 +148,7 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
   }
 
   // New device: FIFO eviction keeps memory bounded even when max_captures == 0.
+  history.changed = true;
   const size_t cache_limit = cache_limit_();
   if (irk_cache_.size() >= cache_limit) {
     irk_cache_.erase(irk_cache_.begin());
@@ -545,9 +559,25 @@ std::string IRKCaptureComponent::build_history_json() {
   std::vector<IRKCacheEntry> cache_copy;
   {
     MutexGuard lock(state_mutex_);
-    cache_copy = irk_cache_;
+    cache_copy = visible_history_locked_();
   }
   return format_history_json_(cache_copy);
+}
+
+std::vector<IRKCaptureComponent::IRKCacheEntry> IRKCaptureComponent::visible_history_locked_()
+    const {
+  // Each row holds two or three heap strings, all copied under state_mutex_,
+  // so copy only the rows the history shows. After Forget All Bonds that is
+  // none, and nothing is allocated.
+  size_t visible = 0;
+  for (const auto& entry : irk_cache_) visible += entry.in_history ? 1 : 0;
+  std::vector<IRKCacheEntry> rows;
+  if (visible == 0) return rows;
+  rows.reserve(visible);
+  for (const auto& entry : irk_cache_) {
+    if (entry.in_history) rows.push_back(entry);
+  }
+  return rows;
 }
 
 std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCacheEntry>& cache) {
