@@ -649,7 +649,11 @@ void IRKCaptureComponent::close_after_no_irk_(uint16_t conn_handle, uint32_t con
     if (!connected_ || conn_handle_ != conn_handle || connection_generation == 0 ||
         connection_generation_ != connection_generation)
       return;
-    if (advertising_requested_) {
+    // A cancelled link's no-IRK result was dropped, and the advertising intent
+    // now belongs to a newer run, which must not wait out this link's
+    // cooldown. The disconnect below still coalesces with the one cancellation
+    // queued for this link.
+    if (advertising_requested_ && !capture_cancelled_locked_(connection_generation)) {
       adv_restart_time_ = deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
     }
   }
