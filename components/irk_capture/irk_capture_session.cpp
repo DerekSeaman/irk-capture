@@ -452,6 +452,10 @@ bool IRKCaptureComponent::handle_connection_timeout_(uint32_t now) {
     }
     attempts = connection_timeout_.attempts;
     clear_bond = !connection_timeout_.bond_cleared;
+    // Encryption never completed, so the bond this deletes is stale, as after
+    // an ENC_CHANGE failure. If the delete fails and the peer then drops, the
+    // disconnect must not read and publish it.
+    if (reason == TimeoutReason::ENCRYPTION) enc_failed_generation_ = generation;
   }
   if (attempts >= TimingConfig::TERMINATE_MAX_ATTEMPTS) {
     ESP_LOGE(TAG, "%s-timeout connection remains after %u terminate attempts; rebooting", label,

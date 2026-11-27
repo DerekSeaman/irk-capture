@@ -568,8 +568,8 @@ class IRKCaptureComponent : public Component {
   CaptureResult capture_result_;
   IdentityRefreshResult identity_refresh_result_;
   uint32_t failed_generation_ { 0 };  // Coalesces failure reporting per connection
-  // The connection whose encryption failed. Its bond is stale or being
-  // deleted, so no fallback read may publish it. A failure from polling that
+  // The connection whose encryption failed or timed out. Its bond is stale or
+  // being deleted, so no fallback read may publish it. A failure from polling that
   // gave up is different: a late bond read is how that connection recovers.
   uint32_t enc_failed_generation_ { 0 };
   uint32_t capture_result_generation_ { 0 };  // Coalesces accepted successful results
