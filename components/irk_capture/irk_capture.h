@@ -747,6 +747,8 @@ class IRKCaptureComponent : public Component {
 
   // Serializes BLE host control calls across NimBLE and ESPHome tasks
   // (advertising start/stop, disconnects, GAP name updates, MAC changes).
+  // Lock order: ble_op_mutex_, then state_mutex_; never take this while
+  // holding state_mutex_.
   SemaphoreHandle_t ble_op_mutex_ { nullptr };
 
   // Internal helpers

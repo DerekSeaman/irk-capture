@@ -328,8 +328,9 @@ async function action(url,body){
 }
 function newer(a,b){ var delta=(a-b)>>>0; return delta!==0 && delta<0x80000000; }
 // Names the run a stop is for, so a tab another tab has replaced cannot stop
-// the newer run. Without a START reply the page cannot name it, so it sends {}
-// and the device stops whatever is running.
+// the newer run. A stop sent before this page handled the START reply cannot
+// name it, so it sends {} and the device stops whatever is running. That
+// includes a Back pressed while START is in flight: its reply is then dropped.
 function stopBody(attempt){
   if(!attempt || attempt.operation_id===null || attempt.boot_id===null) return {};
   return {operation_id:String(attempt.operation_id), boot_id:String(attempt.boot_id)};

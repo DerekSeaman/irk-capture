@@ -541,8 +541,9 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   }
   // While the request was pending, start_advertising() deferred every start to
   // this point, so it must run whatever the outcome: an OFF request or capture
-  // limit reached meanwhile is re-evaluated there. With the BLE lock busy, the
-  // start would wait for that lock on the host task; hand it to the main loop.
+  // limit reached meanwhile is re-evaluated there. A busy BLE lock means a store
+  // or radio operation is still finishing; retry from the main loop after
+  // ADV_RETRY_MS rather than immediately.
   if (lock_busy) {
     MutexGuard lock(state_mutex_);
     if (advertising_requested_ && !advertising_ && adv_restart_time_ == 0) {
