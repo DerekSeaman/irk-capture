@@ -539,6 +539,7 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
       next_profile_ = profile;
       profile_change_saved_ = true;
     }
+    if (ble_profile_select_) ble_profile_select_->publish_state(profile_name);
 
     if (profile == BLEProfile::KEYBOARD) {
       if (ble_name_text_) {
@@ -557,6 +558,8 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
              "Profile change requires restart to update GATT database - "
              "scheduling safe reboot...");
     request_reboot_();
+  } else if (ble_profile_select_) {
+    ble_profile_select_->publish_state(profile_name);
   }
 }
 
