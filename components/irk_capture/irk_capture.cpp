@@ -204,23 +204,32 @@ void IRKCaptureComponent::loop() {
   // Reconcile unwanted advertising and scheduled advertising restarts.
   bool should_restart_adv = false;
   bool should_stop_unwanted_adv = false;
+  uint32_t hold_off_stop = 0;
   {
     MutexGuard lock(state_mutex_);
     // After a lock timeout, wait for the retry deadline instead of blocking
     // and logging on every tick.
-    should_stop_unwanted_adv =
-        (advertising_ || adv_stop_retry_time_ != 0) && !advertising_requested_ &&
-        (adv_stop_retry_time_ == 0 || deadline_reached(now, adv_stop_retry_time_));
+    // A hold-off stop the host task handed over counts only while that
+    // hold-off still stands; a newer start, OFF or reset drops it.
+    if (adv_hold_off_stop_ != 0 && !hold_off_pending_locked_(adv_hold_off_stop_)) {
+      adv_hold_off_stop_ = 0;
+    }
     // A failed restart may have left the old advertisement active. Its retry
     // must still run so start_advertising() can stop and replace that payload.
     if (advertising_requested_ && !connected_ && mac_rotation_state_ == MacRotationState::IDLE &&
         adv_restart_time_ != 0 && deadline_reached(now, adv_restart_time_)) {
       adv_restart_time_ = 0;
+      adv_hold_off_stop_ = 0;  // The hold-off has run out; restart instead.
       should_restart_adv = true;
     }
+    hold_off_stop = adv_hold_off_stop_;
+    should_stop_unwanted_adv =
+        (advertising_ || adv_stop_retry_time_ != 0) &&
+        (!advertising_requested_ || hold_off_stop != 0) &&
+        (adv_stop_retry_time_ == 0 || deadline_reached(now, adv_stop_retry_time_));
   }
   if (should_stop_unwanted_adv) {
-    stop_advertising();
+    stop_advertising(false, hold_off_stop);
   }
   if (should_restart_adv) {
     ESP_LOGI(TAG, "Auto-restarting advertising after scheduled delay");

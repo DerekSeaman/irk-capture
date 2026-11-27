@@ -281,7 +281,7 @@ void publish_and_log_irk(class IRKCaptureComponent* self, const ble_addr_t& peer
                          const std::string& irk_hex, const char* context_tag,
                          uint32_t connection_generation,
                          CaptureOrigin origin = CaptureOrigin::UNKNOWN,
-                         IrkCheck check = IrkCheck::UNCHECKED);
+                         IrkCheck check = IrkCheck::UNCHECKED, bool host_task = false);
 
 // Main component
 class IRKCaptureComponent : public Component {
@@ -306,7 +306,7 @@ class IRKCaptureComponent : public Component {
   friend void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                                   const std::string& irk_hex, const char* context_tag,
                                   uint32_t connection_generation, CaptureOrigin origin,
-                                  IrkCheck check);
+                                  IrkCheck check, bool host_task);
 
   // The Device Information read callback copies names under state_mutex_.
   friend int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle,
@@ -378,9 +378,16 @@ class IRKCaptureComponent : public Component {
   // Returns false when the device rejected the change (name left unchanged).
   bool update_ble_name(const std::string& name);
   std::string get_ble_name();
-  void start_advertising();
+  // host_task: the caller is the NimBLE host task, which never waits for
+  // ble_op_mutex_. A busy lock then hands the start to loop() through
+  // adv_restart_time_, keeping any hold-off deadline already set.
+  void start_advertising(bool host_task = false);
   // True only after verifying that GAP advertising is inactive under the BLE lock.
-  bool stop_advertising();
+  // host_task as for start_advertising(). hold_off is the adv_restart_time_
+  // deadline of the hold-off this stop serves, or 0 for a plain stop. Such a
+  // stop is made only while that hold-off is still pending (see
+  // hold_off_pending_locked_()), so it cannot turn off a newer start.
+  bool stop_advertising(bool host_task = false, uint32_t hold_off = 0);
   void set_advertising_requested(bool requested);
   CaptureResult get_capture_result();
   // Main-task wizard action: claim a baseline and request advertising in the
@@ -495,6 +502,17 @@ class IRKCaptureComponent : public Component {
   uint32_t adv_restart_time_ { 0 };  // When to restart advertising after a hold-off; 0 = none
   // When to retry an unsuccessful stop (lock busy or radio still active); 0 = none.
   uint32_t adv_stop_retry_time_ { 0 };
+  // A hold-off stop the host task could not make because ble_op_mutex_ was
+  // busy: the adv_restart_time_ deadline of that hold-off, or 0. loop() makes
+  // the stop while advertising is requested only as long as that hold-off is
+  // still pending; a newer start, OFF or reset supersedes it.
+  uint32_t adv_hold_off_stop_ { 0 };
+  // Caller holds state_mutex_. True while the hold-off whose restart deadline
+  // is hold_off still stands: advertising is requested and nothing has
+  // restarted it or replaced its deadline since.
+  bool hold_off_pending_locked_(uint32_t hold_off) const {
+    return hold_off != 0 && advertising_requested_ && adv_restart_time_ == hold_off;
+  }
   // When the Bluetooth host began to be unsynced (boot or a host reset); 0 once
   // it syncs. Lets a host that never comes up be reported instead of ignored.
   uint32_t host_wait_since_ { 0 };

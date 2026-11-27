@@ -249,7 +249,8 @@ static void log_irk_check(IrkCheck check) {
 // stages sensor/automation publishing, and logs the capture.
 void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                          const std::string& irk_hex, const char* context_tag,
-                         uint32_t connection_generation, CaptureOrigin origin, IrkCheck check) {
+                         uint32_t connection_generation, CaptureOrigin origin, IrkCheck check,
+                         bool host_task) {
   if (!self) return;
 
   const std::string addr_str = addr_to_str(peer_id_addr);
@@ -309,17 +310,19 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   // deadline covers both cases: a live link (the disconnect handler sees a
   // restart already scheduled) and a delayed read that finds the radio on.
   if (decision.stop_adv) {
+    uint32_t hold_off = 0;
     {
       MutexGuard lock(self->state_mutex_);
       if (self->advertising_requested_) {
-        self->adv_restart_time_ =
-            deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
+        hold_off = deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
+        self->adv_restart_time_ = hold_off;
       }
     }
     // Skip stop_advertising() when already off (e.g. on a live link) to avoid
     // an unnecessary ble_op_mutex_ wait and deferred-stop retry on contention.
+    // The stop is tied to this hold-off, so a newer start is never undone.
     if (self->is_advertising()) {
-      self->stop_advertising();
+      self->stop_advertising(host_task, hold_off);
     }
     if (decision.limit_just_reached) {
       ESP_LOGI(TAG,
@@ -533,7 +536,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
     }
     return;
   }
-  start_advertising();
+  start_advertising(true);
 }
 
 std::string IRKCaptureComponent::build_history_json() {

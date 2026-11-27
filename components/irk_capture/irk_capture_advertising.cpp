@@ -62,7 +62,7 @@ bool IRKCaptureComponent::adv_start_current_locked_(uint32_t host_generation,
          mac_rotation_state_ == MacRotationState::IDLE;
 }
 
-void IRKCaptureComponent::start_advertising() {
+void IRKCaptureComponent::start_advertising(bool host_task) {
   if (!host_synced_) {
     ESP_LOGW(TAG, "Host not synced; cannot advertise");
     return;
@@ -99,8 +99,22 @@ void IRKCaptureComponent::start_advertising() {
   bool address_initialized = false;
   bool recovered = false;
   {
-    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
+    BleOpGuard ble_lock(ble_op_mutex_,
+                        host_task ? 0 : pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
     if (!ble_lock.acquired()) {
+      if (host_task) {
+        // The host task never waits. Hand the start to loop(), keeping any
+        // deadline already set: a reconnect hold-off must still run out.
+        {
+          MutexGuard lock(state_mutex_);
+          if (adv_start_current_locked_(host_generation, rotation_generation) &&
+              adv_restart_time_ == 0) {
+            adv_restart_time_ = deadline_after(now_ms(), 0);
+          }
+        }
+        ESP_LOGD(TAG, "Advertising start handed to the main loop: BLE operation lock busy");
+        return;
+      }
       handle_advertising_failure_(BLE_HS_EBUSY, host_generation, "BLE operation lock");
       return;
     }
@@ -201,6 +215,7 @@ void IRKCaptureComponent::start_advertising() {
           advertising_start_attempts_ = 0;
           advertising_failure_log_time_ = 0;
           adv_restart_time_ = 0;
+          adv_hold_off_stop_ = 0;  // This start supersedes any hold-off.
           pending_adv_pub_ = true;
         }
       }
@@ -272,19 +287,26 @@ void IRKCaptureComponent::handle_advertising_failure_(int rc, uint32_t host_gene
   }
 }
 
-bool IRKCaptureComponent::stop_advertising() {
+bool IRKCaptureComponent::stop_advertising(bool host_task, uint32_t hold_off) {
   int rc;
   bool still_active;
   bool was_active = false;
   bool lock_timeout = false;
   {
-    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
+    BleOpGuard ble_lock(ble_op_mutex_,
+                        host_task ? 0 : pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
     if (!ble_lock.acquired()) {
       lock_timeout = true;
     } else {
       uint32_t host_generation;
       {
         MutexGuard lock(state_mutex_);
+        // Recheck under the BLE lock: a start, OFF or reset since the hold-off
+        // was set means this stop would turn off advertising nobody holds off.
+        if (hold_off != 0 && !hold_off_pending_locked_(hold_off)) {
+          if (adv_hold_off_stop_ == hold_off) adv_hold_off_stop_ = 0;
+          return false;
+        }
         host_generation = host_generation_;
       }
       was_active = ble_gap_adv_active() != 0;
@@ -298,14 +320,21 @@ bool IRKCaptureComponent::stop_advertising() {
       advertising_ = still_active;
       adv_stop_retry_time_ =
           still_active ? deadline_after(now_ms(), TimingConfig::ADV_RETRY_MS) : 0;
+      if (!still_active) adv_hold_off_stop_ = 0;
     }
   }
   if (lock_timeout) {
     bool first;
     {
       MutexGuard lock(state_mutex_);
+      if (hold_off != 0) {
+        // Hand the stop to loop() only for the hold-off that asked for it.
+        if (!hold_off_pending_locked_(hold_off)) return false;
+        adv_hold_off_stop_ = hold_off;
+      }
       first = adv_stop_retry_time_ == 0;
-      adv_stop_retry_time_ = deadline_after(now_ms(), TimingConfig::ADV_RETRY_MS);
+      // The host task never waits, so loop() takes it over on its next pass.
+      adv_stop_retry_time_ = deadline_after(now_ms(), host_task ? 0 : TimingConfig::ADV_RETRY_MS);
     }
     if (first) {
       ESP_LOGW(TAG,
