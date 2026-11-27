@@ -323,10 +323,17 @@ async function action(url,body){
   catch(e){ showError(e); return null; }
 }
 function newer(a,b){ var delta=(a-b)>>>0; return delta!==0 && delta<0x80000000; }
+// Names the run a stop is for, so a tab another tab has replaced cannot stop
+// the newer run. Without a START reply the page cannot name it, so it sends {}
+// and the device stops whatever is running.
+function stopBody(attempt){
+  if(!attempt || attempt.operation_id===null || attempt.boot_id===null) return {};
+  return {operation_id:String(attempt.operation_id), boot_id:String(attempt.boot_id)};
+}
 function cancelCapture(stop){
-  var active=awaitingCapture;
+  var active=awaitingCapture, attempt=captureAttempt;
   ++captureRun; awaitingCapture=false; captureAttempt=null;
-  if(stop && active) action('/api/capture/stop',{});
+  if(stop && active) action('/api/capture/stop',stopBody(attempt));
 }
 function captureFailed(message){
   cancelCapture(false); captureMessage=message;
@@ -526,8 +533,9 @@ async function wizStart(){
 }
 function wizFresh(){ action('/api/fresh_identity',{}); }
 function wizStop(){
+  var attempt=captureAttempt;
   cancelCapture(false); captureMessage='Capture stopped. Go back a step to start again.';
-  action('/api/capture/stop',{}); if(lastData) render(lastData);
+  action('/api/capture/stop',stopBody(attempt)); if(lastData) render(lastData);
 }
 function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizardProfileReady=false; resetWizardLabel(); wizGo(1); }
 

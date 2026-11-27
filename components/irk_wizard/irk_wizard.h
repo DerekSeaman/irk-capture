@@ -114,7 +114,10 @@ class IRKWizardComponent : public Component {
   }
   // Radio changes are serialized with Home Assistant controls on the main task.
   void set_advertising(bool on);
-  void stop_capture();
+  // operation_id and boot_id name the run the page is stopping; 0 means the
+  // page never learned them (a lost START reply), which stops unconditionally.
+  // Returns false, doing nothing, for a stop meant for an earlier run.
+  bool stop_capture(uint32_t operation_id = 0, uint32_t boot_id = 0);
   // Returns a request ID immediately; /api/status acknowledges the authoritative
   // baseline once the main task has begun the attempt.
   CaptureStart start_capture();

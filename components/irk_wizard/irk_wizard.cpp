@@ -2,6 +2,7 @@
 
 #ifdef USE_ESP32
 
+#include <cstdlib>
 #include <cstring>
 
 #include <lwip/sockets.h>
@@ -294,11 +295,20 @@ void IRKWizardComponent::set_advertising(bool on) {
   });
 }
 
-void IRKWizardComponent::stop_capture() {
+bool IRKWizardComponent::stop_capture(uint32_t operation_id, uint32_t boot_id) {
+  if (operation_id != 0) {
+    // A tab whose run another tab replaced must not cancel the newer run or
+    // close its peer. Start and stop both run on the single httpd task, so no
+    // new start can land between this check and the cancellation below.
+    MutexGuard lock(snapshot_mutex_);
+    if (capture_start_.operation_id != operation_id || capture_start_.boot_id != boot_id)
+      return false;
+  }
   // Cancel the result before acknowledging the stop. The next label can
   // arrive before the NimBLE host has finished closing the old link.
   if (irk_capture_) irk_capture_->cancel_capture();
   set_advertising(false);
+  return true;
 }
 
 CaptureStart IRKWizardComponent::start_capture() {
@@ -707,11 +717,45 @@ static esp_err_t handle_post_capture_start(httpd_req_t* req) {
                             ",\"boot_id\":" + std::to_string(start.boot_id) + "}");
 }
 
+// Reads an optional quoted decimal ID, the form boot IDs already use. An
+// absent key leaves 0; a present one must be a nonzero 32-bit value.
+static bool optional_quoted_id(const std::string& body, const char* key, uint32_t& out) {
+  out = 0;
+  size_t pos;
+  if (!json_find_value_start(body, key, pos)) {
+    // Absent from a well-formed object, or no body at all. A malformed body
+    // or a duplicated key is rejected rather than read as an unnamed stop.
+    if (body.empty()) return true;
+    size_t end = 0;
+    json_skip_ws(body, end);
+    if (end >= body.size() || body[end] != '{' || !json_skip_value(body, end)) return false;
+    json_skip_ws(body, end);
+    return end == body.size() && body.find(std::string("\"") + key + "\"") == std::string::npos;
+  }
+  std::string text;
+  if (!json_extract_string(body, key, text) || text.empty() || text.size() > 10 ||
+      text.find_first_not_of("0123456789") != std::string::npos)
+    return false;
+  const unsigned long long value = strtoull(text.c_str(), nullptr, 10);
+  if (value == 0 || value > UINT32_MAX) return false;
+  out = static_cast<uint32_t>(value);
+  return true;
+}
+
 static esp_err_t handle_post_capture_stop(httpd_req_t* req) {
   Command command;
   if (!begin_command(req, NEEDS_CAPTURE, command)) return command.error_result;
-  static_cast<IRKWizardComponent*>(req->user_ctx)->stop_capture();
-  return send_ok(req);
+  uint32_t operation_id = 0;
+  uint32_t boot_id = 0;
+  if (!optional_quoted_id(command.body, "operation_id", operation_id) ||
+      !optional_quoted_id(command.body, "boot_id", boot_id) || (operation_id == 0) != (boot_id == 0)) {
+    return reply_error(req, "400 Bad Request",
+                       "operation_id and boot_id must be quoted IDs, sent together");
+  }
+  // A stop for a replaced run is already satisfied from that page's view.
+  const bool stopped =
+      static_cast<IRKWizardComponent*>(req->user_ctx)->stop_capture(operation_id, boot_id);
+  return send_json(req, std::string("{\"ok\":true,\"stopped\":") + (stopped ? "true" : "false") + "}");
 }
 
 static esp_err_t handle_post_profile(httpd_req_t* req) {
