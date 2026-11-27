@@ -27,7 +27,7 @@ IRK Capture v1.7.11 fixes a set of wizard, profile and pairing edge cases. There
 - **No YAML changes are needed.**
 - **ESPHome 2026.9.0 or newer** is still required. Tested with 2026.11.1 on ESP-IDF 5.5.6 and 6.1.1.
 - **Rebuild as usual.** Devices that track `main` pick up this version on their next build.
-- **A wizard run you back out of is discarded.** If a device finishes pairing after you leave the pairing step, its key is not sent to Home Assistant. Pair it again to capture it.
+- **A wizard run you back out of is discarded once the ESP32 receives the Stop.** Back, Stop and Exit send a Stop. After the ESP32 processes it, a device from that run that finishes pairing does not have its key sent to Home Assistant; pair it again to capture it. If the wizard can't confirm the Stop, pressing Back, Stop or Exit again resends it.
 - **Stop in the wizard stops only the wizard's own run.** After a failure message, Stop has nothing left to stop. Use the **BLE Advertising** switch or the panel's advertising button to turn advertising off.
 - **Scripts that call the wizard API:**
   - A new endpoint, `POST /api/capture/stop`, ends a capture. Send `{"operation_id":"<id>","boot_id":"<id>"}` (quoted, both from the `/api/capture/start` reply) to stop that run only, or `{}` to stop whatever is running. The reply is `{"ok":true,"stopped":true}`, or `"stopped":false` when a newer run has replaced the one you named.
