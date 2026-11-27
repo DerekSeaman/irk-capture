@@ -64,7 +64,7 @@ When your Apple or Android device pairs with the ESP32:
 5. The ESP32 checks the IRK and reports the result in the **IRK Check** sensor
 6. You can then use this IRK with the Private BLE Device integration for presence tracking
 
-**IRK check.** Phones and watches that use BLE privacy connect from a private address generated from their IRK. After each capture, the ESP32 confirms that the captured IRK generates the address the device connected from. **IRK Check** shows `verified` when it does, which proves the key is correct. `unverified` means the device connected from a fixed address, so there was nothing to check; the key is usually still correct. `mismatch` means you should capture the device again. See [Checking a captured IRK](#checking-a-captured-irk) for details.
+**IRK check.** Phones and watches that use BLE privacy connect from a private address generated from their IRK. After each capture, the ESP32 confirms that the captured IRK generates the address the device connected from. **IRK Check** shows `verified` when it does, which proves the key is correct. `unverified` means the key could not be checked against the address the device connected from, usually because that address is not one an IRK generates; the key is usually still correct. `mismatch` means you should capture the device again. See [Checking a captured IRK](#checking-a-captured-irk) for details.
 
 ![ESPHome IRK Capture device page in Home Assistant, with the IRK and IRK Check sensors highlighted](docs/screenshot-1.jpg)
 
@@ -484,7 +484,7 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 After each capture, the ESP32 checks the IRK against the address the device connected from. Phones and watches that use BLE privacy connect from a resolvable private address, which is generated from their IRK. If the captured IRK generates that address, the key is proven correct. The result appears in the log as an `IRK check:` line, in the **IRK Check** sensor, in the wizard's result step and history, and as the `verification` field of the `esphome.irk_captured` event:
 
 - **`verified`**: The IRK generates the address the device connected from, so it is the right key.
-- **`unverified`**: The device connected from a fixed address, or the check could not run. This is normal for devices that do not use a private address and does not mean the key is wrong.
+- **`unverified`**: The key could not be checked against the connection address. Usually the device connected from a public, static, or non-resolvable private address, none of which an IRK generates; rarely, the check itself could not run. This is normal for devices that do not use a resolvable private address and does not mean the key is wrong.
 - **`mismatch`**: The device connected from a private address this IRK does not generate. This should not happen. Forget the ESP32 in the device's Bluetooth settings and capture it again.
 
 ### IRK Not Captured After Pairing

@@ -782,7 +782,8 @@ function render(d){
   }
 }
 // Whether the key generated the address the device connected from. Only a
-// mismatch is a warning: a device on a fixed address has nothing to check.
+// mismatch is a warning: "unverified" covers both an address no IRK generates
+// and a check that could not run, so it does not name a cause.
 function renderVerification(v){
   var p=el('wizVerify');
   p.classList.toggle('ok', v==='verified');
@@ -793,8 +794,8 @@ function renderVerification(v){
     p.textContent='Warning: this key does not match the address your device connected from. '+
       'Forget this device in its Bluetooth settings and capture it again.';
   else
-    p.textContent='Not verified: your device connected from an address this key cannot be '+
-      'checked against. The key is usually still correct.';
+    p.textContent='Not verified: this key could not be checked against the address your device '+
+      'connected from. The key is usually still correct.';
 }
 function verificationNote(v){
   if(v==='verified') return ' \u00b7 verified';
