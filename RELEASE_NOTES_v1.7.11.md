@@ -31,6 +31,6 @@ IRK Capture v1.7.11 fixes a set of wizard, profile and pairing edge cases. There
 - **Stop in the wizard stops only the wizard's own run.** After a failure message, Stop has nothing left to stop. Use the **BLE Advertising** switch or the panel's advertising button to turn advertising off.
 - **Scripts that call the wizard API:**
   - A new endpoint, `POST /api/capture/stop`, ends a capture. Send `{"operation_id":"<id>","boot_id":"<id>"}` (quoted, both from the `/api/capture/start` reply) to stop that run only, or `{}` to stop whatever is running. The reply is `{"ok":true,"stopped":true}`, or `"stopped":false` when a newer run has replaced the one you named.
-  - `/api/status` adds `connection_generation` to `capture_result` and `capture_start`. A result belongs to a capture start only if its `connection_generation` is newer than the start's.
+  - `/api/status` adds `connection_generation` to `capture_result` and `capture_start`. To follow a run, match `capture_start` to the `operation_id` from the START reply and wait for its `state` to be `ready`. Then accept a `capture_result` only from the same `boot_id` and only when both its `sequence` and its `connection_generation` are newer than `capture_start`'s, comparing with rollover in mind.
   - `/api/status` adds `history_version`. Send it back as `/api/status?history=<value>` and, while the history is unchanged, the reply has `"history_unchanged":true` instead of `history`. Requests without it get the full history as before.
   - `POST /api/advertising` is unchanged.
