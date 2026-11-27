@@ -45,6 +45,7 @@ struct CaptureStart {
   CaptureStartState state { CaptureStartState::IDLE };
   uint32_t boot_id { 0 };
   uint32_t sequence { 0 };
+  uint32_t connection_generation { 0 };  // Newest connection when the start took effect
 };
 
 // Cached UI state built on the main task and copied under snapshot_mutex_

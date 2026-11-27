@@ -288,6 +288,7 @@ void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex,
       capture_result_.irk = irk_hex;
       capture_result_.device_mac = addr_str;
       capture_result_.verification = check;
+      capture_result_.connection_generation = connection_generation;
       capture_result_generation_ = connection_generation;
       if (!capture_triggers_.empty()) {
         if (pending_capture_events_.size() < CAPTURE_EVENT_CAPACITY) {

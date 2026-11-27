@@ -702,7 +702,10 @@ function advanceCapture(d){
       if(start.state==='ready' && start.boot_id===attempt.boot_id){
         attempt.baseline=start.sequence;
         var result=d.capture_result;
+        // A link from an earlier run can still finish pairing after this one
+        // started; only a connection made after the start is this run's device.
         if(result && result.boot_id===attempt.boot_id && newer(result.sequence,attempt.baseline) &&
+           newer(result.connection_generation,start.connection_generation) &&
            /^[0-9a-f]{32}$/i.test(result.irk || '')){
           // Freeze the accepted capture; later captures/failures belong to
           // subsequent runs, even if the browser missed the status hold.

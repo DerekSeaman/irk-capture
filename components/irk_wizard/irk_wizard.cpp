@@ -323,6 +323,7 @@ CaptureStart IRKWizardComponent::start_capture() {
       return;
     capture_start_.boot_id = baseline.boot_id;
     capture_start_.sequence = baseline.sequence;
+    capture_start_.connection_generation = baseline.connection_generation;
     capture_start_.state = available ? CaptureStartState::READY : CaptureStartState::FAILED;
   });
   return request;
@@ -644,11 +645,13 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   add_string(tail, ",\"device_mac\":\"", s.capture_result.device_mac);
   tail += ",\"verification\":\"";
   tail += irk_capture::irk_check_name(s.capture_result.verification);
-  add_number(tail, "\"},\"capture_start\":{\"operation_id\":", s.capture_start.operation_id);
+  add_number(tail, "\",\"connection_generation\":", s.capture_result.connection_generation);
+  add_number(tail, "},\"capture_start\":{\"operation_id\":", s.capture_start.operation_id);
   tail += ",\"state\":\"";
   tail += capture_start_state_name(s.capture_start.state);
   add_number(tail, "\",\"boot_id\":", s.capture_start.boot_id);
   add_number(tail, ",\"sequence\":", s.capture_start.sequence);
+  add_number(tail, ",\"connection_generation\":", s.capture_start.connection_generation);
   tail += "},\"bond_clear\":";
   tail += bond_clear_json(s.bond_clear);
   add_number(tail, ",\"identity_refresh\":{\"operation_id\":", s.identity_refresh.operation_id);

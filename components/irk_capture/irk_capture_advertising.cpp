@@ -366,6 +366,9 @@ CaptureResult IRKCaptureComponent::begin_capture() {
   {
     MutexGuard lock(state_mutex_);
     baseline = capture_result_;
+    // A link left open by an earlier run (Back only stops advertising) can
+    // still finish pairing. Only a connection newer than this one counts.
+    baseline.connection_generation = connection_generation_;
     if (!advertising_requested_) {
       advertising_start_attempts_ = 0;
       advertising_failure_log_time_ = 0;

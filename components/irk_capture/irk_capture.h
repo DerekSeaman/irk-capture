@@ -215,6 +215,10 @@ struct CaptureResult {
   std::string irk;
   std::string device_mac;
   IrkCheck verification { IrkCheck::UNCHECKED };
+  // The connection that produced this result. In the baseline begin_capture()
+  // returns, it is instead the newest connection when the capture started: a
+  // result from that connection or an earlier one belongs to an earlier run.
+  uint32_t connection_generation { 0 };
 };
 
 // What record_observation_locked_() decided and why. Filled in under state_mutex_ and
