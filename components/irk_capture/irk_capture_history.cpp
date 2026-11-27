@@ -548,11 +548,41 @@ std::string IRKCaptureComponent::build_history_json() {
 }
 
 std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCacheEntry>& cache) {
-  // Worst-case entry (151 B): 94 B for framing, separator, MAC and IRK,
-  // up to 24 for the label, 5 for reconnects, and 28 for verification.
-  static constexpr size_t ENTRY_RESERVE = 94 + CAPTURE_LABEL_MAX_LEN + 5 + 28;
+  // The wizard keeps this string for the rest of the session, and firmware
+  // builds without exceptions, where shrink_to_fit() cannot release a heap
+  // buffer. So measure the exact length first and allocate once at that size:
+  // nothing is held for hidden rows or for label space a row does not use.
+  static constexpr char MAC_KEY[] = "{\"mac\":\"";
+  static constexpr char IRK_KEY[] = "\",\"irk\":\"";
+  static constexpr char LABEL_KEY[] = "\",\"label\":\"";
+  static constexpr char RECONNECTS_KEY[] = "\",\"reconnects\":";
+  static constexpr char VERIFICATION_KEY[] = ",\"verification\":\"";
+  static constexpr char ENTRY_END[] = "\"}";
+  // sizeof counts each literal's terminator; the -6 removes them.
+  static constexpr size_t FRAMING = sizeof(MAC_KEY) + sizeof(IRK_KEY) + sizeof(LABEL_KEY) +
+                                    sizeof(RECONNECTS_KEY) + sizeof(VERIFICATION_KEY) +
+                                    sizeof(ENTRY_END) - 6;
+  const auto digits = [](uint16_t value) -> size_t {
+    size_t count = 1;
+    while (value >= 10) {
+      value /= 10;
+      count++;
+    }
+    return count;
+  };
+
+  size_t length = 2;  // [ and ]
+  size_t visible = 0;
+  for (const auto& entry : cache) {
+    if (!entry.in_history) continue;
+    length += FRAMING + entry.mac_addr.size() + entry.irk_hex.size() + entry.label.size() +
+              digits(entry.reconnect_count) + std::strlen(irk_check_name(entry.verification));
+    visible++;
+  }
+  if (visible > 1) length += visible - 1;  // Separators
+
   std::string json;
-  json.reserve(cache.size() * ENTRY_RESERVE + 2);
+  json.reserve(length);
   json += "[";
   bool first = true;
   for (const auto& entry : cache) {
@@ -562,17 +592,17 @@ std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCache
     // mac_addr/irk_hex are always hex/colon characters and label is
     // restricted to a safe charset (see set_next_capture_label()), so none of
     // these values can contain a character that needs JSON escaping.
-    json += "{\"mac\":\"";
+    json += MAC_KEY;
     json += entry.mac_addr;
-    json += "\",\"irk\":\"";
+    json += IRK_KEY;
     json += entry.irk_hex;
-    json += "\",\"label\":\"";
+    json += LABEL_KEY;
     json += entry.label;
-    json += "\",\"reconnects\":";
+    json += RECONNECTS_KEY;
     json += std::to_string(entry.reconnect_count);
-    json += ",\"verification\":\"";
+    json += VERIFICATION_KEY;
     json += irk_check_name(entry.verification);
-    json += "\"}";
+    json += ENTRY_END;
   }
   json += "]";
 
