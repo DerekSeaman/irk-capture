@@ -7,7 +7,7 @@ IRK Capture v1.7.11 fixes a set of wizard, profile and pairing edge cases. There
 - **Going back in the wizard ends the old pairing.** Pressing Back, Stop or Exit while a device is still pairing now disconnects it and discards its result. Before, a device you had backed out of could finish pairing during your next run. It could then show up as the new device's key, take the label you typed for the next device, or turn advertising off when **Stop Advertising After Capture** was on.
 - **Stop in the wizard can be retried.** If the device doesn't confirm a stop, for example during a Wi-Fi drop, the wizard says so and pressing Stop sends it again. A wizard tab that another tab has taken over no longer stops the newer run.
 - **A new run starts clean.** Starting pairing straight after a failed attempt no longer shows the previous attempt's "Failed" or "No IRK" status for a few seconds.
-- **Advertising you turn back on stays on past the capture limit.** Once `max_captures` was reached (or after the first capture with `continuous_mode: false`), any later disconnect that captured nothing turned advertising off again, including in the middle of a wizard run.
+- **Advertising you turn back on stays on past the capture limit.** Once `max_captures` was reached (or after the first capture with `continuous_mode: false`), advertising turned off again whenever a device disconnected without being captured, or an already-captured device reconnected and resent its key, including in the middle of a wizard run. Only a new device, a changed key or a deliberate re-pair counts now.
 - **The wizard label no longer reuses a label another capture already used.** An untouched label field now follows the device, and Next saves only a label you edited.
 - **Changing BLE Profile no longer advertises the new profile before the reboot.** The device keeps advertising its current profile until it restarts. A change made in the wizard now also shows in Home Assistant's **BLE Profile** select straight away.
 - **Refresh BLE Identity no longer stalls for up to 90 seconds** when a device connects while the refresh is under way. That device is now disconnected so the refresh can finish.
@@ -18,7 +18,9 @@ IRK Capture v1.7.11 fixes a set of wizard, profile and pairing edge cases. There
 - A device whose encryption failed or timed out no longer has its stale stored key published when it disconnects.
 - A connection accepted exactly as the device's millisecond clock wraps (every 49.7 days) keeps its overall pairing timeout.
 - A device you backed out of in the wizard no longer delays the next run's advertising by five seconds.
-- Bluetooth no longer pauses while a stray connection is closed. If another Bluetooth operation is under way, the connection is closed once it finishes.
+- Bluetooth no longer pauses to close a stray connection or to start or stop advertising. If another Bluetooth operation is under way, that work runs as soon as it finishes.
+- The wizard's first step also waits out a reboot or profile change started from the panel.
+- A signed-in wizard tab keeps its own login throttle even while other addresses are guessing passwords.
 
 ## Upgrading
 
@@ -30,4 +32,5 @@ IRK Capture v1.7.11 fixes a set of wizard, profile and pairing edge cases. There
 - **Scripts that call the wizard API:**
   - A new endpoint, `POST /api/capture/stop`, ends a capture. Send `{"operation_id":"<id>","boot_id":"<id>"}` (quoted, both from the `/api/capture/start` reply) to stop that run only, or `{}` to stop whatever is running. The reply is `{"ok":true,"stopped":true}`, or `"stopped":false` when a newer run has replaced the one you named.
   - `/api/status` adds `connection_generation` to `capture_result` and `capture_start`. A result belongs to a capture start only if its `connection_generation` is newer than the start's.
+  - `/api/status` adds `history_version`. Send it back as `/api/status?history=<value>` and, while the history is unchanged, the reply has `"history_unchanged":true` instead of `history`. Requests without it get the full history as before.
   - `POST /api/advertising` is unchanged.
