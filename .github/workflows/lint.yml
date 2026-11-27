@@ -517,7 +517,8 @@ jobs:
       - name: Prepare the packages
         run: |
           cat > "${RUNNER_TEMP}/prepare_shipped.py" <<'EOF'
-          """Set up a build of the two shipped packages against this checkout."""
+          """Set up builds of the shipped packages against this checkout: the base
+          package alone, as most installs use it, and the base with the wizard."""
           import base64
           import os
           import re
@@ -547,10 +548,11 @@ jobs:
           # package's header lists it. Nothing connects to this build, so the
           # API key is random rather than a value kept in the repository.
           key = base64.b64encode(os.urandom(32)).decode()
-          (out / "irk-capture-shipped.yaml").write_text(
-              f"""esphome:
-            name: irk-capture-shipped
-            friendly_name: IRK Capture Shipped
+
+          def device(name, friendly_name, extra_packages):
+              return f"""esphome:
+            name: {name}
+            friendly_name: {friendly_name}
           esp32:
             board: esp32-c3-devkitm-1
             variant: esp32c3
@@ -569,15 +571,30 @@ jobs:
           captive_portal:
           packages:
             device: !include irk-capture-base.yaml
-            wizard: !include irk-capture-wizard.yaml
-          """
+          {extra_packages}"""
+
+          (out / "irk-capture-base-only.yaml").write_text(
+              device("irk-capture-base-only", "IRK Capture Base Only", "")
+          )
+          (out / "irk-capture-shipped.yaml").write_text(
+              device(
+                  "irk-capture-shipped",
+                  "IRK Capture Shipped",
+                  "  wizard: !include irk-capture-wizard.yaml\n",
+              )
           )
           EOF
           python "${RUNNER_TEMP}/prepare_shipped.py" \
             "${{ github.workspace }}" "${RUNNER_TEMP}/shipped"
 
-      - name: Validate
+      - name: Validate (base only)
+        run: esphome config "${RUNNER_TEMP}/shipped/irk-capture-base-only.yaml"
+
+      - name: Compile (base only)
+        run: esphome compile "${RUNNER_TEMP}/shipped/irk-capture-base-only.yaml"
+
+      - name: Validate (base + wizard)
         run: esphome config "${RUNNER_TEMP}/shipped/irk-capture-shipped.yaml"
 
-      - name: Compile
+      - name: Compile (base + wizard)
         run: esphome compile "${RUNNER_TEMP}/shipped/irk-capture-shipped.yaml"
