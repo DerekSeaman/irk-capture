@@ -18,6 +18,7 @@ IRK Capture v1.7.11 fixes a set of wizard, profile and pairing edge cases. There
 - A device whose encryption failed or timed out no longer has its stale stored key published when it disconnects.
 - A connection accepted exactly as the device's millisecond clock wraps (every 49.7 days) keeps its overall pairing timeout.
 - A device you backed out of in the wizard no longer delays the next run's advertising by five seconds.
+- Bluetooth no longer pauses while a stray connection is closed. If another Bluetooth operation is under way, the connection is closed once it finishes.
 
 ## Upgrading
 
