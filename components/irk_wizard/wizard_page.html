@@ -349,7 +349,10 @@ function sendStop(request,announce){
     }
     refresh();
   },function(e){
-    if(pendingStop===request && announce && !awaitingCapture)
+    // A new run that replaced this stop has already cleared the page's
+    // errors; a late failure of the old stop must not put one back.
+    if(pendingStop!==request) return;
+    if(announce && !awaitingCapture)
       captureMessage='Could not confirm the stop. Press Stop to try again.';
     showError(e);
   }).then(function(){ request.inFlight=false; if(lastData) render(lastData); });
