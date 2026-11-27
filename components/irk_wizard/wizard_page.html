@@ -434,6 +434,10 @@ function wizGo(n){
 function resetWizardLabel(){ wizLabelDirty=false; ++wizLabelEdit; el('wizLabel').value=''; }
 async function wizSaveLabel(){
   if(wizLabelSave) return;
+  // An untouched field only shows what the device holds, or held before a
+  // poll the page has not seen yet. Saving it could re-arm a label another
+  // capture already used, so only the user's own edit is sent.
+  if(!wizLabelDirty){ clearError(); wizGo(3); return; }
   var request={run:wizardRun, visit:wizLabelVisit, edit:wizLabelEdit}; wizLabelSave=request;
   // Only a reply to the step the user is still on may show an error or move
   // the wizard: they may have left it, gone Back, or started a new run.
@@ -760,9 +764,10 @@ function render(d){
   /* wizard */
   if(wizStep===0) return;
   el('wizProfile').value = pendingReboot && pendingReboot.profile ? pendingReboot.profile : d.profile;
-  // An empty field the user cleared stays empty; only an untouched one fills.
-  if(!wizLabelDirty && document.activeElement !== el('wizLabel') && !el('wizLabel').value && d.next_capture_label)
-    el('wizLabel').value = d.next_capture_label;
+  // An untouched field mirrors the device, including a label another capture
+  // has since used up; a field the user edited, even to empty, is left alone.
+  if(!wizLabelDirty && document.activeElement !== el('wizLabel'))
+    el('wizLabel').value = d.next_capture_label || '';
 
   if(wizStep===4){
     renderCaptureStep(d,advName);
