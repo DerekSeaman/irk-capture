@@ -72,7 +72,7 @@ When your Apple or Android device pairs with the ESP32:
 
 - **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESP-IDF framework**, 5.x or 6.x (required - this component does NOT support Arduino framework)
-- **ESPHome** 2026.9.0 or newer (the oldest version the build tests use) - Tested with 2026.11.0
+- **ESPHome** 2026.9.0 or newer (the oldest version the build tests use) - Tested with 2026.11.1
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
 - **ESPHome Device Builder** (optional, but makes managing ESPHome devices in Home Assistant easier)
 
