@@ -680,7 +680,9 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 
 #ifdef BLE_GAP_EVENT_AUTHORIZE
     case BLE_GAP_EVENT_AUTHORIZE:
-      // Authorization event (allow by returning 0)
+      // NimBLE ignores this return value and reads ev->authorize.out_response.
+      // No characteristic uses application authorization, so leave it unset and
+      // NimBLE rejects any unexpected request.
       return 0;
 #endif
 
