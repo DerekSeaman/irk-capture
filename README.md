@@ -70,7 +70,7 @@ When your Apple or Android device pairs with the ESP32:
 
 ## Requirements
 
-- **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
+- **ESP32 board** with Bluetooth and Wi-Fi support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESP-IDF framework**, 5.x or 6.x (required - this component does NOT support Arduino framework)
 - **ESPHome** 2026.9.0 or newer (the oldest version the build tests use) - Tested with 2026.11.1
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
@@ -258,6 +258,7 @@ If advertising fails to start, the ESP32 keeps retrying on its own, quickly at f
 Some restarts happen on their own. A restart clears the session history and all pairings, and the ESP32 comes back with the default name and a new random MAC address.
 
 - **No Home Assistant connection.** The ESP32 does not restart for lack of a Home Assistant connection, so the wizard keeps its session when Home Assistant is not connected.
+- **No Wi-Fi connection.** If the ESP32 can't connect to your Wi-Fi network for 10 minutes, it restarts to try again. It holds off while a phone or computer is connected to its fallback access point, so you can keep using the wizard there.
 - **Bluetooth never starts.** If the Bluetooth host starts but hasn't synchronised 5 minutes after boot, and nothing has been captured, the ESP32 restarts to try again. It repeats while the problem persists. If Bluetooth fails during setup instead, the ESP32 doesn't restart by itself. See [Status shows failed](#status-shows-failed).
 - **Connection that won't close.** If a connected device can't be disconnected after several attempts, the ESP32 restarts. This is rare.
 
