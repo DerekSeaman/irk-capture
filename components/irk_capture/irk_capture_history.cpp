@@ -550,9 +550,13 @@ std::string IRKCaptureComponent::build_history_json() {
 std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCacheEntry>& cache) {
   // Worst-case entry (151 B): 94 B for framing, separator, MAC and IRK,
   // up to 24 for the label, 5 for reconnects, and 28 for verification.
+  // Reserve only for visible entries: the wizard keeps this string for the
+  // rest of the session, so capacity spent on hidden rows would stay held.
   static constexpr size_t ENTRY_RESERVE = 94 + CAPTURE_LABEL_MAX_LEN + 5 + 28;
+  const size_t visible = std::count_if(cache.begin(), cache.end(),
+                                       [](const IRKCacheEntry& e) { return e.in_history; });
   std::string json;
-  json.reserve(cache.size() * ENTRY_RESERVE + 2);
+  json.reserve(visible * ENTRY_RESERVE + 2);
   json += "[";
   bool first = true;
   for (const auto& entry : cache) {
@@ -575,7 +579,9 @@ std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCache
     json += "\"}";
   }
   json += "]";
-
+  // The reserve assumes every label is full length. Give back the rest; this
+  // runs only when the history changes.
+  json.shrink_to_fit();
   return json;
 }
 
