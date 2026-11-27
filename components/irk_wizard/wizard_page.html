@@ -219,6 +219,7 @@ var captureRun = 0;
 var captureAttempt = null;
 var acceptedCapture = null;
 var captureMessage = '';
+var pendingStop = null;      // {body, boot_id, inFlight} a stop the device has not confirmed
 var pendingClear = null;
 var wizardClearRun = 0;
 var writeQueue = Promise.resolve();
@@ -330,10 +331,39 @@ function stopBody(attempt){
   if(!attempt || attempt.operation_id===null || attempt.boot_id===null) return {};
   return {operation_id:String(attempt.operation_id), boot_id:String(attempt.boot_id)};
 }
+// Sends a stop and keeps it until the device confirms it, so pressing Stop,
+// Back or Exit again resends it after a failure. announce reports progress in
+// the pairing step's hint; only Stop itself, which stays on that step, does.
+function sendStop(request,announce){
+  pendingStop=request;
+  if(request.inFlight) return;
+  // A reboot ended the run, and an unnamed stop would end whatever runs now.
+  if(lastData && request.boot_id!==null && lastData.boot_id!==request.boot_id){ pendingStop=null; return; }
+  request.inFlight=true;
+  if(announce) captureMessage='Stopping capture...';
+  clearError();
+  post('/api/capture/stop',request.body).then(function(){
+    if(pendingStop===request){
+      pendingStop=null;
+      if(announce && !awaitingCapture) captureMessage='Capture stopped. Go back a step to start again.';
+    }
+    refresh();
+  },function(e){
+    if(pendingStop===request && announce && !awaitingCapture)
+      captureMessage='Could not confirm the stop. Press Stop to try again.';
+    showError(e);
+  }).then(function(){ request.inFlight=false; if(lastData) render(lastData); });
+}
+function stopRequest(attempt){
+  return {body:stopBody(attempt), boot_id:attempt && attempt.boot_id!==null ? attempt.boot_id :
+          (lastData ? lastData.boot_id : null), inFlight:false};
+}
 function cancelCapture(stop){
   var active=awaitingCapture, attempt=captureAttempt;
   ++captureRun; awaitingCapture=false; captureAttempt=null;
-  if(stop && active) action('/api/capture/stop',stopBody(attempt));
+  if(!stop) return;
+  if(active) sendStop(stopRequest(attempt),false);
+  else if(pendingStop) sendStop(pendingStop,false);
 }
 function captureFailed(message){
   cancelCapture(false); captureMessage=message;
@@ -513,6 +543,8 @@ async function wizForget(source){
 }
 async function wizStart(){
   cancelCapture(true);
+  // This run supersedes any stop still unconfirmed; one already queued runs first.
+  pendingStop=null;
   acceptedCapture=null; captureMessage='Starting advertising...';
   var attempt={run:captureRun,operation_id:null,boot_id:null,baseline:null};
   captureAttempt=attempt; awaitingCapture=true; clearError();
@@ -527,15 +559,22 @@ async function wizStart(){
     captureFailed('Could not start capture. Go back a step and try again.');
     // A lost response may still have delivered START. Queue OFF to cancel it,
     // but skip when an HTTP rejection proves START was refused.
-    if(!e.httpStatus) action('/api/capture/stop',{});
+    if(!e.httpStatus) sendStop(stopRequest(null),false);
     showError(e); if(lastData) render(lastData);
   }
 }
 function wizFresh(){ action('/api/fresh_identity',{}); }
 function wizStop(){
-  var attempt=captureAttempt;
-  cancelCapture(false); captureMessage='Capture stopped. Go back a step to start again.';
-  action('/api/capture/stop',stopBody(attempt)); if(lastData) render(lastData);
+  // Stops this page's own run, or resends a stop the device has not confirmed.
+  // With neither (already stopped, or replaced by another tab), there is
+  // nothing to stop, and an unnamed stop would end the newer run.
+  if(awaitingCapture && captureAttempt){
+    var request=stopRequest(captureAttempt);
+    cancelCapture(false); sendStop(request,true);
+  } else if(pendingStop){
+    sendStop(pendingStop,true);
+  }
+  if(lastData) render(lastData);
 }
 function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizardProfileReady=false; resetWizardLabel(); wizGo(1); }
 
