@@ -255,6 +255,7 @@ void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex,
   // Stage only; the ESPHome main loop() performs the actual publish_state().
   // Callers may run in the NimBLE task, where publish_state() is unsafe.
   MutexGuard lock(state_mutex_);
+  if (capture_cancelled_locked_(connection_generation)) return;
   // A valid IRK for the live connection ends its capture work whether or not it
   // becomes the displayed result, so Status stops reporting "capturing".
   if (connected_ && connection_generation != 0 && connection_generation == connection_generation_) {

@@ -266,6 +266,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   bool capture_event = false;
   {
     MutexGuard lock(self->state_mutex_);
+    if (self->capture_cancelled_locked_(connection_generation)) return;
 
     force_pairing_publish = origin == CaptureOrigin::FRESH || origin == CaptureOrigin::REPAIR;
     is_repair = origin == CaptureOrigin::REPAIR;

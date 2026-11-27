@@ -326,7 +326,7 @@ function newer(a,b){ var delta=(a-b)>>>0; return delta!==0 && delta<0x80000000; 
 function cancelCapture(stop){
   var active=awaitingCapture;
   ++captureRun; awaitingCapture=false; captureAttempt=null;
-  if(stop && active) action('/api/advertising',{on:false});
+  if(stop && active) action('/api/capture/stop',{});
 }
 function captureFailed(message){
   cancelCapture(false); captureMessage=message;
@@ -520,14 +520,14 @@ async function wizStart(){
     captureFailed('Could not start capture. Go back a step and try again.');
     // A lost response may still have delivered START. Queue OFF to cancel it,
     // but skip when an HTTP rejection proves START was refused.
-    if(!e.httpStatus) action('/api/advertising',{on:false});
+    if(!e.httpStatus) action('/api/capture/stop',{});
     showError(e); if(lastData) render(lastData);
   }
 }
 function wizFresh(){ action('/api/fresh_identity',{}); }
 function wizStop(){
   cancelCapture(false); captureMessage='Capture stopped. Go back a step to start again.';
-  action('/api/advertising',{on:false}); if(lastData) render(lastData);
+  action('/api/capture/stop',{}); if(lastData) render(lastData);
 }
 function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizardProfileReady=false; resetWizardLabel(); wizGo(1); }
 

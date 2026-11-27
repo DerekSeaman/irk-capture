@@ -114,6 +114,7 @@ class IRKWizardComponent : public Component {
   }
   // Radio changes are serialized with Home Assistant controls on the main task.
   void set_advertising(bool on);
+  void stop_capture();
   // Returns a request ID immediately; /api/status acknowledges the authoritative
   // baseline once the main task has begun the attempt.
   CaptureStart start_capture();

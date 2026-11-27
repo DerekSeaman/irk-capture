@@ -386,6 +386,9 @@ class IRKCaptureComponent : public Component {
   // Main-task wizard action: claim a baseline and request advertising in the
   // same state transaction, then let the normal BLE start gates run.
   CaptureResult begin_capture();
+  // Wizard cancellation can run on the HTTP task. BLE termination is queued
+  // on the host task and the wizard defers the advertising stop to the main task.
+  void cancel_capture();
   // Rotates the address and adopts a name carrying the profile and the new
   // address's low two octets ("IRK HR 7F3A", "IRK KB 7F3A") until the next
   // reboot. Both halves change together because rotating the address alone
@@ -476,6 +479,12 @@ class IRKCaptureComponent : public Component {
   uint32_t last_notify_ { 0 };
   bool connected_ { false };
   uint32_t connection_generation_ { 0 };  // Monotonic ID for coalescing capture paths
+  uint32_t cancelled_capture_generation_ { 0 };
+  bool capture_stop_requested_ { false };
+  bool capture_cancelled_locked_(uint32_t generation) const {
+    return generation != 0 && cancelled_capture_generation_ != 0 &&
+           static_cast<int32_t>(generation - cancelled_capture_generation_) <= 0;
+  }
   CaptureOrigin connection_origin_ { CaptureOrigin::UNKNOWN };
 
   // Security/pairing state
@@ -702,6 +711,7 @@ class IRKCaptureComponent : public Component {
   SemaphoreHandle_t ble_op_mutex_ { nullptr };
 
   // Internal helpers
+  void set_advertising_intent_locked_(bool requested);
   // connection_addr_out, when given, receives the address the peer connected from.
   bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out,
                    uint32_t connection_generation, CaptureOrigin origin = CaptureOrigin::UNKNOWN,

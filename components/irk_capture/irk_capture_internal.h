@@ -50,7 +50,7 @@ static constexpr char HEX[] = "0123456789abcdef";
 // 3. Maintenance worker ("irk_bond_clear"): puts bond_clear_event_ onto NimBLE's
 //    queue (may block on older NPL ports) without holding any component mutex.
 // 4. esp_http_server task (irk_wizard): thread-safe getters,
-//    set_next_capture_label(), set_stop_after_capture(), request_bond_clear().
+//    cancel_capture(), set_next_capture_label(), set_stop_after_capture(), request_bond_clear().
 //
 // Rules:
 // - Guard all mutable shared state with state_mutex_ (see irk_capture.h).

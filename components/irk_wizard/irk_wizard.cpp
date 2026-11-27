@@ -294,6 +294,13 @@ void IRKWizardComponent::set_advertising(bool on) {
   });
 }
 
+void IRKWizardComponent::stop_capture() {
+  // Cancel the result before acknowledging the stop. The next label can
+  // arrive before the NimBLE host has finished closing the old link.
+  if (irk_capture_) irk_capture_->cancel_capture();
+  set_advertising(false);
+}
+
 CaptureStart IRKWizardComponent::start_capture() {
   const uint32_t boot_id = irk_capture_ ? irk_capture_->get_capture_result().boot_id : 0;
   CaptureStart request;
@@ -378,6 +385,7 @@ static esp_err_t handle_index(httpd_req_t* req);
 static esp_err_t handle_get_status(httpd_req_t* req);
 static esp_err_t handle_post_advertising(httpd_req_t* req);
 static esp_err_t handle_post_capture_start(httpd_req_t* req);
+static esp_err_t handle_post_capture_stop(httpd_req_t* req);
 static esp_err_t handle_post_profile(httpd_req_t* req);
 static esp_err_t handle_post_label(httpd_req_t* req);
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req);
@@ -486,6 +494,7 @@ bool IRKWizardComponent::start_server_() {
     { "/api/status", HTTP_GET, handle_get_status },
     { "/api/advertising", HTTP_POST, handle_post_advertising },
     { "/api/capture/start", HTTP_POST, handle_post_capture_start },
+    { "/api/capture/stop", HTTP_POST, handle_post_capture_stop },
     { "/api/profile", HTTP_POST, handle_post_profile },
     { "/api/label", HTTP_POST, handle_post_label },
     { "/api/forget_bonds", HTTP_POST, handle_post_forget_bonds },
@@ -696,6 +705,13 @@ static esp_err_t handle_post_capture_start(httpd_req_t* req) {
   httpd_resp_set_status(req, "202 Accepted");
   return send_json(req, "{\"operation_id\":" + std::to_string(start.operation_id) +
                             ",\"boot_id\":" + std::to_string(start.boot_id) + "}");
+}
+
+static esp_err_t handle_post_capture_stop(httpd_req_t* req) {
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return command.error_result;
+  static_cast<IRKWizardComponent*>(req->user_ctx)->stop_capture();
+  return send_ok(req);
 }
 
 static esp_err_t handle_post_profile(httpd_req_t* req) {

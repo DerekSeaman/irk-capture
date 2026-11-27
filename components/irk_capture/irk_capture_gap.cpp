@@ -232,7 +232,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   const struct ble_gap_conn_desc& d = ev->disconnect.conn;
   const std::string peer_addr = addr_to_str(d.peer_id_addr);
   uint32_t connection_generation = 0;
-  bool already_observed = false;
+  bool skip_fallback = false;
   bool pairing_completed = false;
   CaptureOrigin origin = CaptureOrigin::UNKNOWN;
   uint32_t connected_since = 0;
@@ -243,11 +243,14 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       connected_since = self->pairing_start_time_;
       pairing_completed = self->enc_ready_;
       origin = self->connection_origin_;
-      for (const auto& entry : self->irk_cache_) {
-        if (entry.mac_addr == peer_addr && entry.addr_type == d.peer_id_addr.type &&
-            entry.last_observed_generation == connection_generation) {
-          already_observed = true;
-          break;
+      skip_fallback = self->capture_cancelled_locked_(connection_generation);
+      if (!skip_fallback) {
+        for (const auto& entry : self->irk_cache_) {
+          if (entry.mac_addr == peer_addr && entry.addr_type == d.peer_id_addr.type &&
+              entry.last_observed_generation == connection_generation) {
+            skip_fallback = true;
+            break;
+          }
         }
       }
     }
@@ -271,8 +274,8 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
 
   // ENC_CHANGE normally captures first. Only use the disconnect store read as
   // a fallback when this connection has not produced a valid IRK yet.
-  bool needs_delayed_check = !already_observed;
-  if (!already_observed) {
+  bool needs_delayed_check = !skip_fallback;
+  if (!skip_fallback) {
     struct ble_store_value_sec bond {};
     int rc = 0;
     const BondRead read = self->read_peer_irk_(d.peer_id_addr, bond, &rc);
@@ -341,6 +344,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     MutexGuard lock(self->state_mutex_);
     if (self->connected_ && self->conn_handle_ == ev->enc_change.conn_handle) {
       connection_generation = self->connection_generation_;
+      if (self->capture_cancelled_locked_(connection_generation)) return 0;
       origin = self->connection_origin_;
       connected_since = self->pairing_start_time_;
       if (ev->enc_change.status == 0) {
@@ -714,6 +718,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   bool was_advertising = false;
   bool reject_extra_connection = false;
+  bool cancel_connection = false;
   uint16_t existing_handle = BLE_HS_CONN_HANDLE_NONE;
   uint32_t generation = 0;
   {
@@ -731,6 +736,13 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
         connection_generation_++;
       }
       generation = connection_generation_;
+      cancel_connection = capture_stop_requested_;
+      if (cancel_connection) {
+        cancelled_capture_generation_ = generation;
+      } else if (generation - cancelled_capture_generation_ >= INT32_MAX) {
+        // Retire the cancellation before it leaves the serial ordering window.
+        cancelled_capture_generation_ = 0;
+      }
       was_advertising = advertising_;
       advertising_ = false;
       pairing_start_time_ = now_ms();
@@ -738,6 +750,11 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
       // wraps would otherwise lose its overall pairing timeout.
       if (pairing_start_time_ == 0) pairing_start_time_ = 1;
     }
+  }
+
+  if (cancel_connection) {
+    terminate_bounded_(conn_handle, generation, "after wizard cancellation");
+    return;
   }
 
   if (reject_extra_connection) {

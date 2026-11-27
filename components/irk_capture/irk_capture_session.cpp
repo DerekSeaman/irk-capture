@@ -590,7 +590,9 @@ void IRKCaptureComponent::publish_no_irk_(const ble_addr_t& peer_id, uint32_t co
     MutexGuard lock(state_mutex_);
     // A completed no-IRK observation finishes this connection's capture work,
     // including a bonded reconnect that must not replace the displayed result.
-    if (connection_generation != connection_generation_) return;
+    if (connection_generation != connection_generation_ ||
+        capture_cancelled_locked_(connection_generation))
+      return;
     if (connected_) irk_gave_up_ = true;
     cancel_peer_timers_(peer_id, connection_generation);
     // Never overwrite this connection's result or let a bonded reconnect
@@ -790,6 +792,7 @@ void IRKCaptureComponent::report_capture_failure_(uint32_t connection_generation
   // Ignore links this component is not tracking, and never replace a result
   // this connection has already produced.
   if (connection_generation == 0 || connection_generation != connection_generation_ ||
+      capture_cancelled_locked_(connection_generation) ||
       last_result_generation_ == connection_generation ||
       (capture_status_ == CaptureStatus::FAILED && failed_generation_ == connection_generation))
     return;

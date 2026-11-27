@@ -326,25 +326,28 @@ bool IRKCaptureComponent::stop_advertising() {
   return !still_active;
 }
 
+void IRKCaptureComponent::set_advertising_intent_locked_(bool requested) {
+  if (advertising_requested_ != requested) {
+    advertising_start_attempts_ = 0;
+    advertising_failure_log_time_ = 0;
+  }
+  advertising_requested_ = requested;
+  if (requested)
+    capture_stop_requested_ = false;
+  else
+    adv_restart_time_ = 0;  // An explicit OFF cancels all automatic restart paths.
+  // The switch stays ON while a peer is connected even though the radio is idle.
+  pending_adv_pub_ = true;
+}
+
 void IRKCaptureComponent::set_advertising_requested(bool requested) {
   bool actual;
   bool connected;
   {
     MutexGuard lock(state_mutex_);
-    if (advertising_requested_ != requested) {
-      advertising_start_attempts_ = 0;
-      advertising_failure_log_time_ = 0;
-    }
-    advertising_requested_ = requested;
-    if (!requested) {
-      // An explicit OFF cancels all automatic restart paths.
-      adv_restart_time_ = 0;
-    }
+    set_advertising_intent_locked_(requested);
     actual = advertising_;
     connected = connected_;
-    // The switch is an authoritative desired-state control and therefore stays
-    // ON while a peer is connected even though advertising is temporarily idle.
-    pending_adv_pub_ = true;
   }
 
   if (!requested) {
@@ -366,20 +369,31 @@ CaptureResult IRKCaptureComponent::begin_capture() {
   {
     MutexGuard lock(state_mutex_);
     baseline = capture_result_;
-    // A link left open by an earlier run (Back only stops advertising) can
-    // still finish pairing. Only a connection newer than this one counts.
+    // Only a connection made after this start counts for the wizard.
     baseline.connection_generation = connection_generation_;
-    if (!advertising_requested_) {
-      advertising_start_attempts_ = 0;
-      advertising_failure_log_time_ = 0;
-    }
-    advertising_requested_ = true;
-    pending_adv_pub_ = true;
+    set_advertising_intent_locked_(true);
   }
   // A capture between this transaction and the BLE call can request OFF.
   // start_advertising() rechecks intent so one-shot auto-stop still wins.
   start_advertising();
   return baseline;
+}
+
+void IRKCaptureComponent::cancel_capture() {
+  uint16_t handle;
+  uint32_t generation;
+  {
+    MutexGuard lock(state_mutex_);
+    set_advertising_intent_locked_(false);
+    capture_stop_requested_ = true;
+    handle = conn_handle_;
+    generation = connection_generation_;
+    // Disconnect fallback reads can still find a stored key. Invalidate those
+    // results before the HTTP reply lets the browser save the next label.
+    cancelled_capture_generation_ = generation;
+  }
+  if (handle != BLE_HS_CONN_HANDLE_NONE)
+    terminate_bounded_(handle, generation, "after wizard cancellation");
 }
 
 bool IRKCaptureComponent::is_advertising() {
