@@ -394,17 +394,18 @@ void IRKWizardComponent::refresh_snapshot_() {
   next.irk = irk_sensor_ ? irk_sensor_->state : "";
   next.device_mac = device_mac_sensor_ ? device_mac_sensor_->state : "";
   next.effective_mac = effective_mac_sensor_ ? effective_mac_sensor_->state : "";
-  next.next_capture_label = core.next_capture_label;
+  // core is a local copy; move its strings rather than copying them again.
+  next.next_capture_label = std::move(core.next_capture_label);
   const bool keyboard = core.profile == irk_capture::BLEProfile::KEYBOARD;
   next.profile = keyboard ? "Keyboard" : "Heart Sensor";
   // Capture owns the selected advertising name, including profile defaults,
   // renames, and identity refreshes. It can select a name while the radio is off.
-  next.advertised_name = core.advertised_name;
+  next.advertised_name = std::move(core.advertised_name);
   next.advertising = core.advertising_requested;
   next.stop_after_capture = core.stop_after_capture;
-  next.capture_result = core.capture_result;
-  next.bond_clear = core.bond_clear;
-  next.identity_refresh = core.identity_refresh;
+  next.capture_result = std::move(core.capture_result);
+  next.bond_clear = std::move(core.bond_clear);
+  next.identity_refresh = std::move(core.identity_refresh);
 
   MutexGuard lock(snapshot_mutex_);
   snapshot_ = std::move(next);
@@ -468,11 +469,18 @@ static bool matching_boot_baseline(httpd_req_t* req, const std::string& body, ui
   return true;
 }
 
-static std::string bond_clear_json(const irk_capture::BondClearResult& result) {
-  return "{\"operation_id\":" + std::to_string(result.operation_id) + ",\"state\":\"" +
-         irk_capture::bond_clear_state_name(result.state) + "\",\"reason\":\"" +
-         json_escape(result.reason) +
-         "\",\"history_cleared\":" + (result.history_cleared ? "true" : "false") + "}";
+// Appends the bond-clear object to out, so the status response can build it in
+// its own buffer instead of joining temporaries.
+static void append_bond_clear_json(std::string& out, const irk_capture::BondClearResult& result) {
+  out += "{\"operation_id\":";
+  out += std::to_string(result.operation_id);
+  out += ",\"state\":\"";
+  out += irk_capture::bond_clear_state_name(result.state);
+  out += "\",\"reason\":\"";
+  json_escape_into(out, result.reason);
+  out += "\",\"history_cleared\":";
+  out += result.history_cleared ? "true" : "false";
+  out += '}';
 }
 
 bool IRKWizardComponent::start_server_() {
@@ -635,7 +643,7 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   // every field, on every poll, for the life of the device.
   const auto add_string = [](std::string& out, const char* key, const std::string& value) {
     out += key;
-    out += json_escape(value);
+    json_escape_into(out, value);
     out += '"';
   };
   const auto add_number = [](std::string& out, const char* key, uint32_t value) {
@@ -676,7 +684,7 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   add_number(tail, ",\"sequence\":", s.capture_start.sequence);
   add_number(tail, ",\"connection_generation\":", s.capture_start.connection_generation);
   tail += "},\"bond_clear\":";
-  tail += bond_clear_json(s.bond_clear);
+  append_bond_clear_json(tail, s.bond_clear);
   add_number(tail, ",\"identity_refresh\":{\"operation_id\":", s.identity_refresh.operation_id);
   tail += ",\"state\":\"";
   tail += irk_capture::identity_refresh_state_name(s.identity_refresh.state);
@@ -820,9 +828,12 @@ static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
   auto* capture = command.capture;
   ESP_LOGI(TAG, "Wizard: forget all bonds requested");
   const auto result = capture->request_bond_clear();
-  std::string json = bond_clear_json(result);
+  std::string json;
+  append_bond_clear_json(json, result);
   json.pop_back();
-  json += ",\"boot_id\":" + std::to_string(capture->get_capture_result().boot_id) + "}";
+  json += ",\"boot_id\":";
+  json += std::to_string(capture->get_capture_result().boot_id);
+  json += '}';
   if (result.state == irk_capture::BondClearState::PENDING) {
     httpd_resp_set_status(req, "202 Accepted");
   }

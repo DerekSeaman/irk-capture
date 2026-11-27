@@ -433,11 +433,10 @@ inline bool json_extract_string(const std::string& body, const char* key, std::s
 }
 
 // Escapes quotes, backslashes, and control chars (<0x20) so a raw control
-// character cannot make a JSON response unparseable.
-inline std::string json_escape(const std::string& in) {
+// character cannot make a JSON response unparseable. Appends to out, so a
+// response built in one buffer needs no temporary string per field.
+inline void json_escape_into(std::string& out, const std::string& in) {
   static const char* const HEX_DIGITS = "0123456789abcdef";
-  std::string out;
-  out.reserve(in.size() + 4);
   for (char c : in) {
     if (c == '"' || c == '\\') {
       out += '\\';
@@ -450,6 +449,12 @@ inline std::string json_escape(const std::string& in) {
       out += c;
     }
   }
+}
+
+inline std::string json_escape(const std::string& in) {
+  std::string out;
+  out.reserve(in.size() + 4);
+  json_escape_into(out, in);
   return out;
 }
 
