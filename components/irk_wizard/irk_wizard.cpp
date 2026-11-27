@@ -668,8 +668,14 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   add_bool(head, ",\"stop_after_capture\":", s.stop_after_capture);
   head += ",\"history\":";
 
+  // 526 bytes with every ID at 10 digits, a full IRK and MAC, and the longest
+  // state names; the two reasons are the only variable-length values. Sized
+  // once so the tail never reallocates; it used to outgrow 384 bytes on the
+  // first poll (390 at startup, 449 after a capture).
+  static constexpr size_t TAIL_FIXED_MAX = 528;
   std::string tail;
-  tail.reserve(384);
+  tail.reserve(TAIL_FIXED_MAX + s.bond_clear.reason.size() +
+               s.identity_refresh.cleanup_reason.size());
   add_number(tail, ",\"capture_result\":{\"boot_id\":", s.capture_result.boot_id);
   add_number(tail, ",\"sequence\":", s.capture_result.sequence);
   add_string(tail, ",\"irk\":\"", s.capture_result.irk);
