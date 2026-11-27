@@ -102,7 +102,7 @@ ol.pair li{margin-bottom:5px}
     <div class="stepno">Step 2 of 5</div>
     <h2>Whose device is this?</h2>
     <p class="help">Optional. The name is stored with the captured key so you can tell them apart later.</p>
-    <input type="text" id="wizLabel" placeholder="e.g. Derek's iPhone" maxlength="24">
+    <input type="text" id="wizLabel" placeholder="e.g. Derek's iPhone" maxlength="@CAPTURE_LABEL_MAX_LEN@">
     <div class="btnrow"><button class="primary" onclick="wizSaveLabel()">Next</button>
       <button onclick="wizGo(1)">Back</button></div>
   </div>
@@ -179,7 +179,7 @@ ol.pair li{margin-bottom:5px}
     </select>
     <div style="height:10px"></div>
     <label>Label this capture (optional)</label>
-    <input type="text" id="label" placeholder="e.g. Derek's iPhone" maxlength="24">
+    <input type="text" id="label" placeholder="e.g. Derek's iPhone" maxlength="@CAPTURE_LABEL_MAX_LEN@">
     <div class="btnrow">
       <button class="primary" id="advBtn">Start Advertising</button>
       <button id="freshIdBtn">Refresh BLE Identity</button>

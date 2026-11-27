@@ -12,7 +12,11 @@ from pathlib import Path
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import esp32, text_sensor
-from esphome.components.irk_capture import CONF_IRK_CAPTURE_ID, IRKCaptureComponent
+from esphome.components.irk_capture import (
+    CONF_IRK_CAPTURE_ID,
+    IRKCaptureComponent,
+    header_constant,
+)
 from esphome.const import CONF_ID
 from esphome.core import EsphomeError
 
@@ -116,6 +120,15 @@ async def to_code(config):
         raise EsphomeError(
             f"irk_wizard cannot read its page {page_path}: {err}"
         ) from err
+    # The label inputs take their length cap from the firmware, which trims a
+    # label to CAPTURE_LABEL_MAX_LEN, so the page never accepts a longer one.
+    label_max = header_constant("irk_capture.h", "CAPTURE_LABEL_MAX_LEN")
+    placeholder = b"@CAPTURE_LABEL_MAX_LEN@"
+    if page.count(placeholder) != 2:
+        raise EsphomeError(
+            f"irk_wizard: {page_path} must use {placeholder.decode()} for both label inputs"
+        )
+    page = page.replace(placeholder, str(label_max).encode())
     packed = gzip.compress(page, compresslevel=9, mtime=0)
     page_arr = cg.progmem_array(config[CONF_PAGE_DATA_ID], list(packed))
     cg.add(var.set_page(page_arr, len(packed)))
