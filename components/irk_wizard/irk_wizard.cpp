@@ -46,9 +46,30 @@ static void mark_close_if_unread(httpd_req_t* req) {
   if (req->content_len != 0) httpd_resp_set_hdr(req, "Connection", "close");
 }
 
+// The wizard has no reason to be framed or to have its responses reinterpreted
+// as another type. Without these, a page on another origin could overlay the
+// wizard in a frame and trick a signed-in user into pressing its controls.
+// The page is one inline document that only fetches its own API, so the policy
+// allows exactly that; frame-ancestors is the modern form of X-Frame-Options,
+// which stays for older browsers. httpd keeps at most max_resp_headers (8)
+// extra headers per response; the busiest, a 429 or a 401, send 7.
+static void set_security_headers(httpd_req_t* req) {
+  httpd_resp_set_hdr(req, "Content-Security-Policy",
+                     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                     "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+                     "form-action 'none'");
+  httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
+  httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
+  httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+}
+
 static esp_err_t send_unauthorized(httpd_req_t* req) {
   mark_close_if_unread(req);
   httpd_resp_set_status(req, "401 Unauthorized");
+  // Seven headers with Connection: close, within max_resp_headers (8).
+  httpd_resp_set_type(req, "text/plain");
+  set_security_headers(req);
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"IRK Capture\"");
   return httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
 }
@@ -402,23 +423,6 @@ static esp_err_t handle_post_forget_bonds(httpd_req_t* req);
 static esp_err_t handle_post_fresh_identity(httpd_req_t* req);
 static esp_err_t handle_post_reboot(httpd_req_t* req);
 static esp_err_t handle_post_stop_after_capture(httpd_req_t* req);
-
-// The wizard has no reason to be framed or to have its responses reinterpreted
-// as another type. Without these, a page on another origin could overlay the
-// wizard in a frame and trick a signed-in user into pressing its controls.
-// The page is one inline document that only fetches its own API, so the policy
-// allows exactly that; frame-ancestors is the modern form of X-Frame-Options,
-// which stays for older browsers. httpd keeps at most max_resp_headers (8)
-// extra headers per response; the busiest, a 429, sends 7.
-static void set_security_headers(httpd_req_t* req) {
-  httpd_resp_set_hdr(req, "Content-Security-Policy",
-                     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                     "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
-                     "form-action 'none'");
-  httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
-  httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
-  httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
-}
 
 static void set_json_headers(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
