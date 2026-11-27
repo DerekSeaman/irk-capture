@@ -431,7 +431,6 @@ void IRKCaptureComponent::setup_ble() {
     // Old handles mean nothing to the new host.
     g_irk_instance->untracked_terminate_handle_ = BLE_HS_CONN_HANDLE_NONE;
     g_irk_instance->adv_restart_time_ = 0;
-    g_irk_instance->adv_holdoff_stop_ = false;
     // Cancel the request without relying on the old host event being serviced.
     // Leave its event object intact: a delayed wake-up checks current state.
     if (g_irk_instance->bond_clear_pending_) {
@@ -537,8 +536,7 @@ void IRKCaptureComponent::on_ble_host_synced() {
   // retrying advertising with no usable random address.
   if (is_advertising_requested()) {
     ESP_LOGI(TAG, "Host synced - starting advertising (requested=true)");
-    // Runs from sync_cb, on the host task.
-    start_advertising(true);
+    start_advertising();
   }
 }
 

@@ -208,11 +208,8 @@ void IRKCaptureComponent::loop() {
     MutexGuard lock(state_mutex_);
     // After a lock timeout, wait for the retry deadline instead of blocking
     // and logging on every tick.
-    // A hold-off stop the host task could not make is retried here too,
-    // although advertising stays requested.
     should_stop_unwanted_adv =
-        (advertising_ || adv_stop_retry_time_ != 0) &&
-        (!advertising_requested_ || adv_holdoff_stop_) &&
+        (advertising_ || adv_stop_retry_time_ != 0) && !advertising_requested_ &&
         (adv_stop_retry_time_ == 0 || deadline_reached(now, adv_stop_retry_time_));
     // A failed restart may have left the old advertisement active. Its retry
     // must still run so start_advertising() can stop and replace that payload.

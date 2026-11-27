@@ -142,7 +142,7 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       self->advertising_ = false;
     }
 
-    self->start_advertising(true);
+    self->start_advertising();
   }
   return 0;
 }
@@ -281,7 +281,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     } else if (read == BondRead::IRK) {
       std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
       publish_and_log_irk(self, d.peer_id_addr, irk_hex, "DISC_IMMEDIATE", connection_generation,
-                          origin, check_irk_against_address(bond.irk, &d.peer_ota_addr), true);
+                          origin, check_irk_against_address(bond.irk, &d.peer_ota_addr));
       needs_delayed_check = false;
     } else {
       log_no_irk_for_peer(d.peer_id_addr);
@@ -322,7 +322,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     if (self->continuous_mode_) {
       ESP_LOGI(TAG, "Continuous mode: restarting advertising for next device");
     }
-    self->start_advertising(true);
+    self->start_advertising();
   }
   return 0;
 }
@@ -431,7 +431,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
         case BondRead::IRK: {
           std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
           publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE", connection_generation,
-                              origin, check_irk_against_address(bond.irk, &d.peer_ota_addr), true);
+                              origin, check_irk_against_address(bond.irk, &d.peer_ota_addr));
           // Tested working behavior: terminate immediately after successful ENC +
           // IRK capture
           terminate_now_or_defer("after ENC capture");

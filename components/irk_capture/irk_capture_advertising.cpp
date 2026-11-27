@@ -62,7 +62,7 @@ bool IRKCaptureComponent::adv_start_current_locked_(uint32_t host_generation,
          mac_rotation_state_ == MacRotationState::IDLE;
 }
 
-void IRKCaptureComponent::start_advertising(bool host_task) {
+void IRKCaptureComponent::start_advertising() {
   if (!host_synced_) {
     ESP_LOGW(TAG, "Host not synced; cannot advertise");
     return;
@@ -99,25 +99,9 @@ void IRKCaptureComponent::start_advertising(bool host_task) {
   bool address_initialized = false;
   bool recovered = false;
   {
-    // The host task never waits for this lock (see BleOpGuard).
-    BleOpGuard ble_lock(ble_op_mutex_,
-                        host_task ? 0 : pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
+    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
     if (!ble_lock.acquired()) {
-      if (!host_task) {
-        handle_advertising_failure_(BLE_HS_EBUSY, host_generation, "BLE operation lock");
-        return;
-      }
-      // Hand the start to loop() on its next tick. A busy lock is not a failed
-      // start, so it neither counts toward backoff nor logs a warning. An
-      // existing deadline is a hold-off or retry backoff, and stays.
-      {
-        MutexGuard lock(state_mutex_);
-        if (adv_start_current_locked_(host_generation, rotation_generation) &&
-            adv_restart_time_ == 0) {
-          adv_restart_time_ = deadline_after(now_ms(), 0);
-        }
-      }
-      ESP_LOGD(TAG, "Advertising start handed to the main loop: BLE operation lock busy");
+      handle_advertising_failure_(BLE_HS_EBUSY, host_generation, "BLE operation lock");
       return;
     }
     bool address_ready;
@@ -217,8 +201,6 @@ void IRKCaptureComponent::start_advertising(bool host_task) {
           advertising_start_attempts_ = 0;
           advertising_failure_log_time_ = 0;
           adv_restart_time_ = 0;
-          // A hold-off has ended with a fresh start; a pending stop is stale.
-          adv_holdoff_stop_ = false;
           pending_adv_pub_ = true;
         }
       }
@@ -290,15 +272,13 @@ void IRKCaptureComponent::handle_advertising_failure_(int rc, uint32_t host_gene
   }
 }
 
-bool IRKCaptureComponent::stop_advertising(bool host_task) {
+bool IRKCaptureComponent::stop_advertising() {
   int rc;
   bool still_active;
   bool was_active = false;
   bool lock_timeout = false;
   {
-    // The host task never waits for this lock (see BleOpGuard).
-    BleOpGuard ble_lock(ble_op_mutex_,
-                        host_task ? 0 : pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
+    BleOpGuard ble_lock(ble_op_mutex_, pdMS_TO_TICKS(TimingConfig::BLE_OP_LOCK_WAIT_MS));
     if (!ble_lock.acquired()) {
       lock_timeout = true;
     } else {
@@ -318,7 +298,6 @@ bool IRKCaptureComponent::stop_advertising(bool host_task) {
       advertising_ = still_active;
       adv_stop_retry_time_ =
           still_active ? deadline_after(now_ms(), TimingConfig::ADV_RETRY_MS) : 0;
-      if (!still_active) adv_holdoff_stop_ = false;
     }
   }
   if (lock_timeout) {
@@ -326,11 +305,7 @@ bool IRKCaptureComponent::stop_advertising(bool host_task) {
     {
       MutexGuard lock(state_mutex_);
       first = adv_stop_retry_time_ == 0;
-      // loop() retries an unwanted radio by itself. A hold-off stop from the
-      // host task happens while advertising stays requested, so mark it, and
-      // retry on the next tick: the host did not wait at all.
-      if (host_task && advertising_requested_) adv_holdoff_stop_ = true;
-      adv_stop_retry_time_ = deadline_after(now_ms(), host_task ? 0 : TimingConfig::ADV_RETRY_MS);
+      adv_stop_retry_time_ = deadline_after(now_ms(), TimingConfig::ADV_RETRY_MS);
     }
     if (first) {
       ESP_LOGW(TAG,
@@ -357,8 +332,6 @@ void IRKCaptureComponent::set_advertising_intent_locked_(bool requested) {
     advertising_failure_log_time_ = 0;
   }
   advertising_requested_ = requested;
-  // An explicit choice supersedes a hold-off stop the host task left pending.
-  adv_holdoff_stop_ = false;
   if (requested)
     capture_stop_requested_ = false;
   else
