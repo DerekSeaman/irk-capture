@@ -748,14 +748,16 @@ static esp_err_t handle_post_capture_stop(httpd_req_t* req) {
   uint32_t operation_id = 0;
   uint32_t boot_id = 0;
   if (!optional_quoted_id(command.body, "operation_id", operation_id) ||
-      !optional_quoted_id(command.body, "boot_id", boot_id) || (operation_id == 0) != (boot_id == 0)) {
+      !optional_quoted_id(command.body, "boot_id", boot_id) ||
+      (operation_id == 0) != (boot_id == 0)) {
     return reply_error(req, "400 Bad Request",
                        "operation_id and boot_id must be quoted IDs, sent together");
   }
   // A stop for a replaced run is already satisfied from that page's view.
   const bool stopped =
       static_cast<IRKWizardComponent*>(req->user_ctx)->stop_capture(operation_id, boot_id);
-  return send_json(req, std::string("{\"ok\":true,\"stopped\":") + (stopped ? "true" : "false") + "}");
+  return send_json(req,
+                   std::string("{\"ok\":true,\"stopped\":") + (stopped ? "true" : "false") + "}");
 }
 
 static esp_err_t handle_post_profile(httpd_req_t* req) {
