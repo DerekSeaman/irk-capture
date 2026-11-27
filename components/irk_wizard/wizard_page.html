@@ -394,11 +394,19 @@ function rebootState(){
   wizardProfileState();
   connectionState();
 }
+// Whether the device is expected to restart, whichever view asked for it. A
+// profile request for the profile already in use does not restart it.
+function rebootExpected(){
+  return !!pendingReboot && (!pendingReboot.profile || !lastData || pendingReboot.profile!==lastData.profile);
+}
 function wizardProfileState(){
-  var status=pendingReboot && pendingReboot.fromWizard ? 'rebooting' : (wizardProfileReady ? 'ready' : null);
+  // A reboot started from the panel also blocks the wizard: its requests
+  // would only fail against the restarting device.
+  var rebooting=rebootExpected();
+  var status=rebooting ? 'rebooting' : (wizardProfileReady ? 'ready' : null);
   el('wizProfileStatusRow').classList.toggle('hide',!status);
   if(status) setPill(el('wizProfilePill'),status);
-  el('wizNextBtn').disabled=!!(pendingReboot && pendingReboot.fromWizard);
+  el('wizNextBtn').disabled=rebooting;
 }
 function rebootDevice(){
   if(pendingReboot || !confirm('Reboot the ESP32? The list of IRKs captured in this session will be cleared.')) return;
