@@ -399,9 +399,13 @@ function rebootState(){
   connectionState();
 }
 // Whether the device is expected to restart, whichever view asked for it. A
-// profile request for the profile already in use does not restart it.
+// profile request for the profile already in use does not restart it. Compare
+// with the profile the device had when the request was made: once it accepts
+// the change it reports the new profile while still on the old boot.
 function rebootExpected(){
-  return !!pendingReboot && (!pendingReboot.profile || !lastData || pendingReboot.profile!==lastData.profile);
+  if(!pendingReboot) return false;
+  var before=pendingReboot.baseProfile || (lastData ? lastData.profile : null);
+  return !pendingReboot.profile || !before || pendingReboot.profile!==before;
 }
 function wizardProfileState(){
   // A reboot started from the panel also blocks the wizard: its requests
@@ -424,6 +428,7 @@ async function trackReboot(url,body,profile,fromWizard){
   clearError();
   wizardProfileReady=false;
   var request={boot_id:null,started:Date.now(),sent:false,confirming:false,profile:profile,
+    baseProfile:lastData ? lastData.profile : null,
     fromWizard:!!fromWizard && (!lastData || profile!==lastData.profile)};
   pendingReboot=request; ++statusEpoch; rebootState();
   try{
@@ -434,6 +439,7 @@ async function trackReboot(url,body,profile,fromWizard){
       if(!validBootId(before.boot_id)) throw new Error('Could not read the device status. '+
         (profile ? 'Profile change' : 'Reboot')+' was not sent; please try again.');
       request.boot_id=before.boot_id;
+      if(typeof before.profile==='string') request.baseProfile=before.profile;
       body.expected_boot_id=String(before.boot_id);
       request.started=Date.now();
       request.sent=true;
