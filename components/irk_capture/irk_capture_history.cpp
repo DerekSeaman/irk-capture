@@ -56,9 +56,16 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
     uint32_t connection_generation, bool force_pairing_publish, IrkCheck check) {
   using Reason = PublishDecision::Reason;
   PublishDecision decision;
-  // Nearly every path below changes an entry or the cache itself, so count
-  // every call rather than risk a stale history from a missed field.
-  history_changed_locked_();
+  // Count only changes the history shows. Duplicate paths for one connection
+  // (ENC_CHANGE, DISCONNECT, delayed polls) and hidden rows change nothing
+  // there, and each count makes the wizard copy and reformat the history.
+  struct HistoryChange {
+    IRKCaptureComponent* self;
+    bool changed { false };
+    ~HistoryChange() {
+      if (changed) self->history_changed_locked_();
+    }
+  } history { this };
   // 64-bit: a 32-bit difference wraps after 49.7 days, which would make a
   // device last published that long ago look as if it had just been published.
   const uint64_t now = (uint64_t) (esp_timer_get_time() / 1000ULL);
@@ -89,10 +96,14 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
       const bool key_changed = entry.irk_hex != irk_hex;
       // A new key starts with this observation's check. For the same key, a
       // check that could not run must not hide an earlier result.
-      if (key_changed || check == IrkCheck::VERIFIED || check == IrkCheck::MISMATCH) {
+      if ((key_changed || check == IrkCheck::VERIFIED || check == IrkCheck::MISMATCH) &&
+          entry.verification != check) {
         entry.verification = check;
+        if (entry.in_history) history.changed = true;
       }
       if (key_changed || force_pairing_publish) {
+        // Restored if hidden; a new key, and its reset count, show either way.
+        history.changed = true;
         entry.irk_hex = irk_hex;
         entry.reconnect_count = 0;
         entry.reconnect_limit_reported = false;
@@ -105,6 +116,7 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
 
       if (entry.reconnect_count < std::numeric_limits<uint16_t>::max()) {
         entry.reconnect_count++;
+        if (entry.in_history) history.changed = true;
       }
       decision.reconnect_count = entry.reconnect_count;
 
@@ -127,6 +139,7 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
       }
 
       entry.last_published_ms = now;
+      if (!entry.in_history) history.changed = true;  // Restored below.
       restore_capture_history_(entry, decision);
       decision.reason = Reason::RECONNECT;
       decision.publish = true;
@@ -135,6 +148,7 @@ PublishDecision IRKCaptureComponent::record_observation_locked_(
   }
 
   // New device: FIFO eviction keeps memory bounded even when max_captures == 0.
+  history.changed = true;
   const size_t cache_limit = cache_limit_();
   if (irk_cache_.size() >= cache_limit) {
     irk_cache_.erase(irk_cache_.begin());
@@ -249,7 +263,8 @@ static void log_irk_check(IrkCheck check) {
 // stages sensor/automation publishing, and logs the capture.
 void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                          const std::string& irk_hex, const char* context_tag,
-                         uint32_t connection_generation, CaptureOrigin origin, IrkCheck check) {
+                         uint32_t connection_generation, CaptureOrigin origin, IrkCheck check,
+                         bool host_task) {
   if (!self) return;
 
   const std::string addr_str = addr_to_str(peer_id_addr);
@@ -266,6 +281,7 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   bool capture_event = false;
   {
     MutexGuard lock(self->state_mutex_);
+    if (self->capture_cancelled_locked_(connection_generation)) return;
 
     force_pairing_publish = origin == CaptureOrigin::FRESH || origin == CaptureOrigin::REPAIR;
     is_repair = origin == CaptureOrigin::REPAIR;
@@ -288,16 +304,16 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
       current_events = self->capture_events_;
       current_unique = self->unique_devices_;
 
-      // max_captures limits unique devices. Re-pairing the same device remains
-      // visible without consuming another slot.
-      max_reached = self->capture_limit_reached_locked_();
-
       // A genuine capture: a new device, changed key, or explicit (re)pairing. A bonded
       // reconnect republishing a key it already gave us is not one.
       capture_event = is_new_device || key_changed || force_pairing_publish;
 
-      // Stop-after-capture only triggers on a genuine capture, not a
-      // background reconnect from an already-bonded device.
+      // Both automatic stops trigger only on a genuine capture, not a
+      // background reconnect from an already-bonded device: advertising turned
+      // back on past the limit must stay on when such a device republishes.
+      // max_captures limits unique devices. Re-pairing the same device remains
+      // visible without consuming another slot.
+      max_reached = capture_event && self->capture_limit_reached_locked_();
       stop_after_capture_hit = self->stop_after_capture_ && capture_event;
     }
   }  // Release mutex before slow logging/publishing operations
@@ -308,17 +324,19 @@ void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_ad
   // deadline covers both cases: a live link (the disconnect handler sees a
   // restart already scheduled) and a delayed read that finds the radio on.
   if (decision.stop_adv) {
+    uint32_t hold_off = 0;
     {
       MutexGuard lock(self->state_mutex_);
       if (self->advertising_requested_) {
-        self->adv_restart_time_ =
-            deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
+        hold_off = deadline_after(now_ms(), TimingConfig::ADV_SUPPRESS_RESTART_DELAY_MS);
+        self->adv_restart_time_ = hold_off;
       }
     }
     // Skip stop_advertising() when already off (e.g. on a live link) to avoid
     // an unnecessary ble_op_mutex_ wait and deferred-stop retry on contention.
+    // The stop is tied to this hold-off, so a newer start is never undone.
     if (self->is_advertising()) {
-      self->stop_advertising();
+      self->stop_advertising(host_task, hold_off);
     }
     if (decision.limit_just_reached) {
       ESP_LOGI(TAG,
@@ -413,8 +431,9 @@ void IRKCaptureComponent::notify_bond_clear_() {
     const bool terminate_due = pending_terminate_handle_ != BLE_HS_CONN_HANDLE_NONE &&
                                (pending_terminate_retry_time_ == 0 ||
                                 deadline_reached(now_ms(), pending_terminate_retry_time_));
-    if (!bond_clear_task_ ||
-        (!bond_clear_pending_ && !mac_rotation_cleanup_pending_ && !terminate_due))
+    const bool untracked_due = untracked_terminate_handle_ != BLE_HS_CONN_HANDLE_NONE;
+    if (!bond_clear_task_ || (!bond_clear_pending_ && !mac_rotation_cleanup_pending_ &&
+                              !terminate_due && !untracked_due))
       return;
   }
   // Task notifications do not wait for queue capacity. A reset racing this
@@ -429,7 +448,8 @@ void IRKCaptureComponent::queue_bond_clear_() {
     const bool clear_current =
         bond_clear_pending_ && host_generation_ == bond_clear_host_generation_;
     if (!clear_current && !mac_rotation_cleanup_pending_ &&
-        pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE)
+        pending_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE &&
+        untracked_terminate_handle_ == BLE_HS_CONN_HANDLE_NONE)
       return;
   }
   // Worker task only, with neither component mutex held. This can block on
@@ -521,8 +541,9 @@ void IRKCaptureComponent::handle_forget_bonds_() {
   }
   // While the request was pending, start_advertising() deferred every start to
   // this point, so it must run whatever the outcome: an OFF request or capture
-  // limit reached meanwhile is re-evaluated there. With the BLE lock busy, the
-  // start would wait for that lock on the host task; hand it to the main loop.
+  // limit reached meanwhile is re-evaluated there. A busy BLE lock means a store
+  // or radio operation is still finishing; retry from the main loop after
+  // ADV_RETRY_MS rather than immediately.
   if (lock_busy) {
     MutexGuard lock(state_mutex_);
     if (advertising_requested_ && !advertising_ && adv_restart_time_ == 0) {
@@ -530,7 +551,7 @@ void IRKCaptureComponent::handle_forget_bonds_() {
     }
     return;
   }
-  start_advertising();
+  start_advertising(true);
 }
 
 std::string IRKCaptureComponent::build_history_json() {
@@ -539,17 +560,63 @@ std::string IRKCaptureComponent::build_history_json() {
   std::vector<IRKCacheEntry> cache_copy;
   {
     MutexGuard lock(state_mutex_);
-    cache_copy = irk_cache_;
+    cache_copy = visible_history_locked_();
   }
   return format_history_json_(cache_copy);
 }
 
+std::vector<IRKCaptureComponent::IRKCacheEntry> IRKCaptureComponent::visible_history_locked_()
+    const {
+  // Each row holds two or three heap strings, all copied under state_mutex_,
+  // so copy only the rows the history shows. After Forget All Bonds that is
+  // none, and nothing is allocated.
+  size_t visible = 0;
+  for (const auto& entry : irk_cache_) visible += entry.in_history ? 1 : 0;
+  std::vector<IRKCacheEntry> rows;
+  if (visible == 0) return rows;
+  rows.reserve(visible);
+  for (const auto& entry : irk_cache_) {
+    if (entry.in_history) rows.push_back(entry);
+  }
+  return rows;
+}
+
 std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCacheEntry>& cache) {
-  // Worst-case entry (151 B): 94 B for framing, separator, MAC and IRK,
-  // up to 24 for the label, 5 for reconnects, and 28 for verification.
-  static constexpr size_t ENTRY_RESERVE = 94 + CAPTURE_LABEL_MAX_LEN + 5 + 28;
+  // The wizard keeps this string for the rest of the session, and firmware
+  // builds without exceptions, where shrink_to_fit() cannot release a heap
+  // buffer. So measure the exact length first and allocate once at that size:
+  // nothing is held for hidden rows or for label space a row does not use.
+  static constexpr char MAC_KEY[] = "{\"mac\":\"";
+  static constexpr char IRK_KEY[] = "\",\"irk\":\"";
+  static constexpr char LABEL_KEY[] = "\",\"label\":\"";
+  static constexpr char RECONNECTS_KEY[] = "\",\"reconnects\":";
+  static constexpr char VERIFICATION_KEY[] = ",\"verification\":\"";
+  static constexpr char ENTRY_END[] = "\"}";
+  // sizeof counts each literal's terminator; the -6 removes them.
+  static constexpr size_t FRAMING = sizeof(MAC_KEY) + sizeof(IRK_KEY) + sizeof(LABEL_KEY) +
+                                    sizeof(RECONNECTS_KEY) + sizeof(VERIFICATION_KEY) +
+                                    sizeof(ENTRY_END) - 6;
+  const auto digits = [](uint16_t value) -> size_t {
+    size_t count = 1;
+    while (value >= 10) {
+      value /= 10;
+      count++;
+    }
+    return count;
+  };
+
+  size_t length = 2;  // [ and ]
+  size_t visible = 0;
+  for (const auto& entry : cache) {
+    if (!entry.in_history) continue;
+    length += FRAMING + entry.mac_addr.size() + entry.irk_hex.size() + entry.label.size() +
+              digits(entry.reconnect_count) + std::strlen(irk_check_name(entry.verification));
+    visible++;
+  }
+  if (visible > 1) length += visible - 1;  // Separators
+
   std::string json;
-  json.reserve(cache.size() * ENTRY_RESERVE + 2);
+  json.reserve(length);
   json += "[";
   bool first = true;
   for (const auto& entry : cache) {
@@ -559,17 +626,17 @@ std::string IRKCaptureComponent::format_history_json_(const std::vector<IRKCache
     // mac_addr/irk_hex are always hex/colon characters and label is
     // restricted to a safe charset (see set_next_capture_label()), so none of
     // these values can contain a character that needs JSON escaping.
-    json += "{\"mac\":\"";
+    json += MAC_KEY;
     json += entry.mac_addr;
-    json += "\",\"irk\":\"";
+    json += IRK_KEY;
     json += entry.irk_hex;
-    json += "\",\"label\":\"";
+    json += LABEL_KEY;
     json += entry.label;
-    json += "\",\"reconnects\":";
+    json += RECONNECTS_KEY;
     json += std::to_string(entry.reconnect_count);
-    json += ",\"verification\":\"";
+    json += VERIFICATION_KEY;
     json += irk_check_name(entry.verification);
-    json += "\"}";
+    json += ENTRY_END;
   }
   json += "]";
 

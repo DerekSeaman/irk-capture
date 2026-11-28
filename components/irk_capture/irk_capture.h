@@ -215,6 +215,10 @@ struct CaptureResult {
   std::string irk;
   std::string device_mac;
   IrkCheck verification { IrkCheck::UNCHECKED };
+  // The connection that produced this result. In the baseline begin_capture()
+  // returns, it is instead the newest connection when the capture started: a
+  // result from that connection or an earlier one belongs to an earlier run.
+  uint32_t connection_generation { 0 };
 };
 
 // What record_observation_locked_() decided and why. Filled in under state_mutex_ and
@@ -277,7 +281,7 @@ void publish_and_log_irk(class IRKCaptureComponent* self, const ble_addr_t& peer
                          const std::string& irk_hex, const char* context_tag,
                          uint32_t connection_generation,
                          CaptureOrigin origin = CaptureOrigin::UNKNOWN,
-                         IrkCheck check = IrkCheck::UNCHECKED);
+                         IrkCheck check = IrkCheck::UNCHECKED, bool host_task = false);
 
 // Main component
 class IRKCaptureComponent : public Component {
@@ -302,7 +306,7 @@ class IRKCaptureComponent : public Component {
   friend void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                                   const std::string& irk_hex, const char* context_tag,
                                   uint32_t connection_generation, CaptureOrigin origin,
-                                  IrkCheck check);
+                                  IrkCheck check, bool host_task);
 
   // The Device Information read callback copies names under state_mutex_.
   friend int chr_read_devinfo(uint16_t conn_handle, uint16_t attr_handle,
@@ -374,14 +378,30 @@ class IRKCaptureComponent : public Component {
   // Returns false when the device rejected the change (name left unchanged).
   bool update_ble_name(const std::string& name);
   std::string get_ble_name();
-  void start_advertising();
+  // host_task: the caller is the NimBLE host task, which never waits for
+  // ble_op_mutex_. A busy lock then hands the start to loop() through
+  // adv_restart_time_, keeping any hold-off deadline already set.
+  void start_advertising(bool host_task = false);
   // True only after verifying that GAP advertising is inactive under the BLE lock.
-  bool stop_advertising();
+  // host_task as for start_advertising(). hold_off is the adv_restart_time_
+  // deadline of the hold-off this stop serves, or 0 for a plain stop. Such a
+  // stop is made only while that hold-off is still pending (see
+  // hold_off_pending_locked_()), so it cannot turn off a newer start.
+  bool stop_advertising(bool host_task = false, uint32_t hold_off = 0);
   void set_advertising_requested(bool requested);
   CaptureResult get_capture_result();
   // Main-task wizard action: claim a baseline and request advertising in the
-  // same state transaction, then let the normal BLE start gates run.
+  // same state transaction, then let the normal BLE start gates run. It is
+  // arm_capture() followed by start_advertising().
   CaptureResult begin_capture();
+  // The state transaction alone: takes only state_mutex_ and makes no BLE
+  // call, so a caller may hold its own lock across it (the wizard holds
+  // snapshot_mutex_, giving the order snapshot_mutex_ -> state_mutex_).
+  // Follow it with start_advertising() once that lock is released.
+  CaptureResult arm_capture();
+  // Wizard cancellation can run on the HTTP task. BLE termination is queued
+  // on the host task and the wizard defers the advertising stop to the main task.
+  void cancel_capture();
   // Rotates the address and adopts a name carrying the profile and the new
   // address's low two octets ("IRK HR 7F3A", "IRK KB 7F3A") until the next
   // reboot. Both halves change together because rotating the address alone
@@ -407,8 +427,9 @@ class IRKCaptureComponent : public Component {
   void set_stop_after_capture(bool enabled);
   bool get_stop_after_capture();
   std::string get_next_capture_label();
-  // Longest capture label kept; text.py gives the Home Assistant entity the
-  // same limit.
+  // Longest capture label kept. text.py and irk_wizard/__init__.py parse this
+  // declaration, so the Home Assistant entity and the wizard's inputs enforce
+  // the same limit.
   static constexpr size_t CAPTURE_LABEL_MAX_LEN = 24;
   // Sanitizes, trims, stores, and returns the label for the next device added
   // or restored to visible history (consumed once). Keeps [A-Za-z0-9 _-'] up
@@ -455,7 +476,14 @@ class IRKCaptureComponent : public Component {
   IRKCaptureButton* refresh_identity_button_ { nullptr };
   IRKCaptureText* ble_name_text_ { nullptr };
   IRKCaptureSelect* ble_profile_select_ { nullptr };
-  BLEProfile ble_profile_ { BLEProfile::KEYBOARD };  // Default to Keyboard profile
+  // The profile this boot registered in GATT and advertises. A change takes
+  // effect only at the next boot, so a saved request waits in next_profile_.
+  BLEProfile ble_profile_ { BLEProfile::KEYBOARD };   // Default to Keyboard profile
+  BLEProfile next_profile_ { BLEProfile::KEYBOARD };  // Valid while profile_change_saved_
+  bool profile_change_saved_ { false };               // Saved for the next boot
+  BLEProfile selected_profile_() const {              // Caller holds state_mutex_
+    return profile_change_saved_ ? next_profile_ : ble_profile_;
+  }
 
   // Connection state
   uint16_t conn_handle_ { BLE_HS_CONN_HANDLE_NONE };
@@ -465,6 +493,12 @@ class IRKCaptureComponent : public Component {
   uint32_t last_notify_ { 0 };
   bool connected_ { false };
   uint32_t connection_generation_ { 0 };  // Monotonic ID for coalescing capture paths
+  uint32_t cancelled_capture_generation_ { 0 };
+  bool capture_stop_requested_ { false };
+  bool capture_cancelled_locked_(uint32_t generation) const {
+    return generation != 0 && cancelled_capture_generation_ != 0 &&
+           static_cast<int32_t>(generation - cancelled_capture_generation_) <= 0;
+  }
   CaptureOrigin connection_origin_ { CaptureOrigin::UNKNOWN };
 
   // Security/pairing state
@@ -475,6 +509,17 @@ class IRKCaptureComponent : public Component {
   uint32_t adv_restart_time_ { 0 };  // When to restart advertising after a hold-off; 0 = none
   // When to retry an unsuccessful stop (lock busy or radio still active); 0 = none.
   uint32_t adv_stop_retry_time_ { 0 };
+  // A hold-off stop the host task could not make because ble_op_mutex_ was
+  // busy: the adv_restart_time_ deadline of that hold-off, or 0. loop() makes
+  // the stop while advertising is requested only as long as that hold-off is
+  // still pending; a newer start, OFF or reset supersedes it.
+  uint32_t adv_hold_off_stop_ { 0 };
+  // Caller holds state_mutex_. True while the hold-off whose restart deadline
+  // is hold_off still stands: advertising is requested and nothing has
+  // restarted it or replaced its deadline since.
+  bool hold_off_pending_locked_(uint32_t hold_off) const {
+    return hold_off != 0 && advertising_requested_ && adv_restart_time_ == hold_off;
+  }
   // When the Bluetooth host began to be unsynced (boot or a host reset); 0 once
   // it syncs. Lets a host that never comes up be reported instead of ignored.
   uint32_t host_wait_since_ { 0 };
@@ -519,13 +564,18 @@ class IRKCaptureComponent : public Component {
     IrkCheck verification { IrkCheck::UNCHECKED };
   };
   std::vector<IRKCacheEntry> irk_cache_;  // Deduplication cache
-  // Caller holds state_mutex_. Every change to irk_cache_ must call this so
-  // get_session_state() rebuilds the history. Never 0, which callers pass to
-  // mean "no history yet".
+  // Caller holds state_mutex_. Every change the history shows (a row added,
+  // removed, hidden or restored, or a field format_history_json_() writes) must
+  // call this so get_session_state() rebuilds the history. Bookkeeping it does
+  // not show, and hidden rows, need not. Never 0, which callers pass to mean
+  // "no history yet".
   uint32_t history_version_ { 1 };
   void history_changed_locked_() {
     if (++history_version_ == 0) history_version_ = 1;
   }
+  // Caller holds state_mutex_. The rows the history shows, copied so they can
+  // be formatted after the lock is released. Hidden rows are left behind.
+  std::vector<IRKCacheEntry> visible_history_locked_() const;
   // Most entries irk_cache_ holds before the oldest is evicted. The floor is
   // well above the default capture limit on purpose: advertising can be turned
   // back on after the limit is reached, and devices captured then must not
@@ -547,7 +597,11 @@ class IRKCaptureComponent : public Component {
   uint32_t pairing_start_time_ { 0 };  // Global pairing timeout
   CaptureResult capture_result_;
   IdentityRefreshResult identity_refresh_result_;
-  uint32_t failed_generation_ { 0 };          // Coalesces failure reporting per connection
+  uint32_t failed_generation_ { 0 };  // Coalesces failure reporting per connection
+  // The connection whose encryption failed or timed out. Its bond is stale or
+  // being deleted, so no fallback read may publish it. A failure from polling that
+  // gave up is different: a late bond read is how that connection recovers.
+  uint32_t enc_failed_generation_ { 0 };
   uint32_t capture_result_generation_ { 0 };  // Coalesces accepted successful results
   // Triggers are registered before setup and invoked only on the main task.
   std::vector<Trigger<std::string, std::string, std::string>*> capture_triggers_;
@@ -596,6 +650,12 @@ class IRKCaptureComponent : public Component {
   uint8_t pending_terminate_retries_ { 0 };      // Failed attempts of a rotation disconnect
   uint32_t pending_terminate_retry_time_ { 0 };  // Earliest retry after a transient failure
   bool pending_terminate_busy_logged_ { false };
+  // A link nothing tracks (a failed CONNECT left up, or a second connection)
+  // that the host task could not close because ble_op_mutex_ was busy. With
+  // one connection configured, a newer such link replaces an older one.
+  uint16_t untracked_terminate_handle_ { BLE_HS_CONN_HANDLE_NONE };
+  const char* untracked_terminate_context_ { nullptr };  // String literal only
+  bool untracked_terminate_reboot_ { false };            // Reboot if it cannot be closed
 
   // Wizard-facing session state (see README). The entity pointers are set
   // once before setup(); the rest is protected by state_mutex_ unless noted.
@@ -688,9 +748,12 @@ class IRKCaptureComponent : public Component {
 
   // Serializes BLE host control calls across NimBLE and ESPHome tasks
   // (advertising start/stop, disconnects, GAP name updates, MAC changes).
+  // Lock order: ble_op_mutex_, then state_mutex_; never take this while
+  // holding state_mutex_.
   SemaphoreHandle_t ble_op_mutex_ { nullptr };
 
   // Internal helpers
+  void set_advertising_intent_locked_(bool requested);
   // connection_addr_out, when given, receives the address the peer connected from.
   bool try_get_irk(uint16_t conn_handle, uint8_t irk_out[16], ble_addr_t& peer_id_out,
                    uint32_t connection_generation, CaptureOrigin origin = CaptureOrigin::UNKNOWN,
@@ -734,6 +797,13 @@ class IRKCaptureComponent : public Component {
   void terminate_bounded_(uint16_t conn_handle, uint32_t generation, const char* context,
                           bool for_rotation = false);
   void handle_pending_termination_();  // NimBLE event task only
+  // Disconnects a link the component does not track, without waiting for
+  // ble_op_mutex_: when it is busy, the worker callback retries. NimBLE host
+  // task only.
+  void terminate_untracked_(uint16_t conn_handle, bool reboot_on_failure, const char* context);
+  void handle_untracked_termination_();  // NimBLE event task only
+  void finish_untracked_terminate_(uint16_t conn_handle, int rc, bool reboot_on_failure,
+                                   const char* context);
   // Shows Status "failed" for a pairing that ended without a result.
   void report_capture_failure_(uint32_t connection_generation);
   void report_host_stall_(uint32_t now);  // Main task only

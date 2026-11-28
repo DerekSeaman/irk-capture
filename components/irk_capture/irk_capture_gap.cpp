@@ -134,18 +134,7 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     struct ble_gap_conn_desc desc {};
     if (ev->connect.status != BLE_HS_EAGAIN &&
         ble_gap_conn_find(ev->connect.conn_handle, &desc) == 0) {
-      int term_rc;
-      {
-        BleOpGuard ble_lock(self->ble_op_mutex_);
-        term_rc = ble_gap_terminate(ev->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-      }
-      if (term_rc == 0 || term_rc == BLE_HS_EALREADY) {
-        ESP_LOGW(TAG, "Failed connection handle=%u is still up; disconnecting it",
-                 ev->connect.conn_handle);
-      } else {
-        ESP_LOGW(TAG, "Failed connection handle=%u is still up and could not be closed rc=%d",
-                 ev->connect.conn_handle, term_rc);
-      }
+      self->terminate_untracked_(ev->connect.conn_handle, false, "of failed connection");
     }
 
     {
@@ -153,7 +142,7 @@ int handle_gap_connect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       self->advertising_ = false;
     }
 
-    self->start_advertising();
+    self->start_advertising(true);
   }
   return 0;
 }
@@ -226,13 +215,14 @@ static const char* disconnect_reason_str(int reason) {
 
 // BLE_GAP_EVENT_DISCONNECT: if no result was observed yet, run a fallback bond
 // read (and schedule a +800 ms check if inconclusive), then restart advertising
-// unless limited, OFF, or held off.
+// according to the current intent and any hold-off. The capture limit is
+// applied when a capture is recorded, not here.
 int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   // Use the event's embedded descriptor; NimBLE has already removed it from ble_gap_conn_find().
   const struct ble_gap_conn_desc& d = ev->disconnect.conn;
   const std::string peer_addr = addr_to_str(d.peer_id_addr);
   uint32_t connection_generation = 0;
-  bool already_observed = false;
+  bool skip_fallback = false;
   bool pairing_completed = false;
   CaptureOrigin origin = CaptureOrigin::UNKNOWN;
   uint32_t connected_since = 0;
@@ -243,11 +233,20 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
       connected_since = self->pairing_start_time_;
       pairing_completed = self->enc_ready_;
       origin = self->connection_origin_;
-      for (const auto& entry : self->irk_cache_) {
-        if (entry.mac_addr == peer_addr && entry.addr_type == d.peer_id_addr.type &&
-            entry.last_observed_generation == connection_generation) {
-          already_observed = true;
-          break;
+      // Skip a read that cannot help: a cancelled link, one whose encryption
+      // failed (its bond is stale or being deleted), and one that already
+      // has a result, including no-IRK, which is conclusive.
+      skip_fallback =
+          self->capture_cancelled_locked_(connection_generation) ||
+          (connection_generation != 0 && (self->enc_failed_generation_ == connection_generation ||
+                                          self->last_result_generation_ == connection_generation));
+      if (!skip_fallback) {
+        for (const auto& entry : self->irk_cache_) {
+          if (entry.mac_addr == peer_addr && entry.addr_type == d.peer_id_addr.type &&
+              entry.last_observed_generation == connection_generation) {
+            skip_fallback = true;
+            break;
+          }
         }
       }
     }
@@ -271,8 +270,8 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
 
   // ENC_CHANGE normally captures first. Only use the disconnect store read as
   // a fallback when this connection has not produced a valid IRK yet.
-  bool needs_delayed_check = !already_observed;
-  if (!already_observed) {
+  bool needs_delayed_check = !skip_fallback;
+  if (!skip_fallback) {
     struct ble_store_value_sec bond {};
     int rc = 0;
     const BondRead read = self->read_peer_irk_(d.peer_id_addr, bond, &rc);
@@ -283,7 +282,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     } else if (read == BondRead::IRK) {
       std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
       publish_and_log_irk(self, d.peer_id_addr, irk_hex, "DISC_IMMEDIATE", connection_generation,
-                          origin, check_irk_against_address(bond.irk, &d.peer_ota_addr));
+                          origin, check_irk_against_address(bond.irk, &d.peer_ota_addr), true);
       needs_delayed_check = false;
     } else {
       log_no_irk_for_peer(d.peer_id_addr);
@@ -303,21 +302,20 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
   }
 
   // Update advertising state and snapshot restart conditions in one lock.
-  bool should_stop_adv = false;
+  // The capture that reaches the limit turns advertising off with its result
+  // (publish_irk_to_sensors()), so this follows the intent. Rechecking the
+  // limit here would also turn off advertising the user re-enabled after the
+  // limit, on any later disconnect that captured nothing.
   bool requested;
   bool restart_scheduled;
   {
     MutexGuard lock(self->state_mutex_);
     self->advertising_ = false;
-    should_stop_adv = self->capture_limit_reached_locked_();
     requested = self->advertising_requested_;
     restart_scheduled = self->adv_restart_time_ != 0;
   }
 
-  if (should_stop_adv) {
-    ESP_LOGI(TAG, "Unique-device limit reached - stopping advertising");
-    self->set_advertising_requested(false);
-  } else if (!requested) {
+  if (!requested) {
     ESP_LOGD(TAG, "Advertising remains off by user request");
   } else if (restart_scheduled) {
     ESP_LOGI(TAG, "Advertising restart already scheduled after a hold-off");
@@ -325,7 +323,7 @@ int handle_gap_disconnect(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     if (self->continuous_mode_) {
       ESP_LOGI(TAG, "Continuous mode: restarting advertising for next device");
     }
-    self->start_advertising();
+    self->start_advertising(true);
   }
   return 0;
 }
@@ -341,6 +339,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     MutexGuard lock(self->state_mutex_);
     if (self->connected_ && self->conn_handle_ == ev->enc_change.conn_handle) {
       connection_generation = self->connection_generation_;
+      if (self->capture_cancelled_locked_(connection_generation)) return 0;
       origin = self->connection_origin_;
       connected_since = self->pairing_start_time_;
       if (ev->enc_change.status == 0) {
@@ -433,7 +432,7 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
         case BondRead::IRK: {
           std::string irk_hex = to_hex_rev(bond.irk, sizeof(bond.irk));
           publish_and_log_irk(self, d.peer_id_addr, irk_hex, "ENC_CHANGE", connection_generation,
-                              origin, check_irk_against_address(bond.irk, &d.peer_ota_addr));
+                              origin, check_irk_against_address(bond.irk, &d.peer_ota_addr), true);
           // Tested working behavior: terminate immediately after successful ENC +
           // IRK capture
           terminate_now_or_defer("after ENC capture");
@@ -472,6 +471,11 @@ int handle_gap_enc_change(IRKCaptureComponent* self, struct ble_gap_event* ev) {
     } else {
       ESP_LOGW(TAG, "ENC_CHANGE failed status=%d; conn desc not found, no bond cleared",
                ev->enc_change.status);
+    }
+    {
+      MutexGuard lock(self->state_mutex_);
+      if (self->connected_ && self->connection_generation_ == connection_generation)
+        self->enc_failed_generation_ = connection_generation;
     }
     self->report_capture_failure_(connection_generation);
     terminate_now_or_defer("after ENC failure");
@@ -676,7 +680,9 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 
 #ifdef BLE_GAP_EVENT_AUTHORIZE
     case BLE_GAP_EVENT_AUTHORIZE:
-      // Authorization event (allow by returning 0)
+      // NimBLE ignores this return value and reads ev->authorize.out_response.
+      // No characteristic uses application authorization, so leave it unset and
+      // NimBLE rejects any unexpected request.
       return 0;
 #endif
 
@@ -714,6 +720,7 @@ int IRKCaptureComponent::gap_event_handler(struct ble_gap_event* ev, void* arg) 
 void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
   bool was_advertising = false;
   bool reject_extra_connection = false;
+  bool cancel_connection = false;
   uint16_t existing_handle = BLE_HS_CONN_HANDLE_NONE;
   uint32_t generation = 0;
   {
@@ -731,28 +738,32 @@ void IRKCaptureComponent::on_connect(uint16_t conn_handle) {
         connection_generation_++;
       }
       generation = connection_generation_;
+      cancel_connection = capture_stop_requested_;
+      if (cancel_connection) {
+        cancelled_capture_generation_ = generation;
+      } else if (generation - cancelled_capture_generation_ >= INT32_MAX) {
+        // Retire the cancellation before it leaves the serial ordering window.
+        cancelled_capture_generation_ = 0;
+      }
       was_advertising = advertising_;
       advertising_ = false;
       pairing_start_time_ = now_ms();
+      // Zero means no connection is timing; a link accepted as the clock
+      // wraps would otherwise lose its overall pairing timeout.
+      if (pairing_start_time_ == 0) pairing_start_time_ = 1;
     }
+  }
+
+  if (cancel_connection) {
+    terminate_bounded_(conn_handle, generation, "after wizard cancellation");
+    return;
   }
 
   if (reject_extra_connection) {
     ESP_LOGE(TAG, "Rejecting unexpected second BLE connection handle=%u (active=%u)", conn_handle,
              existing_handle);
-    bool terminate_failed;
-    {
-      BleOpGuard ble_lock(ble_op_mutex_);
-      int rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-      terminate_failed = rc != 0 && rc != BLE_HS_EALREADY;
-      if (terminate_failed) {
-        ESP_LOGE(TAG, "Failed to terminate unexpected second connection rc=%d; rebooting", rc);
-      }
-    }
-    if (terminate_failed) {
-      // Defer reboot to the main loop: on_connect() runs on the NimBLE host task.
-      request_reboot_();
-    }
+    // A link that cannot be closed would block the slot, so reboot instead.
+    terminate_untracked_(conn_handle, true, "of unexpected second connection");
     return;
   }
 

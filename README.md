@@ -42,7 +42,7 @@ The MAC address is a **random static address** that is regenerated each time the
 
 The name changes along with the address because devices may hide an accessory whose name they've already seen, even on a new MAC address. If the ESP32 doesn't show up on your phone or watch, turn Bluetooth off and back on there. Because the suffix matches the end of ESP32 BLE MAC, you can tell which entry on your phone is the current one.
 
-**Custom names.** You can also change the advertising name yourself, in either profile. Type a new name into **BLE Device Name** and press Enter, and the ESP32 starts advertising it immediately. Custom names are limited to 12 characters; letters, numbers, spaces, `-` and `_` are kept and anything else is removed. In Keyboard mode, you can also enter the exact default `Logitech K380` to restore it. Saving the current name leaves an active pairing connected.
+**Custom names.** You can also change the advertising name yourself, in either profile. Type a new name into **BLE Device Name** and press Enter, and the ESP32 switches to it with a new MAC address, as a refresh does. It advertises the new name only while **BLE Advertising** is on, so turn the switch on when you're ready to pair. Custom names are limited to 12 characters; letters, numbers, spaces, `-` and `_` are kept and anything else is removed. In Keyboard mode, you can also enter the exact default `Logitech K380` to restore it. Saving the current name leaves an active pairing connected.
 
 **After a reboot**, whether from Restart Device, a power cycle, or changing the BLE profile, the ESP32 goes back to the default name for its profile and a new random MAC address. A refreshed or custom name only lasts until then.
 
@@ -64,15 +64,15 @@ When your Apple or Android device pairs with the ESP32:
 5. The ESP32 checks the IRK and reports the result in the **IRK Check** sensor
 6. You can then use this IRK with the Private BLE Device integration for presence tracking
 
-**IRK check.** Phones and watches that use BLE privacy connect from a private address generated from their IRK. After each capture, the ESP32 confirms that the captured IRK generates the address the device connected from. **IRK Check** shows `verified` when it does, which proves the key is correct. `unverified` means the device connected from a fixed address, so there was nothing to check; the key is usually still correct. `mismatch` means you should capture the device again. See [Checking a captured IRK](#checking-a-captured-irk) for details.
+**IRK check.** Phones and watches that use BLE privacy connect from a private address generated from their IRK. After each capture, the ESP32 confirms that the captured IRK generates the address the device connected from. **IRK Check** shows `verified` when it does, which proves the key is correct. `unverified` means the key could not be checked against the address the device connected from, usually because that address is not one an IRK generates; the key is usually still correct. `mismatch` means you should capture the device again. See [Checking a captured IRK](#checking-a-captured-irk) for details.
 
 ![ESPHome IRK Capture device page in Home Assistant, with the IRK and IRK Check sensors highlighted](docs/screenshot-1.jpg)
 
 ## Requirements
 
-- **ESP32 board** with Bluetooth support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
+- **ESP32 board** with Bluetooth and Wi-Fi support (any variant: ESP32, ESP32-C3, ESP32-C6, ESP32-S3, etc.)
 - **ESP-IDF framework**, 5.x or 6.x (required - this component does NOT support Arduino framework)
-- **ESPHome** 2026.9.0 or newer (the oldest version the build tests use) - Tested with 2026.11.0
+- **ESPHome** 2026.9.0 or newer (the oldest version the build tests use) - Tested with 2026.11.1
 - **Home Assistant** (optional, but recommended for using the captured IRK with Private BLE Device integration)
 - **ESPHome Device Builder** (optional, but makes managing ESPHome devices in Home Assistant easier)
 
@@ -230,7 +230,7 @@ After flashing and connecting to Home Assistant, the following entities will be 
 | **Wi-Fi Disconnects (since boot)** | Sensor | Number of Wi-Fi disconnections since boot (diagnostic) |
 | **Wi-Fi Signal** | Sensor | Wi-Fi signal strength in dBm (diagnostic) |
 
-**BLE Advertising switch.** This switch controls whether the ESP32 advertises so devices can find it. It's ON after every boot by default. While a device is connected, the ESP32 pauses advertising but the switch stays ON, and advertising resumes when the device disconnects.
+**BLE Advertising switch.** This switch controls whether the ESP32 advertises so devices can find it. It's ON after every boot by default. By default, advertising turns off by itself after 10 different devices have been captured since boot. Turn the switch back on to capture more; devices you already captured reconnecting in the background don't turn it off again. While a device is connected, the ESP32 pauses advertising but the switch stays ON, and advertising resumes when the device disconnects.
 
 If advertising fails to start, the ESP32 keeps retrying on its own, quickly at first and then once a minute, for as long as the switch is ON. It doesn't reboot or lose your captures while it does. Turning the switch off stops the retries, and turning it back on tries again right away.
 
@@ -258,7 +258,8 @@ If advertising fails to start, the ESP32 keeps retrying on its own, quickly at f
 Some restarts happen on their own. A restart clears the session history and all pairings, and the ESP32 comes back with the default name and a new random MAC address.
 
 - **No Home Assistant connection.** The ESP32 does not restart for lack of a Home Assistant connection, so the wizard keeps its session when Home Assistant is not connected.
-- **Bluetooth never starts.** If Bluetooth hasn't started 5 minutes after boot and nothing has been captured, the ESP32 restarts to try again. It repeats while the problem persists. See [Status shows failed](#status-shows-failed).
+- **No Wi-Fi connection.** If the ESP32 can't connect to your Wi-Fi network for 10 minutes, it restarts to try again. It holds off while a phone or computer is connected to its fallback access point, so you can keep using the wizard there.
+- **Bluetooth never starts.** If the Bluetooth host starts but hasn't synchronised 5 minutes after boot, and nothing has been captured, the ESP32 restarts to try again. It repeats while the problem persists. If Bluetooth fails during setup instead, the ESP32 doesn't restart by itself. See [Status shows failed](#status-shows-failed).
 - **Connection that won't close.** If a connected device can't be disconnected after several attempts, the ESP32 restarts. This is rare.
 
 It also restarts when you change the **BLE Profile**, press **Restart Device**, or press **Reboot ESP32** in the wizard.
@@ -370,7 +371,7 @@ packages:
     refresh: always
 ```
 
-Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock out that client address for 30 seconds. The device tracks eight addresses separately; when all eight have recent failures, new addresses share an overflow limit and a legitimate new client may also be temporarily locked out. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
+Add `wizard_username` and `wizard_password` to your ESPHome Builder Secrets registry. The wizard requires both and will not compile without them. A captured IRK permanently resolves a phone's randomized BLE address, so the wizard is never left open on the network. Five wrong passwords in a row lock out that client address for 30 seconds. The device tracks eight addresses separately; when all eight have recent failures or a recent sign-in, new addresses share an overflow limit and a legitimate new client may also be temporarily locked out. Traffic is plain HTTP, like ESPHome's own `web_server`, so keep the device on a network you trust.
 
 The UI offers two workflows:
 
@@ -477,14 +478,16 @@ Watches that require "reverse" pairing (i.e. the watch advertises as a device th
 `failed` means one of two things. Check the device log to see which.
 
 - **A pairing ended without a result.** The log shows `ENC_CHANGE failed`, `IRK not found`, or `Encryption timeout` / `Pairing timeout` when the device connected but never finished pairing. See [IRK Not Captured After Pairing](#irk-not-captured-after-pairing).
-- **Bluetooth didn't start.** After 30 seconds the log shows `Bluetooth host has not synchronised`. Status stays `failed` until Bluetooth starts. The ESP32 restarts by itself after 5 minutes if nothing has been captured. If the restarts continue, check the Bluetooth configuration in your build, and do a clean build.
+- **Bluetooth didn't start.** The log shows one of two things:
+  - `Bluetooth host has not synchronised`, after 30 seconds. Status stays `failed` until Bluetooth starts. The ESP32 restarts by itself after 5 minutes if nothing has been captured. If the restarts continue, check the Bluetooth configuration in your build, and do a clean build.
+  - An error during setup, such as `nimble_port_init failed` or `nvs_flash_init failed`. Status shows `failed` straight away and the component stops, so the ESP32 doesn't restart by itself. Fix the error the log names, usually the Bluetooth configuration in your build, then do a clean build and restart the ESP32.
 
 ### Checking a captured IRK
 
 After each capture, the ESP32 checks the IRK against the address the device connected from. Phones and watches that use BLE privacy connect from a resolvable private address, which is generated from their IRK. If the captured IRK generates that address, the key is proven correct. The result appears in the log as an `IRK check:` line, in the **IRK Check** sensor, in the wizard's result step and history, and as the `verification` field of the `esphome.irk_captured` event:
 
 - **`verified`**: The IRK generates the address the device connected from, so it is the right key.
-- **`unverified`**: The device connected from a fixed address, or the check could not run. This is normal for devices that do not use a private address and does not mean the key is wrong.
+- **`unverified`**: The key could not be checked against the connection address. Usually the device connected from a public, static, or non-resolvable private address, none of which an IRK generates; rarely, the check itself could not run. This is normal for devices that do not use a resolvable private address and does not mean the key is wrong.
 - **`mismatch`**: The device connected from a private address this IRK does not generate. This should not happen. Forget the ESP32 in the device's Bluetooth settings and capture it again.
 
 ### IRK Not Captured After Pairing

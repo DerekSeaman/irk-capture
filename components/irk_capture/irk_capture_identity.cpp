@@ -53,7 +53,7 @@ std::string IRKCaptureComponent::sanitize_ble_name(const std::string& name) {
 
 BLEProfile IRKCaptureComponent::get_ble_profile() {
   MutexGuard lock(state_mutex_);
-  return ble_profile_;
+  return selected_profile_();
 }
 
 std::string IRKCaptureComponent::get_ble_name() {
@@ -174,6 +174,8 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   uint8_t retries;
   uint8_t mac[6];
   uint16_t waiting_handle = BLE_HS_CONN_HANDLE_NONE;
+  uint32_t waiting_generation = 0;
+  bool can_terminate = false;
   {
     MutexGuard lock(state_mutex_);
     if (!host_synced_ || bond_clear_pending_ || mac_rotation_cleanup_pending_ ||
@@ -181,9 +183,12 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
       return;
     generation = mac_rotation_generation_;
     if (conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
-      // Log once for this connection, then wait for on_disconnect() to make
-      // the rotation ready again. The rest of loop() still services the link.
+      // A peer connected after the request (typically while advertising was
+      // stopping). Close it as a request on an open link would, then wait
+      // for on_disconnect() to make the rotation ready again.
       waiting_handle = conn_handle_;
+      waiting_generation = connection_generation_;
+      can_terminate = bond_clear_task_ != nullptr;
       mac_rotation_state_ = MacRotationState::REQUESTED;
     }
     ready_time = mac_rotation_ready_time_;
@@ -192,6 +197,9 @@ void IRKCaptureComponent::handle_mac_rotation_(uint32_t now) {
   }
   if (waiting_handle != BLE_HS_CONN_HANDLE_NONE) {
     ESP_LOGW(TAG, "MAC rotation: waiting for connection handle=%u to close", waiting_handle);
+    // Without the worker, the pairing watchdog still bounds the wait.
+    if (can_terminate)
+      terminate_bounded_(waiting_handle, waiting_generation, "for MAC rotation", true);
     return;
   }
   if (ready_time != 0 && !deadline_reached(now, ready_time)) return;
@@ -504,8 +512,7 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
   std::string current_name;
   {
     MutexGuard lock(state_mutex_);
-    old_profile = ble_profile_;
-    ble_profile_ = profile;
+    old_profile = selected_profile_();
     current_name = ble_name_;
   }
 
@@ -513,21 +520,26 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
   ESP_LOGI(TAG, "BLE profile changed to: %s", profile_name);
 
   if (old_profile != profile) {
+    // The GATT table is fixed until reboot, so the running profile never
+    // changes here: an advertising restart while this saves, or before the
+    // reboot, must still describe the services this boot registered.
     const bool persisted = persist_ble_profile(profile);
 
     // Rebooting without a saved profile would revert on boot and lose the
-    // session; roll back instead.
+    // session; keep the current selection instead.
     if (!persisted) {
-      {
-        MutexGuard lock(state_mutex_);
-        ble_profile_ = old_profile;
-      }
       const char* old_name =
           (old_profile == BLEProfile::HEART_SENSOR) ? "Heart Sensor" : "Keyboard";
       ESP_LOGE(TAG, "BLE profile change not saved; staying on %s and skipping reboot", old_name);
       if (ble_profile_select_) ble_profile_select_->publish_state(old_name);
       return;
     }
+    {
+      MutexGuard lock(state_mutex_);
+      next_profile_ = profile;
+      profile_change_saved_ = true;
+    }
+    if (ble_profile_select_) ble_profile_select_->publish_state(profile_name);
 
     if (profile == BLEProfile::KEYBOARD) {
       if (ble_name_text_) {
@@ -546,6 +558,8 @@ void IRKCaptureComponent::set_ble_profile(BLEProfile profile) {
              "Profile change requires restart to update GATT database - "
              "scheduling safe reboot...");
     request_reboot_();
+  } else if (ble_profile_select_) {
+    ble_profile_select_->publish_state(profile_name);
   }
 }
 

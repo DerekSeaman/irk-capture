@@ -11,7 +11,7 @@
 namespace esphome {
 namespace irk_capture {
 
-static constexpr char VERSION[] = "1.7.10";
+static constexpr char VERSION[] = "1.7.11";
 
 //======================== Component lifecycle ========================
 
@@ -204,23 +204,32 @@ void IRKCaptureComponent::loop() {
   // Reconcile unwanted advertising and scheduled advertising restarts.
   bool should_restart_adv = false;
   bool should_stop_unwanted_adv = false;
+  uint32_t hold_off_stop = 0;
   {
     MutexGuard lock(state_mutex_);
     // After a lock timeout, wait for the retry deadline instead of blocking
     // and logging on every tick.
-    should_stop_unwanted_adv =
-        (advertising_ || adv_stop_retry_time_ != 0) && !advertising_requested_ &&
-        (adv_stop_retry_time_ == 0 || deadline_reached(now, adv_stop_retry_time_));
+    // A hold-off stop the host task handed over counts only while that
+    // hold-off still stands; a newer start, OFF or reset drops it.
+    if (adv_hold_off_stop_ != 0 && !hold_off_pending_locked_(adv_hold_off_stop_)) {
+      adv_hold_off_stop_ = 0;
+    }
     // A failed restart may have left the old advertisement active. Its retry
     // must still run so start_advertising() can stop and replace that payload.
     if (advertising_requested_ && !connected_ && mac_rotation_state_ == MacRotationState::IDLE &&
         adv_restart_time_ != 0 && deadline_reached(now, adv_restart_time_)) {
       adv_restart_time_ = 0;
+      adv_hold_off_stop_ = 0;  // The hold-off has run out; restart instead.
       should_restart_adv = true;
     }
+    hold_off_stop = adv_hold_off_stop_;
+    should_stop_unwanted_adv =
+        (advertising_ || adv_stop_retry_time_ != 0) &&
+        (!advertising_requested_ || hold_off_stop != 0) &&
+        (adv_stop_retry_time_ == 0 || deadline_reached(now, adv_stop_retry_time_));
   }
   if (should_stop_unwanted_adv) {
-    stop_advertising();
+    stop_advertising(false, hold_off_stop);
   }
   if (should_restart_adv) {
     ESP_LOGI(TAG, "Auto-restarting advertising after scheduled delay");
@@ -255,6 +264,7 @@ void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex,
   // Stage only; the ESPHome main loop() performs the actual publish_state().
   // Callers may run in the NimBLE task, where publish_state() is unsafe.
   MutexGuard lock(state_mutex_);
+  if (capture_cancelled_locked_(connection_generation)) return;
   // A valid IRK for the live connection ends its capture work whether or not it
   // becomes the displayed result, so Status stops reporting "capturing".
   if (connected_ && connection_generation != 0 && connection_generation == connection_generation_) {
@@ -288,6 +298,7 @@ void IRKCaptureComponent::publish_irk_to_sensors(const std::string& irk_hex,
       capture_result_.irk = irk_hex;
       capture_result_.device_mac = addr_str;
       capture_result_.verification = check;
+      capture_result_.connection_generation = connection_generation;
       capture_result_generation_ = connection_generation;
       if (!capture_triggers_.empty()) {
         if (pending_capture_events_.size() < CAPTURE_EVENT_CAPACITY) {
@@ -506,10 +517,10 @@ SessionState IRKCaptureComponent::get_session_state(uint32_t known_history_versi
     // An unchanged history needs neither the copy under the lock nor the
     // formatting after it; the caller keeps the JSON it already has.
     state.history_changed = known_history_version != history_version_;
-    if (state.history_changed) cache_copy = irk_cache_;
+    if (state.history_changed) cache_copy = visible_history_locked_();
     state.next_capture_label = next_capture_label_;
     state.advertised_name = advertised_name_();
-    state.profile = ble_profile_;
+    state.profile = selected_profile_();
     state.advertising_requested = advertising_requested_;
     state.stop_after_capture = stop_after_capture_;
     state.capture_result = capture_result_;
@@ -527,7 +538,7 @@ LiveControls IRKCaptureComponent::get_live_controls() {
   MutexGuard lock(state_mutex_);
   LiveControls controls;
   controls.next_capture_label = next_capture_label_;
-  controls.profile = ble_profile_;
+  controls.profile = selected_profile_();
   controls.advertising_requested = advertising_requested_;
   controls.stop_after_capture = stop_after_capture_;
   return controls;

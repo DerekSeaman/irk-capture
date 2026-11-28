@@ -50,7 +50,7 @@ static constexpr char HEX[] = "0123456789abcdef";
 // 3. Maintenance worker ("irk_bond_clear"): puts bond_clear_event_ onto NimBLE's
 //    queue (may block on older NPL ports) without holding any component mutex.
 // 4. esp_http_server task (irk_wizard): thread-safe getters,
-//    set_next_capture_label(), set_stop_after_capture(), request_bond_clear().
+//    cancel_capture(), set_next_capture_label(), set_stop_after_capture(), request_bond_clear().
 //
 // Rules:
 // - Guard all mutable shared state with state_mutex_ (see irk_capture.h).
@@ -58,6 +58,9 @@ static constexpr char HEX[] = "0123456789abcdef";
 // - Release state_mutex_ before calling BLE stack, NVS, or logging APIs.
 // - Entity publish_state() is main-task only; other contexts stage pending_*
 //   fields for flush_pending_publishes_() in loop().
+// - Lock order: ble_op_mutex_ before state_mutex_, and the wizard's
+//   snapshot_mutex_ before state_mutex_. The NimBLE host task takes
+//   ble_op_mutex_ only with a zero timeout.
 
 // Timing configuration (all values in ms)
 struct TimingConfig {
@@ -126,7 +129,7 @@ struct TimingConfig {
 // Timeout recovery starts if encryption is still pending 20 s after security
 //   initiation, or if the link remains open 90 s after connection.
 // DISCONNECT -> if no IRK was observed, read the bond immediately and retry at
-//   +800 ms if inconclusive. Restart advertising unless limited, OFF, or held off.
+//   +800 ms if inconclusive. Restart advertising per current intent and any hold-off.
 // Report the peer's identity address and reverse IRK hex for Arduino parity.
 
 //======================== Forward decls ========================
@@ -134,7 +137,8 @@ struct TimingConfig {
 // Defined in irk_capture_history.cpp.
 void publish_and_log_irk(IRKCaptureComponent* self, const ble_addr_t& peer_id_addr,
                          const std::string& irk_hex, const char* context_tag,
-                         uint32_t connection_generation, CaptureOrigin origin, IrkCheck check);
+                         uint32_t connection_generation, CaptureOrigin origin, IrkCheck check,
+                         bool host_task);
 
 // Defined in irk_capture_identity.cpp.
 bool persist_ble_profile(BLEProfile profile);
@@ -207,10 +211,10 @@ static inline bool addr_equal(const ble_addr_t& lhs, const ble_addr_t& rhs) {
   return lhs.type == rhs.type && std::memcmp(lhs.val, rhs.val, sizeof(lhs.val)) == 0;
 }
 
-// MutexGuard alias for ble_op_mutex_. Queued host work and direct ENC_CHANGE disconnects use
-// a zero-timeout acquisition and defer on contention. Advertising start/stop can
-// run on either task and use the bounded BLE_OP_LOCK_WAIT_MS wait. Failed
-// CONNECT and extra-link teardown still wait without a timeout.
+// MutexGuard alias for ble_op_mutex_. The NimBLE host task never waits for it:
+// queued host work, disconnects, and advertising start/stop called from GAP
+// callbacks try it without waiting and hand contended work to the worker or to
+// loop(). Only the main task uses the bounded BLE_OP_LOCK_WAIT_MS wait.
 using BleOpGuard = MutexGuard;
 
 void log_sm_config(const char* label = "SM config");

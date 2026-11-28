@@ -163,17 +163,16 @@ async def to_code(config):
     # These are applied after the esp32 platform processes the user's YAML
     # sdkconfig_options, so values set here win. Do NOT also declare them in
     # device/base YAML: a YAML value would be silently overridden by these.
-    # All four NimBLE roles are compiled in; the component only advertises and
-    # accepts connections (peripheral/broadcaster), but central/observer are
-    # left enabled to match NimBLE's default role set and avoid link-time
-    # surprises.
+    # The component only advertises and accepts connections, so only the
+    # peripheral and broadcaster roles are compiled in. Leaving out central
+    # and observer saves about 14 KB of flash (measured on an ESP32-C3 build).
     esp32.add_idf_sdkconfig_option("CONFIG_BT_ENABLED", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_BLUEDROID_ENABLED", False)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_ENABLED", True)
-    esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_ROLE_CENTRAL", True)
+    esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_ROLE_CENTRAL", False)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_ROLE_PERIPHERAL", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_ROLE_BROADCASTER", True)
-    esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_ROLE_OBSERVER", True)
+    esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_ROLE_OBSERVER", False)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SECURITY_ENABLE", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SM_LEGACY", True)
     esp32.add_idf_sdkconfig_option("CONFIG_BT_NIMBLE_SM_SC", True)

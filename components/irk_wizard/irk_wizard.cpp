@@ -2,6 +2,7 @@
 
 #ifdef USE_ESP32
 
+#include <cstdlib>
 #include <cstring>
 
 #include <lwip/sockets.h>
@@ -45,9 +46,30 @@ static void mark_close_if_unread(httpd_req_t* req) {
   if (req->content_len != 0) httpd_resp_set_hdr(req, "Connection", "close");
 }
 
+// The wizard has no reason to be framed or to have its responses reinterpreted
+// as another type. Without these, a page on another origin could overlay the
+// wizard in a frame and trick a signed-in user into pressing its controls.
+// The page is one inline document that only fetches its own API, so the policy
+// allows exactly that; frame-ancestors is the modern form of X-Frame-Options,
+// which stays for older browsers. httpd keeps at most max_resp_headers (8)
+// extra headers per response; the busiest, a 429 or a 401, send 7.
+static void set_security_headers(httpd_req_t* req) {
+  httpd_resp_set_hdr(req, "Content-Security-Policy",
+                     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                     "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+                     "form-action 'none'");
+  httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
+  httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
+  httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+}
+
 static esp_err_t send_unauthorized(httpd_req_t* req) {
   mark_close_if_unread(req);
   httpd_resp_set_status(req, "401 Unauthorized");
+  // Seven headers with Connection: close, within max_resp_headers (8).
+  httpd_resp_set_type(req, "text/plain");
+  set_security_headers(req);
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"IRK Capture\"");
   return httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
 }
@@ -137,7 +159,7 @@ static bool authorized(httpd_req_t* req) {
     send_unauthorized(req);
     return false;
   }
-  throttle.ok();
+  self->client_throttles().succeeded(throttle, now);
   self->note_request();
   return true;
 }
@@ -294,6 +316,30 @@ void IRKWizardComponent::set_advertising(bool on) {
   });
 }
 
+bool IRKWizardComponent::stop_capture(uint32_t operation_id, uint32_t boot_id) {
+  {
+    // A tab whose run another tab replaced must not cancel the newer run or
+    // close its peer. Start and stop both run on the single httpd task, so no
+    // new start can land between this check and the cancellation below.
+    MutexGuard lock(snapshot_mutex_);
+    if (operation_id != 0 &&
+        (capture_start_.operation_id != operation_id || capture_start_.boot_id != boot_id))
+      return false;
+    // Cancel the run in the same lock scope as the check, named or not. The
+    // deferred START checks and arms under this lock too, so it either armed
+    // already, and cancel_capture() below undoes that, or it sees CANCELLED
+    // and never arms. Either way it cannot re-arm after this stop replies.
+    if (capture_start_.state == CaptureStartState::PENDING ||
+        capture_start_.state == CaptureStartState::READY)
+      capture_start_.state = CaptureStartState::CANCELLED;
+  }
+  // Cancel the result before acknowledging the stop. The next label can
+  // arrive before the NimBLE host has finished closing the old link.
+  if (irk_capture_) irk_capture_->cancel_capture();
+  set_advertising(false);
+  return true;
+}
+
 CaptureStart IRKWizardComponent::start_capture() {
   const uint32_t boot_id = irk_capture_ ? irk_capture_->get_capture_result().boot_id : 0;
   CaptureStart request;
@@ -307,15 +353,22 @@ CaptureStart IRKWizardComponent::start_capture() {
   }
   this->defer([this, id = request.operation_id]() {
     ESP_LOGI(TAG, "Wizard: capture start requested");
+    const bool available = irk_capture_ && !irk_capture_->is_failed();
+    irk_capture::CaptureResult baseline;
     {
+      // Check the run and arm capture as one step: stop_capture() cancels
+      // under this lock, so it cannot land between them. The core takes the
+      // baseline and installs ON intent in one state lock, with no BLE call,
+      // so this holds snapshot_mutex_ -> state_mutex_ for microseconds. A
+      // cached status response could predate a capture by several seconds.
       MutexGuard lock(snapshot_mutex_);
       if (capture_start_.operation_id != id || capture_start_.state != CaptureStartState::PENDING)
         return;
+      if (available) baseline = irk_capture_->arm_capture();
     }
-    const bool available = irk_capture_ && !irk_capture_->is_failed();
-    // The core takes the baseline and installs ON intent in one state lock.
-    // A cached status response could predate a capture by several seconds.
-    const auto baseline = available ? irk_capture_->begin_capture() : irk_capture::CaptureResult {};
+    // Outside the lock: the start can wait for the BLE lock. A stop that lands
+    // now has set intent OFF, which start_advertising() checks first.
+    if (available) irk_capture_->start_advertising();
     MutexGuard lock(snapshot_mutex_);
     // OFF or another start can arrive while the radio operation runs. Its
     // queued main-task command still owns the final intent and acknowledgement.
@@ -323,6 +376,7 @@ CaptureStart IRKWizardComponent::start_capture() {
       return;
     capture_start_.boot_id = baseline.boot_id;
     capture_start_.sequence = baseline.sequence;
+    capture_start_.connection_generation = baseline.connection_generation;
     capture_start_.state = available ? CaptureStartState::READY : CaptureStartState::FAILED;
   });
   return request;
@@ -352,20 +406,22 @@ void IRKWizardComponent::refresh_snapshot_() {
     next.history_json = snapshot_.history_json;
   }
   history_version_ = core.history_version;
+  next.history_version = core.history_version;
   next.irk = irk_sensor_ ? irk_sensor_->state : "";
   next.device_mac = device_mac_sensor_ ? device_mac_sensor_->state : "";
   next.effective_mac = effective_mac_sensor_ ? effective_mac_sensor_->state : "";
-  next.next_capture_label = core.next_capture_label;
+  // core is a local copy; move its strings rather than copying them again.
+  next.next_capture_label = std::move(core.next_capture_label);
   const bool keyboard = core.profile == irk_capture::BLEProfile::KEYBOARD;
   next.profile = keyboard ? "Keyboard" : "Heart Sensor";
   // Capture owns the selected advertising name, including profile defaults,
   // renames, and identity refreshes. It can select a name while the radio is off.
-  next.advertised_name = core.advertised_name;
+  next.advertised_name = std::move(core.advertised_name);
   next.advertising = core.advertising_requested;
   next.stop_after_capture = core.stop_after_capture;
-  next.capture_result = core.capture_result;
-  next.bond_clear = core.bond_clear;
-  next.identity_refresh = core.identity_refresh;
+  next.capture_result = std::move(core.capture_result);
+  next.bond_clear = std::move(core.bond_clear);
+  next.identity_refresh = std::move(core.identity_refresh);
 
   MutexGuard lock(snapshot_mutex_);
   snapshot_ = std::move(next);
@@ -377,29 +433,13 @@ static esp_err_t handle_index(httpd_req_t* req);
 static esp_err_t handle_get_status(httpd_req_t* req);
 static esp_err_t handle_post_advertising(httpd_req_t* req);
 static esp_err_t handle_post_capture_start(httpd_req_t* req);
+static esp_err_t handle_post_capture_stop(httpd_req_t* req);
 static esp_err_t handle_post_profile(httpd_req_t* req);
 static esp_err_t handle_post_label(httpd_req_t* req);
 static esp_err_t handle_post_forget_bonds(httpd_req_t* req);
 static esp_err_t handle_post_fresh_identity(httpd_req_t* req);
 static esp_err_t handle_post_reboot(httpd_req_t* req);
 static esp_err_t handle_post_stop_after_capture(httpd_req_t* req);
-
-// The wizard has no reason to be framed or to have its responses reinterpreted
-// as another type. Without these, a page on another origin could overlay the
-// wizard in a frame and trick a signed-in user into pressing its controls.
-// The page is one inline document that only fetches its own API, so the policy
-// allows exactly that; frame-ancestors is the modern form of X-Frame-Options,
-// which stays for older browsers. httpd keeps at most max_resp_headers (8)
-// extra headers per response; the busiest, a 429, sends 7.
-static void set_security_headers(httpd_req_t* req) {
-  httpd_resp_set_hdr(req, "Content-Security-Policy",
-                     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                     "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
-                     "form-action 'none'");
-  httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
-  httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
-  httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
-}
 
 static void set_json_headers(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
@@ -445,11 +485,18 @@ static bool matching_boot_baseline(httpd_req_t* req, const std::string& body, ui
   return true;
 }
 
-static std::string bond_clear_json(const irk_capture::BondClearResult& result) {
-  return "{\"operation_id\":" + std::to_string(result.operation_id) + ",\"state\":\"" +
-         irk_capture::bond_clear_state_name(result.state) + "\",\"reason\":\"" +
-         json_escape(result.reason) +
-         "\",\"history_cleared\":" + (result.history_cleared ? "true" : "false") + "}";
+// Appends the bond-clear object to out, so the status response can build it in
+// its own buffer instead of joining temporaries.
+static void append_bond_clear_json(std::string& out, const irk_capture::BondClearResult& result) {
+  out += "{\"operation_id\":";
+  out += std::to_string(result.operation_id);
+  out += ",\"state\":\"";
+  out += irk_capture::bond_clear_state_name(result.state);
+  out += "\",\"reason\":\"";
+  json_escape_into(out, result.reason);
+  out += "\",\"history_cleared\":";
+  out += result.history_cleared ? "true" : "false";
+  out += '}';
 }
 
 bool IRKWizardComponent::start_server_() {
@@ -485,6 +532,7 @@ bool IRKWizardComponent::start_server_() {
     { "/api/status", HTTP_GET, handle_get_status },
     { "/api/advertising", HTTP_POST, handle_post_advertising },
     { "/api/capture/start", HTTP_POST, handle_post_capture_start },
+    { "/api/capture/stop", HTTP_POST, handle_post_capture_stop },
     { "/api/profile", HTTP_POST, handle_post_profile },
     { "/api/label", HTTP_POST, handle_post_label },
     { "/api/forget_bonds", HTTP_POST, handle_post_forget_bonds },
@@ -590,6 +638,33 @@ static esp_err_t handle_index(httpd_req_t* req) {
   return httpd_resp_send(req, reinterpret_cast<const char*>(self->page_data()), self->page_size());
 }
 
+// True when the page's ?history=<boot_id>.<version> names the history this
+// snapshot holds, so the response can leave it out. Anything else, including
+// a token from before a reboot, gets the full history.
+static bool history_unchanged(httpd_req_t* req, const WizardSnapshot& s) {
+  if (!s.history_json) return false;
+  char query[64];
+  const size_t len = httpd_req_get_url_query_len(req);
+  if (len == 0 || len >= sizeof(query)) return false;
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) return false;
+  char token[24];
+  if (httpd_query_key_value(query, "history", token, sizeof(token)) != ESP_OK) return false;
+  // Digits, one dot, digits: strtoul alone would also accept signs and spaces.
+  const auto number = [](const char* p, char stop, const char** end, uint32_t& out) {
+    if (*p < '0' || *p > '9') return false;
+    char* e;
+    const unsigned long long value = std::strtoull(p, &e, 10);
+    if (*e != stop || value > UINT32_MAX) return false;
+    out = static_cast<uint32_t>(value);
+    *end = e;
+    return true;
+  };
+  const char* p = token;
+  uint32_t boot_id, version;
+  if (!number(p, '.', &p, boot_id) || !number(p + 1, '\0', &p, version)) return false;
+  return boot_id == s.capture_result.boot_id && version == s.history_version;
+}
+
 static esp_err_t handle_get_status(httpd_req_t* req) {
   if (!authorized(req) || !bodyless_request(req)) return unread_body_result(req);
   auto* self = static_cast<IRKWizardComponent*>(req->user_ctx);
@@ -611,7 +686,7 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   // every field, on every poll, for the life of the device.
   const auto add_string = [](std::string& out, const char* key, const std::string& value) {
     out += key;
-    out += json_escape(value);
+    json_escape_into(out, value);
     out += '"';
   };
   const auto add_number = [](std::string& out, const char* key, uint32_t value) {
@@ -622,8 +697,9 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
     out += key;
     out += value ? "true" : "false";
   };
+  const bool skip_history = history_unchanged(req, s);
   std::string head;
-  head.reserve(384);
+  head.reserve(416);
   add_number(head, "{\"boot_id\":", s.capture_result.boot_id);
   add_string(head, ",\"status\":\"", s.status);
   add_string(head, ",\"next_capture_label\":\"", s.next_capture_label);
@@ -634,38 +710,50 @@ static esp_err_t handle_get_status(httpd_req_t* req) {
   add_string(head, ",\"device_mac\":\"", s.device_mac);
   add_string(head, ",\"irk\":\"", s.irk);
   add_bool(head, ",\"stop_after_capture\":", s.stop_after_capture);
-  head += ",\"history\":";
+  // The page sends this back as ?history=; see history_unchanged().
+  add_number(head, ",\"history_version\":\"", s.capture_result.boot_id);
+  add_number(head, ".", s.history_version);
+  head += skip_history ? "\",\"history_unchanged\":true" : "\",\"history\":";
 
+  // 526 bytes with every ID at 10 digits, a full IRK and MAC, and the longest
+  // state names; the two reasons are the only variable-length values. Sized
+  // once so the tail never reallocates; it used to outgrow 384 bytes on the
+  // first poll (390 at startup, 449 after a capture).
+  static constexpr size_t TAIL_FIXED_MAX = 528;
   std::string tail;
-  tail.reserve(384);
+  tail.reserve(TAIL_FIXED_MAX + s.bond_clear.reason.size() +
+               s.identity_refresh.cleanup_reason.size());
   add_number(tail, ",\"capture_result\":{\"boot_id\":", s.capture_result.boot_id);
   add_number(tail, ",\"sequence\":", s.capture_result.sequence);
   add_string(tail, ",\"irk\":\"", s.capture_result.irk);
   add_string(tail, ",\"device_mac\":\"", s.capture_result.device_mac);
   tail += ",\"verification\":\"";
   tail += irk_capture::irk_check_name(s.capture_result.verification);
-  add_number(tail, "\"},\"capture_start\":{\"operation_id\":", s.capture_start.operation_id);
+  add_number(tail, "\",\"connection_generation\":", s.capture_result.connection_generation);
+  add_number(tail, "},\"capture_start\":{\"operation_id\":", s.capture_start.operation_id);
   tail += ",\"state\":\"";
   tail += capture_start_state_name(s.capture_start.state);
   add_number(tail, "\",\"boot_id\":", s.capture_start.boot_id);
   add_number(tail, ",\"sequence\":", s.capture_start.sequence);
+  add_number(tail, ",\"connection_generation\":", s.capture_start.connection_generation);
   tail += "},\"bond_clear\":";
-  tail += bond_clear_json(s.bond_clear);
+  append_bond_clear_json(tail, s.bond_clear);
   add_number(tail, ",\"identity_refresh\":{\"operation_id\":", s.identity_refresh.operation_id);
   tail += ",\"state\":\"";
   tail += irk_capture::identity_refresh_state_name(s.identity_refresh.state);
   add_string(tail, "\",\"cleanup_reason\":\"", s.identity_refresh.cleanup_reason);
   tail += "}}";
 
-  // Sent in pieces. The history can reach tens of kilobytes, and joining it
-  // to the rest would need a second buffer of that size for every request. A
+  // Sent in pieces. A full 64-row history is about 10 KB, and joining it to
+  // the rest would need a second buffer of that size for every request. A
   // zero-length chunk ends the response, so no piece may be empty.
   static const std::string EMPTY_HISTORY = "[]";
   const std::string& history =
       s.history_json && !s.history_json->empty() ? *s.history_json : EMPTY_HISTORY;
   set_json_headers(req);
   esp_err_t err = httpd_resp_send_chunk(req, head.c_str(), head.size());
-  if (err == ESP_OK) err = httpd_resp_send_chunk(req, history.c_str(), history.size());
+  if (err == ESP_OK && !skip_history)
+    err = httpd_resp_send_chunk(req, history.c_str(), history.size());
   if (err == ESP_OK) err = httpd_resp_send_chunk(req, tail.c_str(), tail.size());
   if (err == ESP_OK) err = httpd_resp_send_chunk(req, nullptr, 0);
   // A failed send returns an error so the server closes the connection; the
@@ -693,6 +781,49 @@ static esp_err_t handle_post_capture_start(httpd_req_t* req) {
   httpd_resp_set_status(req, "202 Accepted");
   return send_json(req, "{\"operation_id\":" + std::to_string(start.operation_id) +
                             ",\"boot_id\":" + std::to_string(start.boot_id) + "}");
+}
+
+// Reads an optional quoted decimal ID, the form boot IDs already use. An
+// absent key leaves 0; a present one must be a nonzero 32-bit value.
+static bool optional_quoted_id(const std::string& body, const char* key, uint32_t& out) {
+  out = 0;
+  size_t pos;
+  if (!json_find_value_start(body, key, pos)) {
+    // Absent from a well-formed object, or no body at all. A malformed body
+    // or a duplicated key is rejected rather than read as an unnamed stop.
+    if (body.empty()) return true;
+    size_t end = 0;
+    json_skip_ws(body, end);
+    if (end >= body.size() || body[end] != '{' || !json_skip_value(body, end)) return false;
+    json_skip_ws(body, end);
+    return end == body.size() && body.find(std::string("\"") + key + "\"") == std::string::npos;
+  }
+  std::string text;
+  if (!json_extract_string(body, key, text) || text.empty() || text.size() > 10 ||
+      text.find_first_not_of("0123456789") != std::string::npos)
+    return false;
+  const unsigned long long value = strtoull(text.c_str(), nullptr, 10);
+  if (value == 0 || value > UINT32_MAX) return false;
+  out = static_cast<uint32_t>(value);
+  return true;
+}
+
+static esp_err_t handle_post_capture_stop(httpd_req_t* req) {
+  Command command;
+  if (!begin_command(req, NEEDS_CAPTURE, command)) return command.error_result;
+  uint32_t operation_id = 0;
+  uint32_t boot_id = 0;
+  if (!optional_quoted_id(command.body, "operation_id", operation_id) ||
+      !optional_quoted_id(command.body, "boot_id", boot_id) ||
+      (operation_id == 0) != (boot_id == 0)) {
+    return reply_error(req, "400 Bad Request",
+                       "operation_id and boot_id must be quoted IDs, sent together");
+  }
+  // A stop for a replaced run is already satisfied from that page's view.
+  const bool stopped =
+      static_cast<IRKWizardComponent*>(req->user_ctx)->stop_capture(operation_id, boot_id);
+  return send_json(req,
+                   std::string("{\"ok\":true,\"stopped\":") + (stopped ? "true" : "false") + "}");
 }
 
 static esp_err_t handle_post_profile(httpd_req_t* req) {
@@ -751,9 +882,12 @@ static esp_err_t handle_post_forget_bonds(httpd_req_t* req) {
   auto* capture = command.capture;
   ESP_LOGI(TAG, "Wizard: forget all bonds requested");
   const auto result = capture->request_bond_clear();
-  std::string json = bond_clear_json(result);
+  std::string json;
+  append_bond_clear_json(json, result);
   json.pop_back();
-  json += ",\"boot_id\":" + std::to_string(capture->get_capture_result().boot_id) + "}";
+  json += ",\"boot_id\":";
+  json += std::to_string(capture->get_capture_result().boot_id);
+  json += '}';
   if (result.state == irk_capture::BondClearState::PENDING) {
     httpd_resp_set_status(req, "202 Accepted");
   }

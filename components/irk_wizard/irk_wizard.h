@@ -45,6 +45,7 @@ struct CaptureStart {
   CaptureStartState state { CaptureStartState::IDLE };
   uint32_t boot_id { 0 };
   uint32_t sequence { 0 };
+  uint32_t connection_generation { 0 };  // Newest connection when the start took effect
 };
 
 // Cached UI state built on the main task and copied under snapshot_mutex_
@@ -55,6 +56,9 @@ struct WizardSnapshot {
   // Shared so that copying a snapshot for a request does not copy the history,
   // its only large value. Null until the first refresh; read it as "[]".
   std::shared_ptr<const std::string> history_json;
+  // irk_capture's version of history_json; with the boot ID it lets a page
+  // skip a history it already has. 0 until the first refresh.
+  uint32_t history_version { 0 };
   std::string irk;
   std::string device_mac;
   std::string effective_mac;
@@ -113,6 +117,10 @@ class IRKWizardComponent : public Component {
   }
   // Radio changes are serialized with Home Assistant controls on the main task.
   void set_advertising(bool on);
+  // operation_id and boot_id name the run the page is stopping; 0 means the
+  // page never learned them (a lost START reply), which stops unconditionally.
+  // Returns false, doing nothing, for a stop meant for an earlier run.
+  bool stop_capture(uint32_t operation_id = 0, uint32_t boot_id = 0);
   // Returns a request ID immediately; /api/status acknowledges the authoritative
   // baseline once the main task has begun the attempt.
   CaptureStart start_capture();
@@ -171,6 +179,9 @@ class IRKWizardComponent : public Component {
   std::atomic<bool> profile_change_pending_ { false };
 
   httpd_handle_t server_ { nullptr };
+  // Lock order: snapshot_mutex_, then irk_capture's state_mutex_ (the
+  // deferred START arms capture under it). Never take this one while holding
+  // state_mutex_, and never make a BLE call under it.
   SemaphoreHandle_t snapshot_mutex_ { nullptr };
   WizardSnapshot snapshot_;
   CaptureStart capture_start_;  // Protected by snapshot_mutex_, including HTTP writes

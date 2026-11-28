@@ -90,10 +90,6 @@ void IRKCaptureSelect::control(const std::string& value) {
              value.c_str());
     return;  // Don't publish invalid state to Home Assistant
   }
-  // Persistence failure restores the previous profile. Reflect the accepted
-  // state instead of overwriting that rollback with the requested selection.
-  publish_state(parent_->get_ble_profile() == BLEProfile::HEART_SENSOR ? "Heart Sensor"
-                                                                       : "Keyboard");
 }
 
 }  // namespace irk_capture

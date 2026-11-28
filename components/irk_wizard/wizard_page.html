@@ -102,7 +102,7 @@ ol.pair li{margin-bottom:5px}
     <div class="stepno">Step 2 of 5</div>
     <h2>Whose device is this?</h2>
     <p class="help">Optional. The name is stored with the captured key so you can tell them apart later.</p>
-    <input type="text" id="wizLabel" placeholder="e.g. Derek's iPhone" maxlength="24">
+    <input type="text" id="wizLabel" placeholder="e.g. Derek's iPhone" maxlength="@CAPTURE_LABEL_MAX_LEN@">
     <div class="btnrow"><button class="primary" onclick="wizSaveLabel()">Next</button>
       <button onclick="wizGo(1)">Back</button></div>
   </div>
@@ -179,7 +179,7 @@ ol.pair li{margin-bottom:5px}
     </select>
     <div style="height:10px"></div>
     <label>Label this capture (optional)</label>
-    <input type="text" id="label" placeholder="e.g. Derek's iPhone" maxlength="24">
+    <input type="text" id="label" placeholder="e.g. Derek's iPhone" maxlength="@CAPTURE_LABEL_MAX_LEN@">
     <div class="btnrow">
       <button class="primary" id="advBtn">Start Advertising</button>
       <button id="freshIdBtn">Refresh BLE Identity</button>
@@ -204,6 +204,9 @@ ol.pair li{margin-bottom:5px}
 <script>
 function el(id){return document.getElementById(id)}
 var lastHistKey = null;   // history last rendered, see renderHistory()
+// The history the device last sent, and its token. Polls send the token back,
+// and the device leaves out a history that has not changed since.
+var lastHistory = null, historyToken = null;
 var wizStep = 0;          // 0 = panel view
 var lastData = null;
 var labelDirty = false;
@@ -219,6 +222,7 @@ var captureRun = 0;
 var captureAttempt = null;
 var acceptedCapture = null;
 var captureMessage = '';
+var pendingStop = null;      // {body, boot_id, inFlight} a stop the device has not confirmed
 var pendingClear = null;
 var wizardClearRun = 0;
 var writeQueue = Promise.resolve();
@@ -323,10 +327,50 @@ async function action(url,body){
   catch(e){ showError(e); return null; }
 }
 function newer(a,b){ var delta=(a-b)>>>0; return delta!==0 && delta<0x80000000; }
+// Names the run a stop is for, so a tab another tab has replaced cannot stop
+// the newer run. A stop sent before this page handled the START reply cannot
+// name it, so it sends {} and the device stops whatever is running. That
+// includes a Back pressed while START is in flight: its reply is then dropped.
+function stopBody(attempt){
+  if(!attempt || attempt.operation_id===null || attempt.boot_id===null) return {};
+  return {operation_id:String(attempt.operation_id), boot_id:String(attempt.boot_id)};
+}
+// Sends a stop and keeps it until the device confirms it, so pressing Stop,
+// Back or Exit again resends it after a failure. announce reports progress in
+// the pairing step's hint; only Stop itself, which stays on that step, does.
+function sendStop(request,announce){
+  pendingStop=request;
+  if(request.inFlight) return;
+  // A reboot ended the run, and an unnamed stop would end whatever runs now.
+  if(lastData && request.boot_id!==null && lastData.boot_id!==request.boot_id){ pendingStop=null; return; }
+  request.inFlight=true;
+  if(announce) captureMessage='Stopping capture...';
+  clearError();
+  post('/api/capture/stop',request.body).then(function(){
+    if(pendingStop===request){
+      pendingStop=null;
+      if(announce && !awaitingCapture) captureMessage='Capture stopped. Go back a step to start again.';
+    }
+    refresh();
+  },function(e){
+    // A new run that replaced this stop has already cleared the page's
+    // errors; a late failure of the old stop must not put one back.
+    if(pendingStop!==request) return;
+    if(announce && !awaitingCapture)
+      captureMessage='Could not confirm the stop. Press Stop to try again.';
+    showError(e);
+  }).then(function(){ request.inFlight=false; if(lastData) render(lastData); });
+}
+function stopRequest(attempt){
+  return {body:stopBody(attempt), boot_id:attempt && attempt.boot_id!==null ? attempt.boot_id :
+          (lastData ? lastData.boot_id : null), inFlight:false};
+}
 function cancelCapture(stop){
-  var active=awaitingCapture;
+  var active=awaitingCapture, attempt=captureAttempt;
   ++captureRun; awaitingCapture=false; captureAttempt=null;
-  if(stop && active) action('/api/advertising',{on:false});
+  if(!stop) return;
+  if(active) sendStop(stopRequest(attempt),false);
+  else if(pendingStop) sendStop(pendingStop,false);
 }
 function captureFailed(message){
   cancelCapture(false); captureMessage=message;
@@ -354,11 +398,23 @@ function rebootState(){
   wizardProfileState();
   connectionState();
 }
+// Whether the device is expected to restart, whichever view asked for it. A
+// profile request for the profile already in use does not restart it. Compare
+// with the profile the device had when the request was made: once it accepts
+// the change it reports the new profile while still on the old boot.
+function rebootExpected(){
+  if(!pendingReboot) return false;
+  var before=pendingReboot.baseProfile || (lastData ? lastData.profile : null);
+  return !pendingReboot.profile || !before || pendingReboot.profile!==before;
+}
 function wizardProfileState(){
-  var status=pendingReboot && pendingReboot.fromWizard ? 'rebooting' : (wizardProfileReady ? 'ready' : null);
+  // A reboot started from the panel also blocks the wizard: its requests
+  // would only fail against the restarting device.
+  var rebooting=rebootExpected();
+  var status=rebooting ? 'rebooting' : (wizardProfileReady ? 'ready' : null);
   el('wizProfileStatusRow').classList.toggle('hide',!status);
   if(status) setPill(el('wizProfilePill'),status);
-  el('wizNextBtn').disabled=!!(pendingReboot && pendingReboot.fromWizard);
+  el('wizNextBtn').disabled=rebooting;
 }
 function rebootDevice(){
   if(pendingReboot || !confirm('Reboot the ESP32? The list of IRKs captured in this session will be cleared.')) return;
@@ -372,6 +428,7 @@ async function trackReboot(url,body,profile,fromWizard){
   clearError();
   wizardProfileReady=false;
   var request={boot_id:null,started:Date.now(),sent:false,confirming:false,profile:profile,
+    baseProfile:lastData ? lastData.profile : null,
     fromWizard:!!fromWizard && (!lastData || profile!==lastData.profile)};
   pendingReboot=request; ++statusEpoch; rebootState();
   try{
@@ -382,6 +439,7 @@ async function trackReboot(url,body,profile,fromWizard){
       if(!validBootId(before.boot_id)) throw new Error('Could not read the device status. '+
         (profile ? 'Profile change' : 'Reboot')+' was not sent; please try again.');
       request.boot_id=before.boot_id;
+      if(typeof before.profile==='string') request.baseProfile=before.profile;
       body.expected_boot_id=String(before.boot_id);
       request.started=Date.now();
       request.sent=true;
@@ -434,6 +492,10 @@ function wizGo(n){
 function resetWizardLabel(){ wizLabelDirty=false; ++wizLabelEdit; el('wizLabel').value=''; }
 async function wizSaveLabel(){
   if(wizLabelSave) return;
+  // An untouched field only shows what the device holds, or held before a
+  // poll the page has not seen yet. Saving it could re-arm a label another
+  // capture already used, so only the user's own edit is sent.
+  if(!wizLabelDirty){ clearError(); wizGo(3); return; }
   var request={run:wizardRun, visit:wizLabelVisit, edit:wizLabelEdit}; wizLabelSave=request;
   // Only a reply to the step the user is still on may show an error or move
   // the wizard: they may have left it, gone Back, or started a new run.
@@ -502,6 +564,8 @@ async function wizForget(source){
 }
 async function wizStart(){
   cancelCapture(true);
+  // This run supersedes any stop still unconfirmed; one already queued runs first.
+  pendingStop=null;
   acceptedCapture=null; captureMessage='Starting advertising...';
   var attempt={run:captureRun,operation_id:null,boot_id:null,baseline:null};
   captureAttempt=attempt; awaitingCapture=true; clearError();
@@ -516,14 +580,22 @@ async function wizStart(){
     captureFailed('Could not start capture. Go back a step and try again.');
     // A lost response may still have delivered START. Queue OFF to cancel it,
     // but skip when an HTTP rejection proves START was refused.
-    if(!e.httpStatus) action('/api/advertising',{on:false});
+    if(!e.httpStatus) sendStop(stopRequest(null),false);
     showError(e); if(lastData) render(lastData);
   }
 }
 function wizFresh(){ action('/api/fresh_identity',{}); }
 function wizStop(){
-  cancelCapture(false); captureMessage='Capture stopped. Go back a step to start again.';
-  action('/api/advertising',{on:false}); if(lastData) render(lastData);
+  // Stops this page's own run, or resends a stop the device has not confirmed.
+  // With neither (already stopped, or replaced by another tab), there is
+  // nothing to stop, and an unnamed stop would end the newer run.
+  if(awaitingCapture && captureAttempt){
+    var request=stopRequest(captureAttempt);
+    cancelCapture(false); sendStop(request,true);
+  } else if(pendingStop){
+    sendStop(pendingStop,true);
+  }
+  if(lastData) render(lastData);
 }
 function wizRestart(){ cancelCapture(true); acceptedCapture=null; resetWizardClearFeedback(); wizardProfileReady=false; resetWizardLabel(); wizGo(1); }
 
@@ -702,7 +774,10 @@ function advanceCapture(d){
       if(start.state==='ready' && start.boot_id===attempt.boot_id){
         attempt.baseline=start.sequence;
         var result=d.capture_result;
+        // A link from an earlier run can still finish pairing after this one
+        // started; only a connection made after the start is this run's device.
         if(result && result.boot_id===attempt.boot_id && newer(result.sequence,attempt.baseline) &&
+           newer(result.connection_generation,start.connection_generation) &&
            /^[0-9a-f]{32}$/i.test(result.irk || '')){
           // Freeze the accepted capture; later captures/failures belong to
           // subsequent runs, even if the browser missed the status hold.
@@ -757,9 +832,10 @@ function render(d){
   /* wizard */
   if(wizStep===0) return;
   el('wizProfile').value = pendingReboot && pendingReboot.profile ? pendingReboot.profile : d.profile;
-  // An empty field the user cleared stays empty; only an untouched one fills.
-  if(!wizLabelDirty && document.activeElement !== el('wizLabel') && !el('wizLabel').value && d.next_capture_label)
-    el('wizLabel').value = d.next_capture_label;
+  // An untouched field mirrors the device, including a label another capture
+  // has since used up; a field the user edited, even to empty, is left alone.
+  if(!wizLabelDirty && document.activeElement !== el('wizLabel'))
+    el('wizLabel').value = d.next_capture_label || '';
 
   if(wizStep===4){
     renderCaptureStep(d,advName);
@@ -774,7 +850,8 @@ function render(d){
   }
 }
 // Whether the key generated the address the device connected from. Only a
-// mismatch is a warning: a device on a fixed address has nothing to check.
+// mismatch is a warning: "unverified" covers both an address no IRK generates
+// and a check that could not run, so it does not name a cause.
 function renderVerification(v){
   var p=el('wizVerify');
   p.classList.toggle('ok', v==='verified');
@@ -785,8 +862,8 @@ function renderVerification(v){
     p.textContent='Warning: this key does not match the address your device connected from. '+
       'Forget this device in its Bluetooth settings and capture it again.';
   else
-    p.textContent='Not verified: your device connected from an address this key cannot be '+
-      'checked against. The key is usually still correct.';
+    p.textContent='Not verified: this key could not be checked against the address your device '+
+      'connected from. The key is usually still correct.';
 }
 function verificationNote(v){
   if(v==='verified') return ' \u00b7 verified';
@@ -816,9 +893,20 @@ function refresh(){
   var epoch=statusEpoch;
   refreshInFlight=(async function(){
     try{
-      var d=await requestJson('/api/status');
+      var d=await requestJson('/api/status'+
+        (historyToken!==null ? '?history='+encodeURIComponent(historyToken) : ''));
       if(epoch!==statusEpoch) return;
       if(!validStatus(d)) throw unreadable('status');
+      if(d.history_unchanged===true && lastHistory!==null){
+        d.history=lastHistory;
+      }else if(d.history_unchanged===true){
+        historyToken=null;  // Nothing kept to stand in for it; ask in full.
+      }else{
+        lastHistory=Array.isArray(d.history) ? d.history : [];
+      }
+      if(lastHistory!==null) historyToken=
+        typeof d.history_version==='string' && /^[0-9]+\.[0-9]+$/.test(d.history_version)
+          ? d.history_version : null;
       if(lastData && d.boot_id!==lastData.boot_id){
         hideClearMessage('forgetDone'); hideClearMessage('panelForgetDone');
         if(!pendingReboot) wizardProfileReady=false;
